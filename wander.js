@@ -1,21 +1,28 @@
-// Agents leave their desk now and then, walk the office aisles to a spot (pantry, bookshelf, window, lounge,
-// meeting room or a colleague's desk), hang around for a bit and walk back. Busy agents return to their desk.
+// Agents leave their desk now and then, walk the office aisles to a spot (pantry counter, water dispenser, cafe table,
+// bookshelf, window, lounge or a colleague's desk), hang around for a bit and walk back. Busy agents return to their desk.
 // Aisle graph in office coordinates (see office.js): nodes are [x,z], edges are walkable straight segments.
+// Layout: open pod back-left (agents at z=-1.6), main aisle z=-.7, glass room front-left (door at x≈.15 on z=.6),
+// wooden desk by the left window, lounge in front of the TV (back right), pantry + cafe table front-right.
 const N={
-  fa:[-3.3,.95],fa2:[-2.6,1.05],fb:[-1.25,1.05],fc:[.05,1.05],fc2:[.35,1.05],fd:[1.25,1.05],fe:[3.7,1.05],
-  l1:[-4.6,.75],ba:[-4.6,-1.05],bb:[-1.92,-1.05],bc:[.05,-1.05],bd:[1.75,-1.05],
-  dw:[.35,3.2],dv:[-.9,3.2],lh:[-2.75,1.9],md:[-1.92,-1.9],pa:[.35,-2.2],br:[1.75,-2.25],bq:[2.5,-1.78],bq2:[3.6,-1.85],
+  // main aisle in front of the open pod
+  cA:[-4.4,-.7],cB:[-3.75,-.7],cC:[-2.9,-.7],cD:[-1.4,-.7],cE:[.22,-.7],cF:[.6,-.7],
+  // glass room: outside door, inside door, front lane and the two desks
+  gOut:[.22,.05],gIn:[.22,1.1],g2:[.22,3.4],bkd:[-1.0,3.4],frd:[-2.5,3.4],
+  // lane down to the wooden desk by the left window
+  dl:[-3.75,3.4],dsd:[-4.55,3.4],
+  // right half: lounge, pantry, bookshelf lane
+  l0:[1.6,-.3],p0:[1.8,1.9],e0:[4.85,.35],eb:[4.85,-2.9],
   // destinations
-  book:[-4.6,-.45],win:[-4.95,-1.32],lounge1:[-2.9,2.2],lounge2:[-3.3,3.1],meet1:[-1.85,-2.45],meet2:[-2.25,-1.95],
-  cooler:[1.2,-3.0],tvs:[.2,-2.9],locker:[-.85,-2.95]
+  win:[-5.0,-.45],lounge1:[2.1,.3],lounge2:[3.9,.35],cooler:[2.6,1.9],counter:[4.2,1.9],cafe1:[3.2,2.9],cafe2:[4.6,2.9],book:[4.6,-3.05]
 };
-const E=[['fa','fa2'],['fa2','fb'],['fb','fc'],['fc','fc2'],['fc2','fd'],['fd','fe'],['fa','l1'],['l1','book'],['book','ba'],['ba','win'],
-  ['ba','bb'],['bb','bc'],['bc','bd'],['fc','bc'],['fc2','dw'],['dw','dv'],['fa2','lh'],['lh','lounge1'],['lh','lounge2'],
-  ['bb','md'],['md','meet1'],['md','meet2'],['bc','pa'],['pa','cooler'],['pa','tvs'],['pa','locker'],['bd','br'],['br','bq'],['bq','bq2']];
+const E=[['win','cA'],['cA','cB'],['cB','cC'],['cC','cD'],['cD','cE'],['cE','cF'],['cF','l0'],
+  ['cE','gOut'],['gOut','gIn'],['gIn','g2'],['g2','bkd'],['bkd','frd'],['cB','dl'],['dl','dsd'],
+  ['l0','lounge1'],['lounge1','lounge2'],['lounge2','e0'],['e0','eb'],['eb','book'],
+  ['l0','p0'],['p0','cooler'],['cooler','counter'],['p0','cafe1'],['counter','cafe2']];
 // Where each agent steps out from its desk (also where colleagues stand to chat with it)
-const DOOR={director:'dv',research:'fa',frontend:'fb',backend:'fd',analyst:'fe',qa:'br',designer:'bq2'};
+const DOOR={director:'cF',research:'cA',analyst:'cC',qa:'cD',frontend:'frd',backend:'bkd',designer:'dsd'};
 const PI=Math.PI,HOME_YAW=.35,SPEED=.95;
-const SPOTS=[['cooler',PI],['tvs',PI],['locker',PI],['book',-PI/2],['win',-PI/2],['lounge1',-PI/2],['lounge2',-2.2],['meet1',-2.97],['meet2',-2.6]];
+const SPOTS=[['cooler',PI],['counter',PI],['cafe1',PI/2],['cafe2',-PI/2],['book',PI],['win',-PI/2],['lounge1',PI],['lounge2',PI]];
 const yawTo=(a,b)=>Math.atan2(b[0]-a[0],b[1]-a[1]);
 const wrap=a=>Math.atan2(Math.sin(a),Math.cos(a));
 

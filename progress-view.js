@@ -2,7 +2,7 @@
 // (request, machine/folder/permissions, elapsed time, step-by-step log, result or error). Real tasks refresh from
 // /api/machine/tasks/:id while running; simulated ones only show their progress bar.
 const ICON={init:'🚀',tool:'🔧',out:'↳',denied:'⛔',text:'💬'};
-const KIND={init:'Khởi động',tool:'Công cụ',out:'Đầu ra',denied:'Bị chặn',text:'Claude'};
+const KIND={init:'Khởi động',tool:'Công cụ',out:'Đầu ra',denied:'Bị chặn',text:'AI'};
 const pad=n=>String(n).padStart(2,'0');
 const dur=ms=>{const s=Math.max(0,Math.round(ms/1000));return s>=3600?`${Math.floor(s/3600)}:${pad(Math.floor(s/60)%60)}:${pad(s%60)}`:`${pad(Math.floor(s/60))}:${pad(s%60)}`};
 
