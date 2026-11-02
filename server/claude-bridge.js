@@ -7,7 +7,7 @@ import {homedir,tmpdir} from 'node:os';
 import {join} from 'node:path';
 import pty from '@lydell/node-pty';
 
-const STORE_DIR=join(homedir(),'.ai-3d-office');
+export const STORE_DIR=join(homedir(),'.ai-3d-office');
 const STORE_FILE=join(STORE_DIR,'claude-auth.json');
 const TOKEN_RE=/sk-ant-oat01-[A-Za-z0-9_-]{20,}/;
 const URL_RE=/https:\/\/claude\.(?:com|ai)\/\S*oauth\/authorize\?\S+/;
@@ -18,13 +18,13 @@ const stripAnsi=s=>s.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g,'').replace(/\x1b\][^
 const mask=t=>t?`${t.slice(0,13)}…${t.slice(-4)}`:null;
 
 // Child env without this process's own Claude Code session or API-key overrides
-function cleanEnv(extra={}){
+export function cleanEnv(extra={}){
   const env={...process.env};
   for(const k of Object.keys(env))if(k==='CLAUDECODE'||k.startsWith('CLAUDE_CODE_')||k==='ANTHROPIC_API_KEY'||k==='ANTHROPIC_AUTH_TOKEN')delete env[k];
   return {...env,...extra};
 }
 
-function run(bin,args,{env=cleanEnv(),timeout=30000}={}){
+export function run(bin,args,{env=cleanEnv(),timeout=30000}={}){
   return new Promise(resolve=>{
     const child=execFile(bin,args,{env,timeout,cwd:tmpdir(),windowsHide:true,maxBuffer:4<<20},(err,stdout,stderr)=>resolve({err,stdout:String(stdout),stderr:String(stderr)}));
     child.stdin?.end();
@@ -32,7 +32,7 @@ function run(bin,args,{env=cleanEnv(),timeout=30000}={}){
 }
 
 const versionKey=v=>v.split(/[.-]/).map(n=>n.padStart(6,'0')).join('.');
-function findClaudeBinary(){
+export function findClaudeBinary(){
   if(process.env.CLAUDE_BIN&&existsSync(process.env.CLAUDE_BIN))return process.env.CLAUDE_BIN;
   const exe=isWin?'claude.exe':'claude';
   for(const dir of (process.env.PATH||'').split(isWin?';':':')){
@@ -66,7 +66,7 @@ async function verifyToken(bin,token){
   }catch{return {ok:false,error:err?.killed?'Hết thời gian chờ Claude Code phản hồi.':'Không đọc được phản hồi từ Claude Code.'}}
 }
 
-function killTree(p){
+export function killTree(p){
   if(!p)return;
   if(isWin)execFile('taskkill',['/PID',String(p.pid),'/T','/F'],{windowsHide:true},()=>{});
   else try{p.kill()}catch{}
@@ -170,5 +170,5 @@ export function claudeBridge(){
   };
 }
 
-// For a future task runner: read the saved token server-side and pass it as CLAUDE_CODE_OAUTH_TOKEN to `claude -p`
-export function getSavedClaudeToken(){return loadStore()?.token||null}
+// Used by the task runner (machine-bridge.js): the saved token is passed as CLAUDE_CODE_OAUTH_TOKEN to `claude -p`
+export function getSavedClaudeToken(){const s=loadStore();return s?.token&&!s.lastError?s.token:null}
