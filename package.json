@@ -1,0 +1,18 @@
+{
+  "name": "ai-3d-office",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 0.0.0.0",
+    "build": "vite build",
+    "preview": "vite preview --host 0.0.0.0"
+  },
+  "dependencies": {
+    "lucide": "^0.468.0",
+    "three": "^0.180.0",
+    "vite": "^7.1.0"
+  },
+  "devDependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.18"
+  }
+}
