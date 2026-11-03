@@ -1,7 +1,7 @@
 // Vite dev-server plugin: checks the Claude Code connection, runs `claude setup-token`
 // (browser OAuth) in a pseudo-terminal, captures the long-lived token and stores it
 // outside the project. The token never leaves this Node process.
-import {execFile} from 'node:child_process';
+import {execFile,spawn} from 'node:child_process';
 import {existsSync,readdirSync,readFileSync,writeFileSync,mkdirSync,rmSync} from 'node:fs';
 import {homedir,tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -53,6 +53,21 @@ export function findClaudeBinary(){
   return found[0]?.bin||null;
 }
 
+// Chrome/Edge for the sign-in page; started with a throw-away profile so no claude.ai session is reused
+function findBrowser(){
+  const list=isWin
+    ?[process.env.PROGRAMFILES,process.env['PROGRAMFILES(X86)'],process.env.LOCALAPPDATA].filter(Boolean).flatMap(d=>[join(d,'Google','Chrome','Application','chrome.exe'),join(d,'Microsoft','Edge','Application','msedge.exe')])
+    :['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome','/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge','/usr/bin/google-chrome','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/microsoft-edge'];
+  return list.find(p=>existsSync(p))||null;
+}
+// `claude setup-token` opens $BROWSER with the sign-in URL: point it at a no-op so the default browser stays closed
+function noopBrowser(){
+  if(!isWin)return 'true';
+  const f=join(STORE_DIR,'noop-browser.cmd');
+  if(!existsSync(f)){mkdirSync(STORE_DIR,{recursive:true});writeFileSync(f,'@exit /b 0\r\n')}
+  return f;
+}
+
 function loadStore(){try{return JSON.parse(readFileSync(STORE_FILE,'utf8'))}catch{return null}}
 function saveStore(data){mkdirSync(STORE_DIR,{recursive:true});writeFileSync(STORE_FILE,JSON.stringify(data,null,2),{mode:0o600})}
 
@@ -75,14 +90,29 @@ export function killTree(p){
 export function claudeBridge(){
   let bin=null,binChecked=false,version=null;
   let login={state:'idle'};// idle | starting | waiting | verifying | success | error
-  let proc=null,buffer='',timer=null;
+  let proc=null,buffer='',timer=null,browser=null,profile=null;
 
   async function ensureBin(){
     if(!binChecked){bin=findClaudeBinary();binChecked=true;if(bin)version=(await run(bin,['--version'])).stdout.trim()||null}
     return bin;
   }
 
-  function stopLogin(){clearTimeout(timer);killTree(proc);proc=null}
+  // A new browser window with an empty profile: the user signs in to whichever account they want
+  function openFreshBrowser(url){
+    closeBrowser();
+    const exe=findBrowser();if(!exe)return false;
+    profile=join(tmpdir(),`ai-office-claude-login-${Date.now()}`);
+    browser=spawn(exe,[`--user-data-dir=${profile}`,'--no-first-run','--no-default-browser-check','--new-window',url],{stdio:'ignore'});
+    browser.on('error',()=>{});browser.on('exit',()=>{browser=null});
+    return true;
+  }
+  function closeBrowser(){
+    killTree(browser);browser=null;
+    const dir=profile;profile=null;
+    if(dir)setTimeout(()=>{try{rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:500})}catch{}},2000);
+  }
+
+  function stopLogin(){clearTimeout(timer);killTree(proc);proc=null;closeBrowser()}
 
   async function finishWithToken(token){
     stopLogin();
@@ -98,15 +128,15 @@ export function claudeBridge(){
     if(proc)return;
     if(!await ensureBin()){login={state:'error',message:'Không tìm thấy Claude Code CLI trên máy.'};return}
     buffer='';login={state:'starting'};
-    proc=pty.spawn(bin,['setup-token'],{name:'xterm-256color',cols:1000,rows:60,cwd:tmpdir(),env:cleanEnv()});
+    proc=pty.spawn(bin,['setup-token'],{name:'xterm-256color',cols:1000,rows:60,cwd:tmpdir(),env:cleanEnv({BROWSER:noopBrowser()})});
     proc.onData(d=>{
       buffer=(buffer+d).slice(-40000);
       const text=stripAnsi(buffer);
       const token=text.match(TOKEN_RE);
       if(token&&proc){finishWithToken(token[0]);return}
       const url=text.match(URL_RE);
-      if(url&&login.state==='starting')login={state:'waiting',url:url[0]};
-      const err=text.match(/(?:OAuth error|Failed to exchange[^\n]*|Invalid code[^\n]*|account[^\n]*on hold[^\n]*)/i);
+      if(url&&login.state==='starting')login={state:'waiting',url:url[0],fresh:openFreshBrowser(url[0])};
+      const err=text.slice(-2000).match(/(?:OAuth error[^\n]*|Failed to exchange[^\n]*|Invalid code[^\n]*|account[^\n]*on hold[^\n]*)/i);
       if(err&&login.state==='waiting')login={...login,message:err[0].trim()};
     });
     proc.onExit(()=>{proc=null;clearTimeout(timer);if(login.state==='starting'||login.state==='waiting')login={state:'error',message:login.message||'Tiến trình đăng nhập đã kết thúc mà chưa nhận được token.'}});
@@ -116,18 +146,13 @@ export function claudeBridge(){
   async function status(){
     await ensureBin();
     const store=loadStore();
-    let cliLogin=null;
-    if(bin){
-      const {stdout}=await run(bin,['auth','status','--json']);
-      try{const s=JSON.parse(stdout);cliLogin={loggedIn:!!s.loggedIn,method:s.authMethod||null,email:s.email||null,plan:s.subscriptionType||null}}catch{}
-    }
     const expired=store?.expiresAt&&Date.parse(store.expiresAt)<Date.now();
+    // Only the token signed in through this app counts: the CLI's own (default) account is never used
     return {
       connected:!!(store?.token&&store.verifiedAt&&!store.lastError&&!expired),
       cli:{found:!!bin,version,path:bin},
-      cliLogin,
       token:store?.token?{masked:mask(store.token),createdAt:store.createdAt,expiresAt:store.expiresAt,verifiedAt:store.verifiedAt,lastError:store.lastError,expired:!!expired,file:STORE_FILE}:null,
-      login:{state:login.state,url:login.url||null,message:login.message||null}
+      login:{state:login.state,url:login.url||null,fresh:!!login.fresh,message:login.message||null}
     };
   }
 
@@ -150,9 +175,15 @@ export function claudeBridge(){
             const {code}=await readBody(req);
             if(!proc||login.state!=='waiting')return json(res,409,{error:'Không có phiên đăng nhập đang chờ mã.'});
             if(typeof code!=='string'||!/^[\w#.\-]{10,600}$/.test(code.trim()))return json(res,400,{error:'Mã xác thực không đúng định dạng.'});
-            proc.write(code.trim()+'\r');return json(res,200,{ok:true});
+            // Code and Enter in one write are taken as a paste and never submitted: send Enter separately
+            const p=proc;login={...login,message:null};p.write(code.trim());setTimeout(()=>{if(proc===p)p.write('\r')},500);
+            return json(res,200,{ok:true});
           }
           if(req.method==='POST'&&path==='/login/cancel'){stopLogin();login={state:'idle'};return json(res,200,await status())}
+          if(req.method==='POST'&&path==='/login/open'){
+            if(!proc||login.state!=='waiting')return json(res,409,{error:'Không có phiên đăng nhập đang chờ.'});
+            login={...login,fresh:openFreshBrowser(login.url)};return json(res,200,await status());
+          }
           if(req.method==='POST'&&path==='/verify'){
             const store=loadStore();
             if(!store?.token)return json(res,404,{error:'Chưa có token đã lưu.'});

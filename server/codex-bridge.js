@@ -2,7 +2,7 @@
 // `codex login` opens the ChatGPT sign-in page and stores credentials in Codex's own home (~/.codex);
 // this server never reads or forwards them. Tasks run with `codex exec --json` (see codexExec below).
 import {spawn,execFile} from 'node:child_process';
-import {existsSync} from 'node:fs';
+import {existsSync,readdirSync} from 'node:fs';
 import {homedir,tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {killTree} from './claude-bridge.js';
@@ -23,8 +23,21 @@ export function findCodexBinary(){
     const js=join(dirname(p),'node_modules','@openai','codex','bin','codex.js');if(existsSync(js))return js;
   }
   const local=join(homedir(),'.local','bin',isWin?'codex.exe':'codex');
-  return existsSync(local)?local:null;
+  if(existsSync(local))return local;
+  // Binary bundled with the ChatGPT/Codex VS Code / Cursor extension, newest version first
+  const exe=isWin?'codex.exe':'codex',found=[];
+  for(const root of ['.vscode','.vscode-insiders','.cursor'].map(d=>join(homedir(),d,'extensions'))){
+    if(!existsSync(root))continue;
+    for(const d of readdirSync(root)){
+      const m=d.match(/^openai\.chatgpt-(\d+\.\d+\.\d+)/);if(!m)continue;
+      const binDir=join(root,d,'bin');if(!existsSync(binDir))continue;
+      for(const plat of readdirSync(binDir)){const p=join(binDir,plat,exe);if(existsSync(p))found.push({v:m[1],bin:p})}
+    }
+  }
+  found.sort((a,b)=>versionKey(b.v).localeCompare(versionKey(a.v)));
+  return found[0]?.bin||null;
 }
+const versionKey=v=>v.split(/[.-]/).map(n=>n.padStart(6,'0')).join('.');
 // [command, args] for spawning the binary
 const cmd=(bin,args)=>bin.endsWith('.js')?[process.execPath,[bin,...args]]:[bin,args];
 

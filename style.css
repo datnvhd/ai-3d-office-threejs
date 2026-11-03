@@ -164,3 +164,8 @@
 .attach-list .chip-x{background:none;border:0;color:#8893ab;font-size:11px;padding:0 2px;cursor:pointer}
 .attach-list .chip-x:hover{color:#c2453a}
 .jobfiles{font-size:11px;color:#6b7390;margin:6px 0 2px}
+/* Claude model that ran a task (hover: why it was picked) */
+.modeltag{display:inline-block;margin-left:6px;font-size:9.5px;font-weight:700;padding:1px 6px;border-radius:7px;vertical-align:1px;cursor:help;white-space:nowrap}
+.modeltag.m-haiku{background:#e3f7ee;color:#1d7a52}.modeltag.m-sonnet{background:#e6efff;color:#2457c5}.modeltag.m-opus{background:#f3e8ff;color:#7a3fc2}
+/* Workflow option only applies when the job goes to the Director */
+.mcheck.wfopt.off{opacity:.45}

@@ -33,20 +33,21 @@ export function initClaudeConnect({toast}){
   function render(){
     setChip();
     if(!st){body.innerHTML='<p class="claude-note">Đang kiểm tra kết nối…</p>';return}
-    const {cli,cliLogin,token,login}=st;
-    const cliRows=rows([['Claude Code CLI',cli.found?esc(cli.version||'đã cài'):'<em class="bad">không tìm thấy</em>'],['Đăng nhập trên CLI',cliLogin?.loggedIn?esc([cliLogin.email,cliLogin.plan&&cliLogin.plan.toUpperCase()].filter(Boolean).join(' · ')||cliLogin.method):'chưa đăng nhập']]);
+    const {cli,token,login}=st;
+    const cliRows=rows([['Claude Code CLI',cli.found?esc(cli.version||'đã cài'):'<em class="bad">không tìm thấy</em>']]);
     if(!cli.found){
       body.innerHTML=`<h2>Chưa có Claude Code</h2><p class="claude-note">Không tìm thấy Claude Code CLI trên máy chạy server. Cài Claude Code (hoặc đặt biến môi trường <code>CLAUDE_BIN</code> trỏ tới file chạy), khởi động lại server rồi kiểm tra lại.</p>${cliRows}<button class="assign" data-act="refresh">⟲ Kiểm tra lại</button>`;
     }else if(login.state==='starting'){
-      body.innerHTML='<h2>Đang mở trang đăng nhập…</h2><p class="claude-note"><span class="spinner"></span> Đang khởi động Claude Code và mở trình duyệt.</p><button class="ghost" data-act="cancel">Hủy</button>';
+      body.innerHTML='<h2>Đang mở trang đăng nhập…</h2><p class="claude-note"><span class="spinner"></span> Đang khởi động Claude Code và mở cửa sổ trình duyệt mới.</p><button class="ghost" data-act="cancel">Hủy</button>';
     }else if(login.state==='waiting'){
-      body.innerHTML=`<h2>Xác thực trên trình duyệt</h2>
-        <ol class="claude-steps"><li>Trình duyệt đã mở trang đăng nhập Claude. Đăng nhập và bấm <b>Authorize</b>.</li>
-        <li>Không thấy trang? <a href="${esc(login.url)}" target="_blank" rel="noopener noreferrer">Mở trang đăng nhập</a>.</li>
+      body.innerHTML=`<h2>Đăng nhập Claude trên cửa sổ mới</h2>
+        <ol class="claude-steps">${login.fresh
+          ?'<li>Đã mở một <b>cửa sổ trình duyệt mới, chưa đăng nhập tài khoản nào</b>. Đăng nhập tài khoản Claude muốn dùng (nhập mã xác thực gửi về email, hoặc Google) rồi bấm <b>Authorize</b>.</li><li>Không thấy cửa sổ? <button class="ghost" data-act="reopen">Mở lại cửa sổ đăng nhập</button></li>'
+          :'<li>Không tìm thấy Chrome/Edge để mở cửa sổ mới. <button class="ghost" data-act="copyurl">Sao chép link đăng nhập</button> rồi dán vào một <b>cửa sổ ẩn danh</b> (Ctrl+Shift+N), đăng nhập tài khoản muốn dùng và bấm <b>Authorize</b>.</li>'}
         <li>Nếu trang hiển thị <b>mã xác thực</b>, dán vào đây:</li></ol>
         <div class="claude-code"><input id="claudeCode" placeholder="Dán mã xác thực…" autocomplete="off" spellcheck="false"><button class="assign" data-act="code">Gửi mã</button></div>
         ${login.message?`<p class="claude-err">${esc(login.message)}</p>`:''}
-        <p class="claude-note"><span class="spinner"></span> Đang chờ xác thực… Token sẽ tự động được lưu khi hoàn tất.</p>
+        <p class="claude-note"><span class="spinner"></span> Đang chờ xác thực… Token sẽ tự động được lưu và cửa sổ đăng nhập tự đóng khi hoàn tất.</p>
         <button class="ghost" data-act="cancel">Hủy đăng nhập</button>`;
     }else if(login.state==='verifying'){
       body.innerHTML='<h2>Đã nhận token</h2><p class="claude-note"><span class="spinner"></span> Đang kiểm tra token với Claude Code…</p>';
@@ -54,13 +55,13 @@ export function initClaudeConnect({toast}){
       body.innerHTML=`<h2><span class="cdot ok"></span> Đã kết nối Claude Code</h2>
         ${rows([['Token',`<code>${esc(token.masked)}</code>`],['Tạo lúc',fmt(token.createdAt)],['Hết hạn (ước tính)',fmt(token.expiresAt)],['Kiểm tra gần nhất',fmt(token.verifiedAt)]])}
         ${cliRows}
-        <p class="claude-note">Token được lưu trên máy chạy server tại <code>${esc(token.file)}</code> và không gửi xuống trình duyệt.</p>
-        <div class="claude-actions"><button class="assign" data-act="verify">✓ Kiểm tra lại</button><button class="ghost" data-act="logout">Ngắt kết nối</button></div>`;
+        <p class="claude-note">Mọi việc chạy bằng tài khoản Claude đã đăng nhập trong ứng dụng (token này), không dùng tài khoản mặc định của Claude Code trên máy. Token được lưu tại <code>${esc(token.file)}</code> và không gửi xuống trình duyệt.</p>
+        <div class="claude-actions"><button class="assign" data-act="login">✦ Đăng nhập tài khoản khác</button><button class="ghost" data-act="verify">✓ Kiểm tra lại</button><button class="ghost" data-act="logout">Ngắt kết nối</button></div>`;
     }else{
       const warn=token?.expired?'Token đã lưu đã hết hạn.':token?.lastError?`Token đã lưu không dùng được: ${token.lastError}`:'';
       const err=login.state==='error'?login.message:'';
       body.innerHTML=`<h2>Chưa kết nối Claude Code</h2>
-        <p class="claude-note">Đăng nhập tài khoản Claude qua trình duyệt để tạo token dài hạn (1 năm) cho ứng dụng. Token được lưu trên máy chạy server.</p>
+        <p class="claude-note">Đăng nhập tài khoản Claude trên một cửa sổ trình duyệt mới (chưa đăng nhập sẵn tài khoản nào) để tạo token dài hạn (1 năm) cho ứng dụng. Token được lưu trên máy chạy server.</p>
         ${warn?`<p class="claude-err">${esc(warn)}</p>`:''}${err?`<p class="claude-err">${esc(err)}</p>`:''}
         ${cliRows}
         <div class="claude-actions"><button class="assign" data-act="login">✦ Đăng nhập qua web</button>${token?'<button class="ghost" data-act="verify">Kiểm tra lại token</button>':''}</div>`;
@@ -68,6 +69,9 @@ export function initClaudeConnect({toast}){
   }
 
   async function act(name){
+    // No re-render here, so a code already pasted into the box is kept
+    if(name==='copyurl'){navigator.clipboard.writeText(st.login.url).then(()=>toast('Đã sao chép link đăng nhập'),()=>toast('Không sao chép được link đăng nhập'));return}
+    if(name==='reopen'){api('/login/open',{method:'POST'}).then(s=>toast(s.login.fresh?'Đã mở lại cửa sổ đăng nhập':'Không mở được trình duyệt'),e=>toast(e.message));return}
     if(busy)return;busy=true;
     try{
       if(name==='login'){st=await api('/login',{method:'POST'});poll()}

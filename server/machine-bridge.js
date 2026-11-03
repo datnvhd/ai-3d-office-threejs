@@ -11,7 +11,7 @@ import os from 'node:os';
 import {join,resolve,isAbsolute,dirname,basename} from 'node:path';
 import {STORE_DIR,cleanEnv,run,findClaudeBinary,killTree,getSavedClaudeToken} from './claude-bridge.js';
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
-import {ruleSteps,planPrompt,parsePlan} from '../workflow-plan.js';
+import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel} from '../workflow-plan.js';
 
 const CONFIG_FILE=join(STORE_DIR,'machine.json'),TASKS_FILE=join(STORE_DIR,'tasks.json'),SITES_FILE=join(STORE_DIR,'sites.json'),RUNS_DIR=join(STORE_DIR,'runs'),UPLOADS_DIR=join(STORE_DIR,'uploads');
 const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,KEEP=100;
@@ -59,6 +59,12 @@ const MCP_CLI=(()=>{try{return join(dirname(createRequire(import.meta.url).resol
 const BROWSERS=[['chrome',['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',join(os.homedir(),'AppData/Local/Google/Chrome/Application/chrome.exe'),'/Applications/Google Chrome.app','/usr/bin/google-chrome']],
   ['msedge',['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Microsoft/Edge/Application/msedge.exe','/Applications/Microsoft Edge.app']]];
 const findBrowser=()=>BROWSERS.find(([,paths])=>paths.some(p=>existsSync(p)))?.[0]||null;
+// Claude Code's answer when the account cannot use the requested model (retired, or not on this plan)
+const MODEL_MISSING=/not_found_error|may not exist|not have access to (it|this model)|model[^\n]{0,60}(not found|not available|unavailable|does not exist)/i;
+// `claude` flags for a task's model and reasoning effort (old records may hold a family alias, still valid for the CLI)
+const modelArgs=t=>[...(t.model?['--model',modelId(t.model)||t.model]:[]),...(EFFORTS[t.effort]?['--effort',t.effort]:[])];
+// Browser tools web tasks never need; run_code_unsafe would also run arbitrary code next to the secrets file
+const WEB_TOOLS_OFF=['run_code_unsafe','network_requests','network_request','emulate_media','drag','drop','resize','console_messages'].map(n=>`mcp__browser__browser_${n}`);
 const MODES={default:'Chỉ đọc & phân tích',acceptEdits:'Cho phép tạo/sửa file trong thư mục làm việc'};
 const DEFAULT_WORKDIR=join(os.homedir(),'AI-Office-Workspace');
 // Which CLI runs each agent's tasks; agents not listed use Claude Code
@@ -84,7 +90,7 @@ function describeTool({name,input={}}){
 }
 
 export function machineBridge(){
-  let bin=null,binChecked=false,version=null,authCache=null;
+  let bin=null,binChecked=false,version=null;
   let config={workdir:DEFAULT_WORKDIR,mode:'default',browserVisible:true,...readJson(CONFIG_FILE,{})};
   config.agentEngines={...DEFAULT_AGENT_ENGINES,...config.agentEngines};
   const engineOf=agent=>config.agentEngines[agent]==='codex'?'codex':'claude';
@@ -137,14 +143,8 @@ export function machineBridge(){
     if(!binChecked){bin=findClaudeBinary();binChecked=true;if(bin)version=(await run(bin,['--version'])).stdout.trim()||null}
     return bin;
   }
-  // Saved long-lived token first, otherwise the CLI's own login (cached for a minute)
-  async function auth(){
-    if(getSavedClaudeToken())return 'token';
-    if(authCache&&Date.now()-authCache.at<60000)return authCache.kind;
-    let kind=null;
-    if(await ensureBin()){const {stdout}=await run(bin,['auth','status','--json']);try{if(JSON.parse(stdout).loggedIn)kind='cli'}catch{}}
-    authCache={kind,at:Date.now()};return kind;
-  }
+  // Only the token signed in through the app: the CLI's own (default) account is never used
+  async function auth(){return getSavedClaudeToken()?'token':null}
   async function ensureCodex(){
     if(!codexChecked){codexBin=findCodexBinary();codexChecked=true;if(codexBin)codexVersion=(await codexRun(codexBin,['--version'])).stdout.trim()||null}
     return codexBin;
@@ -164,8 +164,8 @@ export function machineBridge(){
   }
 
   // Spawns `claude -p` with the prompt on stdin and streams JSON events; returns the child and a completion promise
-  function claude(args,{cwd,input,onEvent,timeout}){
-    const child=spawn(bin,['-p','--output-format','stream-json','--verbose',...args],{cwd,env:authEnv(),windowsHide:true,shell:/\.(cmd|bat)$/i.test(bin)});
+  function claude(args,{cwd,input,onEvent,timeout,env}){
+    const child=spawn(bin,['-p','--output-format','stream-json','--verbose',...args],{cwd,env:{...authEnv(),...env},windowsHide:true,shell:/\.(cmd|bat)$/i.test(bin)});
     const done=new Promise(res=>{
       let buf='',stderr='',result=null,timedOut=false;
       const timer=setTimeout(()=>{timedOut=true;killTree(child)},timeout);
@@ -194,7 +194,7 @@ export function machineBridge(){
     const b=await ensureBin();
     steps.push({name:'Claude Code CLI',ok:!!b,detail:b?(version||b):'Không tìm thấy trên máy'});
     const a=b?await auth():null;
-    steps.push({name:'Xác thực',ok:!!a,detail:a==='token'?'Token dài hạn đã lưu':a==='cli'?'Đăng nhập của Claude Code CLI':'Chưa đăng nhập'});
+    steps.push({name:'Xác thực',ok:!!a,detail:a?'Token dài hạn đã lưu':'Chưa đăng nhập Claude (bấm ô Claude Code trên thanh trên cùng)'});
     if(b&&a&&wd.writable){
       const s=Date.now(),{done}=claude(['--max-turns','1','--tools',''],{cwd:config.workdir,input:'Reply with exactly: OK',timeout:90000});
       const out=await done,ok=!!out.result&&!out.result.is_error;
@@ -245,8 +245,13 @@ ${prev.map(p=>`--- ${p.name} · ${p.stepTitle} ---\n${String(p.result||'').slice
   function webPrompt(t){
     const list=sitesFor(t);
     return `
-TRÌNH DUYỆT: Bạn có bộ công cụ trình duyệt (MCP server tên "browser": browser_navigate, browser_click, browser_type, browser_snapshot…) điều khiển một cửa sổ Chrome thật trên máy người dùng (mở link, đăng nhập, bấm, điền form, chọn, đọc nội dung, chụp màn hình).
-Được truy cập mọi trang web cần cho nhiệm vụ, không giới hạn trong thư mục làm việc. Dùng browser_snapshot để đọc trang trước khi thao tác; chụp màn hình (browser_take_screenshot, KHÔNG truyền filename để ảnh tự lưu vào thư mục riêng của nhiệm vụ) ở các bước quan trọng và khi xong để người dùng xem lại.
+TRÌNH DUYỆT: Bạn có bộ công cụ trình duyệt (MCP server tên "browser": browser_navigate, browser_click, browser_type, browser_find, browser_snapshot…) điều khiển một cửa sổ Chrome thật trên máy người dùng (mở link, đăng nhập, bấm, điền form, chọn, đọc nội dung, chụp màn hình).
+Được truy cập mọi trang web cần cho nhiệm vụ, không giới hạn trong thư mục làm việc.
+TIẾT KIỆM TOKEN (bắt buộc): một trang đọc toàn bộ có thể dài hàng chục nghìn token và nằm lại trong ngữ cảnh ở mọi bước sau.
+- Mở trang, bấm, gõ KHÔNG trả về nội dung trang. Khi cần đọc trang, dùng theo thứ tự ưu tiên: browser_find (tìm chữ hoặc regex, trả về đúng phần khớp kèm ref để bấm/gõ) → browser_snapshot có "target" (selector CSS như "form", "main", "table", "[role=dialog]" hoặc một ref) và/hoặc "depth" → browser_evaluate trả về đúng dữ liệu cần (text/JSON ngắn đã lọc). Chỉ gọi browser_snapshot cả trang khi các cách trên không đủ, và tối đa một lần cho mỗi trang.
+- Điền nhiều ô một lần bằng browser_fill_form. Kiểm tra kết quả bằng browser_wait_for hoặc browser_find (ví dụ tìm thông báo thành công/lỗi) thay vì đọc lại cả trang.
+- Không mở lại trang đang ở, không đọc lại phần đã đọc, không thử lại cùng một thao tác đã thất bại quá 2 lần.
+- Chụp màn hình (browser_take_screenshot, KHÔNG truyền filename để ảnh tự lưu vào thư mục riêng của nhiệm vụ) chỉ ở kết quả quan trọng và lúc hoàn thành, để người dùng xem lại. Ảnh chỉ được lưu cho người dùng, bạn không nhìn thấy ảnh.
 ${list.length?`Tài khoản đăng nhập đã lưu (dùng khi trang yêu cầu đăng nhập):
 ${list.map((s,i)=>`- ${s.label} · ${s.url} · tên đăng nhập: ${s.username||'(không có)'} · mật khẩu: gõ CHÍNH XÁC chuỗi SITE_${i+1}_PASSWORD vào ô mật khẩu (bằng browser_type hoặc browser_fill_form). Hệ thống tự thay bằng mật khẩu thật; bạn không biết và không cần biết mật khẩu.`).join('\n')}
 Không bao giờ in, lưu ra file hay gửi đi mật khẩu. Nếu đăng nhập thất bại, mô tả thông báo lỗi trên trang thay vì thử lại nhiều lần.`:'Chưa có tài khoản đăng nhập nào được cung cấp cho nhiệm vụ này; nếu trang đòi đăng nhập, dừng lại và báo cho người dùng.'}
@@ -260,10 +265,15 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const dir=join(RUNS_DIR,String(t.id));rmSync(dir,{recursive:true,force:true});mkdirSync(dir,{recursive:true});
     const secrets=join(dir,'secrets.env'),list=sitesFor(t);
     writeFileSync(secrets,list.map((s,i)=>`SITE_${i+1}_PASSWORD=${quoteEnv(s.password||'')}`).join('\n')+'\n',{mode:0o600});
-    const args=[MCP_CLI,'--browser',browser,'--isolated','--secrets',secrets,'--output-dir',dir,'--viewport-size','1366x860',...(config.browserVisible?[]:['--headless'])];
+    // Token savers: no page snapshot or generated Playwright code after each action, console errors only,
+    // screenshots saved to the run folder for the user but not sent back to the model
+    const args=[MCP_CLI,'--browser',browser,'--isolated','--secrets',secrets,'--output-dir',dir,'--viewport-size','1366x860',
+      '--snapshot-mode','none','--codegen','none','--image-responses','omit','--console-level','error','--no-webmcp',...(config.browserVisible?[]:['--headless'])];
     const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args}}}));
     t.siteLabels=list.map(s=>s.label);t.browser=browser;
-    return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--allowedTools','mcp__browser','WebFetch']};
+    // Only the built-in tools a web task needs, and none of the browser tools it never uses (their schemas cost tokens every turn)
+    const tools=['Read','Glob','Grep','WebFetch',...(t.mode==='acceptEdits'?['Write','Edit']:[])];
+    return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','--disallowedTools',...WEB_TOOLS_OFF]};
   }
   // Workflow steps wait for their dependencies; if one fails or is stopped, the steps after it stop too
   function depState(t){
@@ -293,7 +303,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(t.engine==='codex'&&codexAuthCache&&!codexAuthCache.kind&&bin){t.engine='claude';t.fallback='Codex chưa đăng nhập nên bước này chạy bằng Claude Code.'}
     if(t.engine==='codex')return startCodex(t);
     const wd=workdirState(t.cwd);
-    if(!bin||!wd.writable){Object.assign(t,{status:'error',error:!bin?'Không tìm thấy Claude Code CLI trên máy.':`Thư mục làm việc không dùng được: ${t.cwd}`,finished:new Date().toISOString()});save();return}
+    if(!bin||!getSavedClaudeToken()||!wd.writable){Object.assign(t,{status:'error',error:!bin?'Không tìm thấy Claude Code CLI trên máy.':!getSavedClaudeToken()?'Chưa đăng nhập tài khoản Claude trong ứng dụng.':`Thư mục làm việc không dùng được: ${t.cwd}`,finished:new Date().toISOString()});save();return}
     let web=null;
     if(t.web)try{web=webSetup(t)}catch(e){Object.assign(t,{status:'error',error:e.message,finished:new Date().toISOString()});save();return}
     Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Claude Code…',log:[]});
@@ -302,9 +312,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(t.fallback)note('denied',t.fallback,false);
     const outText=c=>Array.isArray(c)?c.map(x=>x.type==='text'?x.text:x.type==='image'?'[hình ảnh]':'').join(' '):String(c??'');
     const turns=String(t.web?WEB_TURNS:MAX_TURNS);
-    const {child,done}=claude(['--max-turns',turns,'--permission-mode',t.mode,...(web?.args||[])],{cwd:t.cwd,input:prompt(t),timeout:TASK_TIMEOUT,onEvent:ev=>{
+    // Browser tools loaded up front: saves the opening ToolSearch turn
+    const {child,done}=claude(['--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...(web?.args||[])],{cwd:t.cwd,input:prompt(t),timeout:TASK_TIMEOUT,env:web?{ENABLE_TOOL_SEARCH:'false'}:{},onEvent:ev=>{
       if(ev.type==='system'&&ev.subtype==='init'&&web){const b=(ev.mcp_servers||[]).find(s=>s.name==='browser');if(b&&b.status!=='connected')note('denied',`Trình duyệt chưa sẵn sàng (${b.status})`,false)}
-      if(ev.type==='system'&&ev.subtype==='init')note('init',`Đã khởi động Claude Code · model ${ev.model||'?'}`);
+      if(ev.type==='system'&&ev.subtype==='init')note('init',`Đã khởi động Claude Code · model ${ev.model||'?'}${t.effort?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`);
       if(ev.type==='assistant')for(const c of ev.message?.content||[]){
         if(c.type==='tool_use'){t.steps++;note('tool',describeTool(c))}
         else if(c.type==='text'&&c.text?.trim())note('text',short(c.text,600));
@@ -316,6 +327,12 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       procs.delete(t.id);
       if(web)rmSync(web.secrets,{force:true});
       const r=out.result,cancelled=t.status==='cancelled',ok=!cancelled&&r&&!r.is_error&&r.subtype==='success';
+      // A pinned older version the account cannot use: run again once on the newest model of the same family
+      const id=modelId(t.model),latest=LATEST[MODELS[id]?.family];
+      if(!ok&&!cancelled&&latest&&latest!==id&&MODEL_MISSING.test(`${r?.result||''} ${out.stderr}`)){
+        Object.assign(t,{status:'queued',model:latest,fallback:`${modelLabel(id)} không dùng được với tài khoản này, chạy lại bằng ${modelLabel(latest)}.`,activity:null});
+        save();pump();return;
+      }
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(r.result||'').slice(0,20000)):null,error:ok?null:redact(resultError(r,out,cancelled)),
         durationMs:r?.duration_ms??(Date.now()-Date.parse(t.started)),turns:r?.num_turns??null,costUsd:r?.total_cost_usd??null,activity:null});
       save();pump();
@@ -328,7 +345,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const note=(kind,text)=>{t.log.push({at:Date.now(),kind,text:redact(text)});t.activity=short(text,120)};
     note('init','Director bắt đầu phân tích yêu cầu và chia việc cho các agent liên quan');
     let child=null;
-    const run=bin&&(getSavedClaudeToken()||authCache?.kind)?claude(['--max-turns','1','--tools',''],{cwd:t.cwd,input:planPrompt(t.text,t.owner,t.team)+attachPrompt(t),timeout:180000}):null;
+    const run=bin&&getSavedClaudeToken()?claude(['--max-turns','1','--tools','',...modelArgs(t)],{cwd:t.cwd,input:planPrompt(t.text,t.owner,t.team)+attachPrompt(t),timeout:180000}):null;
     if(run){child=run.child;procs.set(t.id,child)}
     save();
     (run?run.done:Promise.resolve(null)).then(out=>{
@@ -343,10 +360,11 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         const a=who(s.agent),id=nextId++;ids[s.key]=id;
         tasks.unshift({id,kind:'step',wf:t.id,wfTitle:t.wfTitle,stepTitle:s.title,request:t.text,deps:s.after.map(k=>ids[k]).filter(Boolean),
           agent:s.agent,name:a.name,role:a.role,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
+          model:t.forcedModel||s.model,effort:t.forcedEffort||(t.forcedModel?null:s.effort),modelWhy:t.forcedModel||t.forcedEffort?'Chọn thủ công':s.why||'Director chọn',
           cwd:t.cwd,mode:t.mode,host:t.host,web:t.web,siteIds:t.siteIds,engine:engineOf(s.agent),files:t.files,fileNames:t.fileNames});
       }
       const name=id=>t.team.find(a=>a.id===id)?.name||id;
-      t.result=`**Luồng công việc: ${t.wfTitle}** (${plan.steps.length} bước${ai?'':' · chia theo từ khóa'})\n\n${plan.steps.map((s,i)=>`${i+1}. **${name(s.agent)}** · ${s.title}${s.after.length?` _(sau bước ${s.after.map(k=>plan.steps.findIndex(x=>x.key===k)+1).join(', ')})_`:''}`).join('\n')}`;
+      t.result=`**Luồng công việc: ${t.wfTitle}** (${plan.steps.length} bước${ai?'':' · chia theo từ khóa'})\n\n${plan.steps.map((s,i)=>`${i+1}. **${name(s.agent)}** · ${s.title} · _${modelLabel(t.forcedModel||s.model)}${(t.forcedEffort||(!t.forcedModel&&s.effort))?`, suy luận ${EFFORTS[t.forcedEffort||s.effort].toLowerCase()}`:''}${!t.forcedModel&&!t.forcedEffort&&s.why?`: ${s.why}`:''}_${s.after.length?` _(sau bước ${s.after.map(k=>plan.steps.findIndex(x=>x.key===k)+1).join(', ')})_`:''}`).join('\n')}`;
       note('text',t.result);
       Object.assign(t,{status:'done',finished:new Date().toISOString(),durationMs:Date.now()-Date.parse(t.started),turns:out?.result?.num_turns??null,costUsd:out?.result?.total_cost_usd??null,activity:null});
       if(tasks.length>KEEP)tasks.length=KEEP;
@@ -398,11 +416,17 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const siteIds=Array.isArray(body.siteIds)?body.siteIds.filter(id=>sites.some(s=>s.id===id)).slice(0,10):[];
     const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),text,priority:short(body.priority||'Bình thường',30),
       status:'queued',created:new Date().toISOString(),cwd:config.workdir,mode:config.mode,host:os.hostname(),web:!!body.web,siteIds,engine:engineOf(body.agent)};
+    // Model and effort: what the user forced, otherwise picked from the request (workflow steps get theirs from the Director)
+    const forced=modelId(body.model),forcedEffort=EFFORTS[body.effort]?body.effort:null,pick=pickModel(text);
+    Object.assign(t,{model:forced||pick.model,effort:forcedEffort||(forced?null:pick.effort),modelWhy:forced||forcedEffort?'Chọn thủ công':'Tự chọn theo nội dung yêu cầu'});
     // Workflow: a Director planning task first; it creates the steps for the relevant agents when done
     const team=Array.isArray(body.team)?body.team.filter(a=>/^[a-z0-9_-]{1,40}$/i.test(a?.id||'')).slice(0,20).map(a=>({id:a.id,name:short(a.name,60),role:short(a.role,80)})):[];
     if(body.workflow&&team.length){
       const d=team.find(a=>a.id==='director')||team.find(a=>a.id===body.agent)||team[0];
-      Object.assign(t,{kind:'plan',wf:t.id,owner:body.agent,team,agent:d.id,name:d.name,role:d.role,stepTitle:'Lập kế hoạch & phân công',engine:'claude'});
+      // Planning is one short JSON answer: Sonnet 5.5 at medium effort, unless the user forced a stronger model
+      const strong=forced&&MODELS[forced].rank>MODELS[LATEST.sonnet].rank;
+      Object.assign(t,{kind:'plan',wf:t.id,owner:body.agent,team,agent:d.id,name:d.name,role:d.role,stepTitle:'Lập kế hoạch & phân công',engine:'claude',
+        forcedModel:forced,forcedEffort,model:strong?forced:LATEST.sonnet,effort:forcedEffort||'medium',modelWhy:strong?'Chọn thủ công':'Lập kế hoạch'});
     }
     // Dropped files (docx/pdf/images): move them into the task folder and remember them on the task
     const files=consumeFiles(body.files?.map(f=>f?.id),t.wf??t.id,t.cwd);

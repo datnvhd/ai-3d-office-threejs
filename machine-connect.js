@@ -35,7 +35,7 @@ export function initMachineConnect({toast,onStatus=()=>{}}){
     setChip();
     if(!st){body.innerHTML='<p class="claude-note"><span class="spinner"></span> Đang đọc thông tin máy…</p>';return}
     const {host,claude,config,workdir,lastCheck}=st;
-    const authText=claude.auth==='token'?'Token dài hạn đã lưu':claude.auth==='cli'?'Đăng nhập của Claude Code CLI':'<em class="bad">chưa đăng nhập</em>';
+    const authText=claude.auth==='token'?'Token dài hạn đã lưu':'<em class="bad">chưa đăng nhập</em>';
     body.innerHTML=`<h2><span class="cdot ${st.ready?'ok':'off'}"></span> ${st.ready?'Máy cá nhân sẵn sàng nhận việc':'Máy cá nhân chưa sẵn sàng'}</h2>
       <p class="claude-note">Việc giao với nơi thực thi <b>Máy cá nhân</b> được chạy thật bằng Claude Code trên máy này, trong thư mục làm việc bên dưới.</p>
       ${rows([['Tên máy',esc(host.name)],['Hệ điều hành',esc(`${host.os} · ${host.arch}`)],['CPU',esc(`${host.cpu} · ${host.cores} luồng`)],['RAM',`${gb(host.ramFree)} trống / ${gb(host.ramTotal)}`],['Người dùng',esc(host.user)],['Claude Code',claude.found?esc(claude.version||'đã cài'):'<em class="bad">không tìm thấy</em>'],['Xác thực',authText],['Việc đang chạy',`${st.running} đang chạy · ${st.queued} đang chờ`]])}
