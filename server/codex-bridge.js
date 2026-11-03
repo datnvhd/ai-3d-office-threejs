@@ -19,6 +19,13 @@ export function findCodexBinary(){
   const dirs=(process.env.PATH||'').split(isWin?';':':').filter(Boolean);
   for(const n of isWin?['codex.exe','codex.cmd']:['codex'])for(const dir of dirs){
     const p=join(dir,n);if(!existsSync(p))continue;
+    // NVM for Windows: <nvm>\.nodejs\codex.exe is its proxy.exe, which runs codex.cmd through cmd. cmd mangles
+    // arguments that contain quotes (e.g. -c key="value") when the path has spaces, so use the version's codex.js
+    if(n==='codex.exe'&&existsSync(join(dir,'..','proxy.exe'))){
+      const inst=join(dir,'..','installs'),vers=existsSync(inst)?[process.version,...readdirSync(inst).sort().reverse()]:[];
+      const js=vers.map(v=>join(inst,v,'node_modules','@openai','codex','bin','codex.js')).find(existsSync);
+      if(js)return js;
+    }
     if(!n.endsWith('.cmd'))return p;
     const js=join(dirname(p),'node_modules','@openai','codex','bin','codex.js');if(existsSync(js))return js;
   }
@@ -61,8 +68,10 @@ export async function codexAuth(bin){
 
 // Runs `codex exec --json` with the prompt on stdin and streams JSONL events.
 // The done promise resolves with {code,message,usage,error,stderr,timedOut}.
-export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,timeout}){
-  const args=['exec','--json','--skip-git-repo-check','-s',sandbox,'-C',cwd,...extra,'-'];
+// With `resume` (a thread id) it continues that conversation; `exec resume` has no -s/-C, so the sandbox goes in as config
+// (unquoted: the nvm codex.exe shim goes through cmd, which breaks on quotes; Codex reads a non-TOML value as a plain string).
+export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,timeout,resume}){
+  const args=resume?['exec','resume','--json','--skip-git-repo-check','-c',`sandbox_mode=${sandbox}`,...extra,resume,'-']:['exec','--json','--skip-git-repo-check','-s',sandbox,'-C',cwd,...extra,'-'];
   const child=spawn(...cmd(bin,args),{cwd,env:process.env,windowsHide:true});
   const done=new Promise(res=>{
     let buf='',stderr='',message=null,usage=null,error=null,timedOut=false;

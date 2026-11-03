@@ -10,6 +10,7 @@ import {createOutdoor} from './outdoor.js';
 import {initMachineConnect,machineApi} from './machine-connect.js';
 import {createProgressView} from './progress-view.js';
 import {ruleSteps,MODELS,EFFORTS,modelId} from './workflow-plan.js';
+import {initWebMCP} from './webmcp.js';
 const app=document.querySelector('#app');
 // Left column: assign work · right column: what the agents did with it (running, done with result, failed with error)
 app.innerHTML=`<div id="scene"></div><div class="top"><div class="brand"><span class="logo">▦</span><div><b>My Office <i>3D</i></b><small>AI AGENT WORKSPACE</small></div></div><div class="topstats"><span><em class="dot green"></em><b id="active">0</b> AI đang làm việc</span><span><em class="dot orange"></em><b id="queued">0</b> đang xử lý</span><span><em class="dot blue"></em><b id="done">0</b> hoàn thành</span><span><em class="dot red"></em><b id="failed">0</b> lỗi</span></div><div class="actions"><button id="reset">⟲ Đặt lại góc nhìn</button><button id="help">? Hướng dẫn</button></div></div><div class="floatinglabels" id="labels"></div>
@@ -69,7 +70,7 @@ function md(src){
   }
   return out.join('');
 }
-const fromServer=t=>({key:'m'+t.id,rid:t.id,remote:true,agent:t.agent,text:t.text,priority:t.priority,status:t.status,steps:t.steps||0,activity:t.activity,started:t.started?new Date(t.started):null,result:t.result,error:t.error,created:new Date(t.created),finished:t.finished?new Date(t.finished):null,durationMs:t.durationMs,turns:t.turns,costUsd:t.costUsd,cwd:t.cwd,mode:t.mode,host:t.host,engine:t.engine||'claude',web:!!t.web,siteLabels:t.siteLabels||[],fileNames:t.fileNames||[],kind:t.kind,wf:t.wf!=null?'m'+t.wf:null,wfTitle:t.wfTitle,stepTitle:t.stepTitle,model:t.model,effort:t.effort,modelWhy:t.modelWhy,progress:t.status==='done'?100:Math.min(92,8+(t.steps||0)*9)});
+const fromServer=t=>({key:'m'+t.id,rid:t.id,remote:true,agent:t.agent,text:t.text,priority:t.priority,status:t.status,steps:t.steps||0,activity:t.activity,started:t.started?new Date(t.started):null,result:t.result,error:t.error,created:new Date(t.created),finished:t.finished?new Date(t.finished):null,durationMs:t.durationMs,turns:t.turns,costUsd:t.costUsd,cwd:t.cwd,mode:t.mode,host:t.host,engine:t.engine||'claude',web:!!t.web,siteLabels:t.siteLabels||[],fileNames:t.fileNames||[],kind:t.kind,wf:t.wf!=null?'m'+t.wf:null,wfTitle:t.wfTitle,stepTitle:t.stepTitle,model:t.model,effort:t.effort,modelWhy:t.modelWhy,asks:t.asks||0,asking:!!t.asking,rework:t.rework||null,origin:t.origin??null,progress:t.status==='done'?100:Math.min(92,8+(t.steps||0)*9)});
 function selectAgent(id){selected=agentOf(id);$('profile-name').textContent=selected.name;$('profile-role').textContent=selected.role;$('profile-icon').style.background=hex(selected.color);$('profile-icon').textContent=selected.name[0];agents.forEach(a=>a.ring.material.opacity=a.id===id?.95:0);document.querySelectorAll('.tag').forEach((e,i)=>e.classList.toggle('selected',agents[i].id===id));document.querySelectorAll('#avatars [data-agent]').forEach(e=>e.classList.toggle('on',e.dataset.agent===id));renderProfile();renderRunNote()}
 // Which CLI the server runs this agent's tasks with (set in the machine config, Designer → Codex by default)
 const engineOf=id=>machine?.agentEngines?.[id]==='codex'?'codex':'claude';
@@ -91,10 +92,10 @@ function card(j){
   let mid='';
   if(live&&j.remote)mid=`<div class="activity">${j.status==='queued'?'Đang chờ đến lượt…':`Bước ${j.steps} · ${escapeHTML(j.activity||'Đang xử lý…')}`}</div><div class="progress live"><i style="width:${j.progress}%"></i></div><button class="ghost stop" data-cancel="${j.rid}">■ Dừng</button>`;
   else if(live)mid=`<div class="progressrow"><span>${j.priority}</span><b>${j.progress}%</b></div><div class="progress"><i style="width:${j.progress}%"></i></div>`;
-  else if(j.status==='done')mid=`<div class="jobresult"><b>Kết quả</b><div class="restext md">${j.remote?md(j.result):escapeHTML(j.result)}</div></div>`;
+  else if(j.status==='done')mid=`<div class="jobresult"><b>Kết quả</b><div class="restext md">${j.remote?md(j.result):escapeHTML(j.result)}</div></div>${j.remote&&j.kind!=='plan'?'<button class="ghost retry" data-ask>💬 Hỏi thêm</button>':''}`;
   else mid=`<div class="joberr"><b>${j.status==='cancelled'?'Đã dừng':j.remote?'Lỗi':`Lỗi tại ${j.progress}%`}</b>${escapeHTML(j.error)}</div><button class="ghost retry" data-retry="${j.key}">⟲ Thử lại</button>`;
-  const stats=j.remote&&j.finished?[j.durationMs!=null&&`⏱ ${Math.round(j.durationMs/1000)}s`,j.turns!=null&&`${j.turns} lượt`,j.costUsd!=null&&`$${j.costUsd.toFixed(3)}`].filter(Boolean).join(' · '):'';
-  return `<div class="job st-${j.status}" data-job="${j.key}"><div class="jobhead"><span class="tagdot" style="background:${hex(a.color)}"></span><b>${escapeHTML(a.name)}</b>${where}<span class="badge ${GROUP[j.status]==='running'?'running':j.status==='done'?'done':'error'}">${STATUS[j.status]}</span>${live?'':`<button class="delbtn" data-del="${j.key}" title="Xóa việc này">🗑</button>`}</div><div class="jobtext">${escapeHTML(j.text)}</div>${j.fileNames?.length?`<div class="jobfiles">📎 ${j.fileNames.map(escapeHTML).join(', ')}</div>`:''}${mid}<div class="jobmeta">${j.priority} · giao lúc ${clock(j.created)}${j.finished?` · ${j.status==='done'?'xong':'dừng'} lúc ${clock(j.finished)}`:''}${stats?` · ${stats}`:''}${modelTag(j)}</div></div>`;
+  const stats=j.remote&&j.finished?[j.durationMs!=null&&`⏱ ${Math.round(j.durationMs/1000)}s`,j.turns!=null&&`${j.turns} lượt`,j.costUsd!=null&&`$${j.costUsd.toFixed(3)}`,j.asks&&`💬 ${j.asks} câu hỏi thêm`].filter(Boolean).join(' · '):'';
+  return `<div class="job st-${j.status}" data-job="${j.key}"><div class="jobhead"><span class="tagdot" style="background:${hex(a.color)}"></span><b>${escapeHTML(a.name)}</b>${where}<span class="badge ${GROUP[j.status]==='running'?'running':j.status==='done'?'done':'error'}">${STATUS[j.status]}</span>${live?'':`<button class="delbtn" data-del="${j.key}" title="Xóa việc này">🗑</button>`}</div><div class="jobtext">${escapeHTML(j.text)}</div>${j.fileNames?.length?`<div class="jobfiles">📎 ${j.fileNames.map(escapeHTML).join(', ')}</div>`:''}${mid}<div class="jobmeta">${j.priority} · giao lúc ${clock(j.created)}${j.finished&&!live?` · ${j.status==='done'?'xong':'dừng'} lúc ${clock(j.finished)}`:''}${stats?` · ${stats}`:''}${modelTag(j)}</div></div>`;
 }
 // One card per workflow: its plan and steps in order, each row opens that step's progress
 function wfCard(group){
@@ -102,7 +103,7 @@ function wfCard(group){
   const done=steps.filter(j=>j.status==='done').length,bad=steps.some(j=>GROUP[j.status]==='error')||GROUP[plan.status]==='error',live=group.some(j=>GROUP[j.status]==='running');
   const st=bad?'error':live?'running':'done',label=bad?'Có bước lỗi':live?(steps.length?`${done}/${steps.length} bước`:'Đang lập kế hoạch'):'Hoàn thành';
   const row=(j,i)=>{const a=agentOf(j.agent),wait=j.status==='queued'&&j.activity;
-    return `<div class="wfrow st-${j.status}" data-job="${j.key}"><span class="wfnum">${i}</span><span class="tagdot" style="background:${hex(a.color)}"></span><div class="wfinfo"><b>${escapeHTML(a.name)}</b> · ${escapeHTML(j.stepTitle||'')}${modelTag(j)}<small>${GROUP[j.status]==='running'?escapeHTML(wait?j.activity:j.remote?(j.activity||'Đang xử lý…'):j.progress+'%'):GROUP[j.status]==='error'?escapeHTML(j.error||''):j.status==='done'?'✓ Xong'+(j.finished?' lúc '+clock(j.finished):''):''}</small></div><span class="badge ${GROUP[j.status]==='running'?'running':j.status==='done'?'done':'error'}">${wait?'Chờ':STATUS[j.status]}</span>${GROUP[j.status]==='error'?`<button class="linkbtn" data-retry="${j.key}">Thử lại</button>`:''}</div>`};
+    return `<div class="wfrow st-${j.status}${j.rework?' sentback':''}" data-job="${j.key}"><span class="wfnum">${i}</span><span class="tagdot" style="background:${hex(a.color)}"></span><div class="wfinfo"><b>${escapeHTML(a.name)}</b> · ${escapeHTML(j.stepTitle||'')}${modelTag(j)}<small>${GROUP[j.status]==='running'?escapeHTML(wait?j.activity:j.remote?(j.activity||'Đang xử lý…'):j.progress+'%'):GROUP[j.status]==='error'?escapeHTML(j.error||''):j.status==='done'?(j.rework?`↩ Trả lại ${escapeHTML(j.rework.to.join(', '))} để sửa`:'✓ Xong'+(j.finished?' lúc '+clock(j.finished):'')):''}</small></div><span class="badge ${GROUP[j.status]==='running'?'running':j.status==='done'?'done':'error'}">${wait?'Chờ':STATUS[j.status]}</span>${GROUP[j.status]==='error'?`<button class="linkbtn" data-retry="${j.key}">Thử lại</button>`:''}</div>`};
   const last=[...steps].reverse().find(j=>j.status==='done'),allDone=steps.length&&done===steps.length;
   return `<div class="job wf st-${st}"><div class="jobhead"><span class="wficon">🔀</span><b>${escapeHTML(plan.wfTitle||'Luồng công việc')}</b><span class="where">${plan.remote?'💻 Máy':'🎲 Mô phỏng'}</span><span class="badge ${st}">${label}</span>${live?'':`<button class="delbtn" data-del="${plan.key}" title="Xóa cả luồng công việc">🗑</button>`}</div><div class="jobtext">${escapeHTML(plan.text)}</div>
     <div class="wfprog"><i style="width:${steps.length?Math.round(done/steps.length*100):5}%"></i></div><div class="wfsteps">${row(plan,0)}${steps.map((j,i)=>row(j,i+1)).join('')}</div>
@@ -148,8 +149,10 @@ async function syncRemote(){
 }
 // Progress popup (click a character, its label or a result card)
 const cancelJob=async j=>{try{await machineApi(`/tasks/${j.rid}/cancel`,{method:'POST'});toast('Đã yêu cầu dừng nhiệm vụ');syncRemote()}catch(e){toast(e.message)}};
+// Follow-up question on a finished machine task: same conversation, no need to explain the task again
+const askJob=async(j,text)=>{try{await machineApi(`/tasks/${j.rid}/ask`,{method:'POST',body:JSON.stringify({text})});toast(agentOf(j.agent).name+' đang trả lời câu hỏi thêm');syncRemote()}catch(e){toast(e.message);throw e}};
 const retryJob=async j=>{try{if(j.remote){await machineApi(`/tasks/${j.rid}/retry`,{method:'POST'});syncRemote()}else{start(j,.08);if(j.wf)for(const x of sim)if(x.wf===j.wf&&x.blockedBy)Object.assign(x,{status:'queued',error:null,finished:null,blockedBy:null});updateStats()}toast(agentOf(j.agent).name+' đang thử lại nhiệm vụ')}catch(e){toast(e.message)}};
-var pv=createProgressView({agentOf,allJobs,machineApi,md,esc:escapeHTML,hex,STATUS,GROUP,onCancel:cancelJob,onRetry:retryJob,onAssign:id=>{selectAgent(id);taskEl.focus()}});
+var pv=createProgressView({agentOf,allJobs,machineApi,md,esc:escapeHTML,hex,STATUS,GROUP,onCancel:cancelJob,onRetry:retryJob,onAsk:askJob,onAssign:id=>{selectAgent(id);taskEl.focus()}});
 function openAgent(id){selectAgent(id);pv.open(id)}
 const machineUI=initMachineConnect({toast,onStatus:s=>{machine=s;renderRunNote()}});
 $('useWeb').onchange=e=>{useWeb=e.target.checked;try{localStorage.setItem('office-use-web',useWeb?'1':'0')}catch{}renderRunNote()};
@@ -194,18 +197,27 @@ let dragN=0;const dz=taskEl;
 ['dragleave','dragend'].forEach(ev=>dz.addEventListener(ev,()=>{if(--dragN<=0){dragN=0;dz.classList.remove('dropping')}}));
 dz.addEventListener('drop',e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();dragN=0;dz.classList.remove('dropping');addFiles(e.dataTransfer.files)});
 
+// Give a task to an agent; used by the assign button and by the WebMCP tools. Returns the new job.
+async function submitTask({agentId=selected.id,text,priority='Bình thường',where=runOn,model:m=model,effort:ef=effort,workflow,web=useWeb,files=[],siteIds=[]}){
+  const a=agents.find(x=>x.id===agentId);if(!a)throw new Error('Không có nhân viên: '+agentId);
+  text=String(text??'').trim();if(!text)throw new Error('Vui lòng nhập yêu cầu công việc');
+  const wf=a.id==='director'&&(workflow??useWf);let j;
+  if(where==='machine'){
+    if(wf?!machine?.ready:!engineReady(a.id)){const codex=!wf&&engineOf(a.id)==='codex';throw Object.assign(new Error(codex?`${a.name} dùng Codex: hãy đăng nhập Codex (ô Codex trên thanh trên cùng)`:'Máy cá nhân chưa sẵn sàng: kiểm tra kết nối trước khi giao việc'),{openMachine:!codex})}
+    const {task}=await machineApi('/tasks',{method:'POST',body:JSON.stringify({agent:a.id,name:a.name,role:a.role,text,priority,model:m,effort:ef,workflow:wf,team:team(),files,web,siteIds})});
+    j=fromServer(task);remote.unshift(j);prevStatus.set(j.key,j.status);toast(wf?'🔀 Director đang lập kế hoạch và chia việc cho các agent liên quan':`Đã gửi nhiệm vụ cho ${a.name}, chạy trên máy ${task.host}`);syncTimer=setTimeout(syncRemote,800);
+  }else if(wf){const k='s'+(++simId);j=start({key:k,wf:k,kind:'plan',owner:a.id,agent:'director',stepTitle:'Lập kế hoạch & phân công',text,priority,created:new Date()},0);sim.unshift(j);toast('🔀 Director đang lập kế hoạch (mô phỏng)')}
+  else{j=start({key:'s'+(++simId),agent:a.id,text,priority,created:new Date()},.18);sim.unshift(j);toast('Đã giao nhiệm vụ mô phỏng cho '+a.name)}
+  if(filter==='done'||filter==='error')filter='all';updateStats();return j;
+}
 $('assign').onclick=async()=>{
-  const t=taskEl.value.trim(),btn=$('assign'),priority=$('priority').value;if(!t){toast('Vui lòng nhập yêu cầu công việc');taskEl.focus();return}
+  const btn=$('assign');
   if(attachments.some(a=>a.status==='up')){toast('Đang tải tệp đính kèm, vui lòng đợi…');return}
   if(runOn!=='machine'&&attachments.length)toast('Tệp đính kèm chỉ xử lý khi chạy trên Máy cá nhân');
-  if(runOn==='machine'){
-    if(wfOn()?!machine?.ready:!engineReady(selected.id)){if(engineOf(selected.id)==='codex')toast(`${selected.name} dùng Codex: hãy đăng nhập Codex (ô Codex trên thanh trên cùng)`);else{toast('Máy cá nhân chưa sẵn sàng: kiểm tra kết nối trước khi giao việc');machineUI.open()}return}
-    btn.disabled=true;
-    try{const {task}=await machineApi('/tasks',{method:'POST',body:JSON.stringify({agent:selected.id,name:selected.name,role:selected.role,text:t,priority,model,effort,workflow:wfOn(),team:team(),files:attachIds(),web:useWeb,siteIds:useWeb&&$('webSite').value!=='auto'?[$('webSite').value]:[]})});const j=fromServer(task);remote.unshift(j);prevStatus.set(j.key,j.status);toast(wfOn()?'🔀 Director đang lập kế hoạch và chia việc cho các agent liên quan':`Đã gửi nhiệm vụ cho ${selected.name}, chạy trên máy ${task.host}`);syncTimer=setTimeout(syncRemote,800)}
-    catch(e){toast(e.message);return}finally{btn.disabled=false}
-  }else if(wfOn()){const k='s'+(++simId);sim.unshift(start({key:k,wf:k,kind:'plan',owner:selected.id,agent:'director',stepTitle:'Lập kế hoạch & phân công',text:t,priority,created:new Date()},0));toast('🔀 Director đang lập kế hoạch (mô phỏng)')}
-  else{sim.unshift(start({key:'s'+(++simId),agent:selected.id,text:t,priority,created:new Date()},.18));toast('Đã giao nhiệm vụ mô phỏng cho '+selected.name)}
-  taskEl.value='';clearAttach();if(filter==='done'||filter==='error')filter='all';updateStats();
+  btn.disabled=true;
+  try{await submitTask({text:taskEl.value,priority:$('priority').value,files:runOn==='machine'?attachIds():[],siteIds:useWeb&&$('webSite').value!=='auto'?[$('webSite').value]:[]});taskEl.value='';clearAttach()}
+  catch(e){toast(e.message);if(e.openMachine)machineUI.open();else if(!taskEl.value.trim())taskEl.focus()}
+  finally{btn.disabled=false}
 };
 $('resultTabs').onclick=async e=>{if(e.target.closest('[data-clear]')){try{await clearFinished()}catch(err){toast(err.message)}return}const b=e.target.closest('[data-filter]');if(b){filter=b.dataset.filter;renderResults()}};
 $('results').onclick=async e=>{
@@ -215,8 +227,25 @@ $('results').onclick=async e=>{
     if(c){await cancelJob(remote.find(j=>j.rid===+c.dataset.cancel));return}
     if(r){await retryJob(allJobs().find(j=>j.key===r.dataset.retry));return}
   }catch(err){toast(err.message);return}
-  const k=e.target.closest('[data-job]');if(k&&!e.target.closest('.restext')){const j=allJobs().find(j=>j.key===k.dataset.job);selectAgent(j.agent);pv.open(j.agent,j.key)}
+  const k=e.target.closest('[data-job]');if(k&&!e.target.closest('.restext')){const j=allJobs().find(j=>j.key===k.dataset.job);selectAgent(j.agent);pv.open(j.agent,j.key);if(e.target.closest('[data-ask]'))setTimeout(()=>document.querySelector('.pv-ask textarea')?.focus(),500)}
 };
+// Simulation of send-backs: QA or the Director, reviewing for the first time, sends its inputs back 40% of the time;
+// each input gets a fix step, then the reviewer checks again (round 2 always passes)
+function simRework(j){
+  if(j.kind!=='step'||!j.deps?.length||j.round>1||!['qa','director'].includes(j.agent)||Math.random()>.4)return false;
+  const ins=j.deps.map(k=>sim.find(x=>x.key===k)).filter(Boolean);if(!ins.length)return false;
+  let order=Math.max(0,...sim.filter(x=>x.wf===j.wf).map(x=>x.order??0));
+  const reason=j.agent==='qa'?'Phát hiện 2 lỗi: nút gửi không phản hồi trên mobile, thiếu thông báo khi nhập sai.':'Chưa đạt tiêu chí: phần đầu trang chưa nổi bật, màu chưa đúng nhận diện thương hiệu.';
+  const step=(src,over)=>({key:'s'+(++simId),wf:j.wf,kind:'step',order:++order,agent:src.agent,model:src.model,effort:src.effort,modelWhy:src.modelWhy,priority:src.priority,created:new Date(),status:'queued',progress:0,...over});
+  const fixes=ins.map(d=>step(d,{stepTitle:d.stepTitle.replace(/ · sửa lại$/,'')+' · sửa lại',text:`Sửa theo yêu cầu của ${agentOf(j.agent).name}: ${reason}`,deps:[j.key],origin:d.origin||d.key}));
+  const again=step(j,{stepTitle:j.stepTitle+' · vòng 2',text:j.text,deps:fixes.map(f=>f.key),round:2,origin:j.origin||j.key});
+  sim.unshift(...fixes,again);
+  // steps already waiting for the reviewer (or for what was fixed) now wait for the new versions
+  const fresh=new Set([...fixes,again].map(x=>x.key));
+  for(const x of sim)if(x.wf===j.wf&&x.status==='queued'&&!fresh.has(x.key))x.deps=(x.deps||[]).map(k=>k===j.key?again.key:fixes.find(f=>f.origin===k)?.key??k);
+  Object.assign(j,{rework:{to:ins.map(d=>agentOf(d.agent).name),reason},result:`Chưa đạt, trả lại để sửa. ${reason}`});
+  return true;
+}
 function simPlanDone(j){
   const steps=ruleSteps(j.text,j.owner,team()),keys={};j.wfTitle=j.text.length>60?j.text.slice(0,59)+'…':j.text;
   steps.forEach((s,i)=>{const key='s'+(++simId);keys[s.key]=key;sim.unshift({key,wf:j.wf,kind:'step',order:i,agent:s.agent,stepTitle:s.title,text:s.task,model:MODELS[model]?model:s.model,effort:EFFORTS[effort]?effort:MODELS[model]?null:s.effort,modelWhy:MODELS[model]||EFFORTS[effort]?'Chọn thủ công':s.why,priority:j.priority,created:new Date(),status:'queued',progress:0,deps:s.after.map(k=>keys[k])})});
@@ -227,9 +256,9 @@ setInterval(()=>{let changed=false;
     const bad=deps.find(d=>!d||GROUP[d.status]==='error');
     if(bad){Object.assign(j,{status:'cancelled',blockedBy:bad?.key||'?',error:`Dừng vì bước trước chưa xong: ${bad?agentOf(bad.agent).name:''}`,finished:new Date()});changed=true}
     else{const w=deps.filter(d=>d.status!=='done');if(w.length)j.activity='Chờ '+w.map(d=>agentOf(d.agent).name).join(', ')+' hoàn thành';else{start(j,.1);j.activity=null;changed=true}}}
-  for(const j of sim){if(j.status!=='running')continue;changed=true;j.progress=Math.min(100,j.progress+Math.ceil(Math.random()*8));const a=agentOf(j.agent);
+  for(const j of [...sim]){if(j.status!=='running')continue;changed=true;j.progress=Math.min(100,j.progress+Math.ceil(Math.random()*8));const a=agentOf(j.agent);
   if(j.failAt!==null&&j.progress>=j.failAt){j.progress=j.failAt;j.status='error';j.error=ERRORS[Math.random()*ERRORS.length|0];j.finished=new Date();toast(`⚠ ${a.name} gặp lỗi khi xử lý nhiệm vụ`)}
-  else if(j.progress>=100){j.status='done';if(j.kind==='plan')simPlanDone(j);else j.result=RESULTS[a.id][Math.random()*2|0];j.finished=new Date();toast(`✓ ${a.name} đã hoàn thành nhiệm vụ`)}}
+  else if(j.progress>=100){j.status='done';j.finished=new Date();if(j.kind==='plan')simPlanDone(j);else if(simRework(j)){toast(`↩ ${a.name} trả lại cho ${j.rework.to.join(', ')} để sửa`);continue}else j.result=RESULTS[a.id][Math.random()*2|0];toast(`✓ ${a.name} đã hoàn thành nhiệm vụ`)}}
   if(changed)updateStats()},2200);
 selectAgent(selected.id);renderRunNote();updateStats();syncRemote();
 const HOME_VIEW=[Math.PI/4,.96,20.5];$('reset').onclick=()=>{[theta,phi,dist]=HOME_VIEW;updateCamera()};const guide=$('guide');$('help').onclick=()=>guide.classList.remove('hidden');$('closeguide').onclick=$('okguide').onclick=()=>guide.classList.add('hidden');
@@ -243,3 +272,5 @@ let savedScene='day';try{savedScene=new URLSearchParams(location.search).get('sc
 
 initClaudeConnect({toast});
 initCodexConnect({toast,onChange:()=>machineUI.refresh()});
+// Tools for in-browser AI agents (WebMCP); no-op where unsupported
+initWebMCP({agents,allJobs,submitTask,cancelJob,retryJob,askJob,machineApi,scenes:room.scenes,applyScene,MODELS,EFFORTS,STATUS,GROUP});

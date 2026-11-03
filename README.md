@@ -43,3 +43,37 @@ Put `.glb` files in `public/models/` to replace the built-in characters (`charac
 ## Attachments (drag & drop files)
 
 Drop files on the task box — or use **📎 Đính kèm tệp** — to send them with the request (`POST /api/machine/upload`, then the task POST carries the ids). Supported: PDF, Word (`.docx`), images (PNG/JPG/GIF/WebP) and text (`.txt`/`.md`/`.csv`); up to 6 files, 25MB each. Images and PDFs are read by the agent from disk; `.docx` and text files are extracted to plain text and inlined in the prompt (so both Claude Code and Codex get them, and Codex also receives images via `-i`). Files are copied into `<workdir>/.ai-office-files/<task id>/` for the run and removed when the task (or its workflow) is deleted. Attachments flow to every step of an auto workflow. Only used on the **Máy cá nhân** runner, not in simulation.
+
+## WebMCP (tools for in-browser AI agents)
+
+`webmcp.js` registers the office as [WebMCP](https://developer.chrome.com/docs/ai/webmcp) tools, so an AI agent running in the browser (e.g. a Chrome extension such as Google's example agent or the Model Context Tool Inspector) can use it:
+
+| Tool | What it does |
+|---|---|
+| `list_agents` | agents (id, name, role) and how many tasks each is running |
+| `list_tasks` | tasks, newest first; filter by `status` (running / done / error) and `agent` |
+| `get_task` | one task with its full result or error, model, cost and timing |
+| `assign_task` | give a task to an agent (same as the **Giao việc** button; options left out use the page's current settings) |
+| `ask_task` | ask a follow-up question about a finished machine task (same conversation); `get_task` then shows the `thread` of questions and answers |
+| `cancel_task` / `retry_task` | stop a running machine task / run a failed or stopped one again |
+| `set_scene` | change the scenery outside (`day`, `sunset`, `campus`) |
+
+`assign_task`, `ask_task`, `cancel_task` and `retry_task` are marked `consequentialHint`, so the browser asks the user before running them: on **Máy cá nhân** a task runs Claude Code / Codex for real. Tools are only visible to the page's own origin. WebMCP is experimental: it needs Chrome 149+ with the origin trial, or `chrome://flags/#enable-webmcp-testing` for local development. In other browsers nothing is registered and the app works as before. Attachments and the site picker are not available through the tools.
+
+## Follow-up questions (Hỏi thêm)
+
+A finished task on **Máy cá nhân** can be asked more without explaining it again: **💬 Hỏi thêm** on the result card, or the box under **HỎI THÊM** in the progress popup (Enter sends, Shift+Enter adds a line). The question continues the task's own conversation: Claude Code tasks keep their session id and run `claude -p --resume <id>`; Codex tasks keep their thread id and run `codex exec resume <id>`. Both use the task's original folder, permissions, model and web tools. If the session can no longer be opened, the question is sent once more with a recap of the task, its result and earlier questions. Answers are shown as a thread under the result (up to 30 per task) and their cost and turns are added to the task's totals; a failed or stopped question leaves the task done with the error on that question. Not available for simulated tasks or the Director's planning step (ask the steps it created instead). `POST /api/machine/tasks/:id/ask {text}` is the API.
+
+## Opening local files in web tasks
+
+Playwright MCP blocks `file://` URLs (allowing them would open the whole disk to the agent's browser). Instead, a web task opens files from its working folder over http: `http://localhost:<port>/api/machine/preview/<task id>/<relative path>`, e.g. `.../preview/39/sungroup-landing/index.html`. The prompt tells the agent this; CSS, JS and images load normally. Only files inside that task's folder are served (paths outside get 403) and, like the rest of `/api/machine`, only to this computer.
+
+## Sending work back (trả lại để sửa)
+
+Any workflow step can send earlier steps back to be fixed: QA → dev when a test fails, the Director → designer/devs when a review does not pass, a dev → designer when the design cannot be built, and so on. Each step's prompt lists the earlier steps (#1, #2… in plan order); the agent writes its full review, then ends with a `rework` block (`{"to":[3],"reason":"…"}`), parsed by `parseRework()` in `workflow-plan.js`. The server then:
+
+1. adds a **· sửa lại** step for each target, which continues that agent's own session (`--resume` / `codex exec resume`) and gets the review as input; steps between the target and the reviewer are redone too;
+2. adds the reviewer again as **· vòng N**, after the fixes, to check everything again;
+3. makes steps that were already waiting (e.g. a hand-over after QA) wait for the newest versions instead.
+
+Each step can send back at most `MAX_REWORK` (3) times; if it still does not pass, that step ends with an error and the workflow stops for the user to decide (retry it, or ask it a follow-up). In simulation, QA or the Director sends back once 40% of the time.

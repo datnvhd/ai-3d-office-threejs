@@ -95,6 +95,7 @@ Quy tắc:
 - Ví dụ: "Tạo trang đăng nhập" → designer thiết kế → director duyệt thiết kế → frontend dựng giao diện + backend làm API (song song) → qa kiểm thử.
 - Ví dụ: "Sửa lỗi không đăng nhập được" → frontend/backend sửa lỗi → qa kiểm thử lại.
 - Ví dụ: "Phân tích doanh thu quý" → analyst phân tích → director tổng hợp & duyệt.
+- Bước nào cũng được TRẢ LẠI bước trước để sửa khi chưa đạt (hệ thống tự lặp: sửa → kiểm tra lại, tối đa ${MAX_REWORK} lần mỗi bước). Vì vậy với việc cần chất lượng, đặt bước qa kiểm thử hoặc director duyệt sau bước làm, và ghi rõ tiêu chí đạt trong "task" của bước kiểm tra đó.
 - Chọn "model" và "effort" cho TỪNG bước: tổ hợp rẻ nhất mà vẫn làm tốt bước đó. Giá: USD cho 1 triệu token vào/ra.
   · "claude-haiku-5-5" (0,1/0,5, rẻ nhất, nhanh): việc đơn giản, máy móc: dịch, chính tả, định dạng, tóm tắt, trích thông tin có sẵn, tra một giá trị, điền form theo dữ liệu cho trước.
   · "claude-sonnet-5-5" (2/10): phần lớn công việc: tra cứu và phân tích giá/thị trường, nghiên cứu, so sánh, phân tích dữ liệu, tổng hợp báo cáo, thao tác web nhiều bước, viết code, sửa lỗi thông thường, viết và chạy test, duyệt thiết kế.
@@ -124,4 +125,31 @@ export function parsePlan(raw,team){
     keys.add(key);
   }
   return {title:String(p.title||'').slice(0,80),steps};
+}
+
+// ---------- Send back for rework ----------
+// Any workflow step may send earlier steps back to be fixed (QA → dev, Director → designer…). The server (and the
+// simulation) then runs a fix step for each, redoes the steps in between, and gives the reviewer another round.
+export const MAX_REWORK=3;
+// Prompt part for a step that has earlier steps: prev = [{no,name,title}], left = send-backs this step has left
+export function reworkGuide(prev,left){
+  return `
+TRẢ LẠI ĐỂ SỬA: nếu phần việc của bước trước còn lỗi hoặc chưa đạt yêu cầu gốc đến mức phải sửa (không dùng cho góp ý nhỏ), bạn được trả lại cho agent đã làm bước đó. Hệ thống sẽ cho agent đó sửa, rồi giao lại cho bạn kiểm tra.
+Các bước trước:
+${prev.map(p=>`- #${p.no} ${p.name} · ${p.title}`).join('\n')}
+Cách trả lại: vẫn viết đầy đủ đánh giá (lỗi cụ thể, cách tái hiện, tiêu chí chưa đạt, cách sửa đề xuất), rồi đặt ở CUỐI CÙNG (sau phần "Kết quả:") đúng một khối:
+\`\`\`rework
+{"to":[${prev[prev.length-1].no}],"reason":"tóm tắt ngắn điều phải sửa"}
+\`\`\`
+"to" là số thứ tự các bước cần sửa (một hoặc nhiều). Đạt yêu cầu thì KHÔNG thêm khối này.
+${left>0?`Bạn còn ${left} lần trả lại.`:'Đã hết lượt trả lại: nếu vẫn chưa đạt, vẫn thêm khối rework; luồng sẽ dừng để người dùng quyết định.'}
+`;
+}
+// Finds the rework block in a step's answer: {to:[step numbers], reason, clean: the answer without the block} or null
+export function parseRework(text){
+  const m=String(text||'').match(/```rework\s*([\s\S]*?)```/i);if(!m)return null;
+  let j;try{j=JSON.parse(m[1])}catch{return null}
+  const to=[...new Set((Array.isArray(j?.to)?j.to:[j?.to]).map(Number).filter(n=>Number.isInteger(n)&&n>0))];
+  if(!to.length)return null;
+  return {to,reason:String(j.reason||'').trim().slice(0,600)||'Chưa đạt yêu cầu',clean:String(text).replace(m[0],'').trim()};
 }

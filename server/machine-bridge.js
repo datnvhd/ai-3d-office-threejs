@@ -1,6 +1,7 @@
 // Vite dev-server plugin: the "personal machine" side of the office. Reports this computer's info, runs a
 // health check, and executes assigned tasks for real with Claude Code (`claude -p`) in a chosen working folder.
 // Tasks never bypass Claude Code's permission system: 'default' (read & analyse) or 'acceptEdits' (edit files in the folder).
+// WebSearch and WebFetch are pre-approved (read-only lookups); in -p mode there is nobody to approve them otherwise.
 // Web tasks also get a real Chrome through Playwright MCP; saved site passwords reach the browser as Playwright
 // "secrets" (the agent types the secret's name), so Claude never sees them.
 import {spawn} from 'node:child_process';
@@ -8,13 +9,13 @@ import {existsSync,statSync,mkdirSync,readFileSync,writeFileSync,rmSync,readdirS
 import {inflateRawSync} from 'node:zlib';
 import {createRequire} from 'node:module';
 import os from 'node:os';
-import {join,resolve,isAbsolute,dirname,basename} from 'node:path';
+import {join,resolve,isAbsolute,dirname,basename,relative,extname} from 'node:path';
 import {STORE_DIR,cleanEnv,run,findClaudeBinary,killTree,getSavedClaudeToken} from './claude-bridge.js';
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
-import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel} from '../workflow-plan.js';
+import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework} from '../workflow-plan.js';
 
 const CONFIG_FILE=join(STORE_DIR,'machine.json'),TASKS_FILE=join(STORE_DIR,'tasks.json'),SITES_FILE=join(STORE_DIR,'sites.json'),RUNS_DIR=join(STORE_DIR,'runs'),UPLOADS_DIR=join(STORE_DIR,'uploads');
-const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,KEEP=100;
+const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,KEEP=200;
 // Files droppable on the task box: images and PDF are read by the agent from disk; text/Word are extracted and inlined
 const FILE_KINDS={pdf:'pdf',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',docx:'text',txt:'text',md:'text',csv:'text'};
 const MAX_FILE=25*1024*1024,MAX_FILES=6,ATTACH_SUBDIR='.ai-office-files';
@@ -65,6 +66,7 @@ const MODEL_MISSING=/not_found_error|may not exist|not have access to (it|this m
 const modelArgs=t=>[...(t.model?['--model',modelId(t.model)||t.model]:[]),...(EFFORTS[t.effort]?['--effort',t.effort]:[])];
 // Browser tools web tasks never need; run_code_unsafe would also run arbitrary code next to the secrets file
 const WEB_TOOLS_OFF=['run_code_unsafe','network_requests','network_request','emulate_media','drag','drop','resize','console_messages'].map(n=>`mcp__browser__browser_${n}`);
+const PREVIEW_TYPES={'.html':'text/html; charset=utf-8','.htm':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.ico':'image/x-icon','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.pdf':'application/pdf','.mp4':'video/mp4','.webm':'video/webm'};
 const MODES={default:'Chỉ đọc & phân tích',acceptEdits:'Cho phép tạo/sửa file trong thư mục làm việc'};
 const DEFAULT_WORKDIR=join(os.homedir(),'AI-Office-Workspace');
 // Which CLI runs each agent's tasks; agents not listed use Claude Code
@@ -91,13 +93,14 @@ function describeTool({name,input={}}){
 
 export function machineBridge(){
   let bin=null,binChecked=false,version=null;
+  let port=5173;// the dev server's real port, set once it listens; web tasks open their files through it
   let config={workdir:DEFAULT_WORKDIR,mode:'default',browserVisible:true,...readJson(CONFIG_FILE,{})};
   config.agentEngines={...DEFAULT_AGENT_ENGINES,...config.agentEngines};
   const engineOf=agent=>config.agentEngines[agent]==='codex'?'codex':'claude';
   let codexBin=null,codexChecked=false,codexVersion=null,codexAuthCache=null;
   let lastCheck=readJson(CONFIG_FILE,{}).lastCheck||null;
   // Tasks interrupted by a server restart cannot be resumed
-  let tasks=readJson(TASKS_FILE,[]).map(t=>t.status==='running'||t.status==='queued'?{...t,status:'error',error:'Server đã khởi động lại khi việc đang chạy.',finished:t.finished||new Date().toISOString()}:t);
+  let tasks=readJson(TASKS_FILE,[]).map(t=>t.status!=='running'&&t.status!=='queued'?t:t.asking?{...t,status:'done',asking:false,activity:null,thread:t.thread.map((x,i,a)=>i===a.length-1&&!x.answer&&!x.error?{...x,error:'Server đã khởi động lại khi đang trả lời.'}:x)}:{...t,status:'error',error:'Server đã khởi động lại khi việc đang chạy.',finished:t.finished||new Date().toISOString()});
   let nextId=tasks.reduce((m,t)=>Math.max(m,t.id),0)+1;
   const procs=new Map();
   // Files uploaded but not yet attached to a task: id -> {path,name,kind,ext,at}. Dropped after an hour if unused.
@@ -226,6 +229,101 @@ Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
 ${t.text}`;
   }
+  // Follow-up question on a finished task. A resumed session already has the context; without one, recap it.
+  function askPrompt(t,ask,resumed){
+    const q=`Người dùng hỏi thêm về nhiệm vụ này. Trả lời dựa trên ngữ cảnh đã có; chỉ làm thêm việc khi câu hỏi cần, không làm lại từ đầu. Giữ nguyên vai trò, chế độ quyền và trả lời bằng tiếng Việt.
+Câu hỏi thêm:
+${ask.q}`;
+    if(resumed)return q;
+    const prev=t.thread.slice(0,-1).filter(x=>x.answer);
+    return `${prompt(t)}
+
+--- BẠN ĐÃ HOÀN THÀNH NHIỆM VỤ TRÊN ---
+Kết quả bạn đã trả lời:
+${String(t.result||'').slice(0,6000)}
+${prev.map(x=>`
+Người dùng hỏi thêm: ${x.q}
+Bạn trả lời: ${String(x.answer).slice(0,3000)}`).join('\n')}
+
+${q}`;
+  }
+  // A task that cannot start: a follow-up keeps the task done and puts the error on the question
+  function fail(t,msg){
+    const now=new Date().toISOString();
+    if(t.asking){Object.assign(t.thread.at(-1),{error:msg,finished:now});Object.assign(t,{status:'done',asking:false,activity:null})}
+    else Object.assign(t,{status:'error',error:msg,finished:now});
+    save();
+  }
+  // Ends a follow-up run: answer or error on the question, the task back to done, cost and turns added up
+  function endAsk(t,ask,{answer,error,cost,turns}){
+    Object.assign(ask,{answer:answer?redact(String(answer).slice(0,20000)):null,error:answer?null:redact(error),finished:new Date().toISOString(),costUsd:cost??null});
+    Object.assign(t,{status:'done',asking:false,activity:null,costUsd:cost!=null?(t.costUsd||0)+cost:t.costUsd,turns:turns?(t.turns||0)+turns:t.turns});
+    save();pump();
+  }
+  // ---------- send back for rework ----------
+  // Plan steps keep their id; a rework copy points to the plan step it redoes with `origin`. Steps are numbered
+  // #1, #2… in plan order, which is what agents use to say where their send-back goes.
+  const originOf=x=>x.origin??x.id;
+  const planSteps=wf=>tasks.filter(x=>x.wf===wf&&x.kind==='step'&&x.origin==null).sort((a,b)=>a.id-b.id);
+  const newest=(wf,o)=>tasks.filter(x=>x.wf===wf&&x.kind==='step'&&originOf(x)===o).sort((a,b)=>b.id-a.id)[0];
+  const planDepsOf=x=>(x.planDeps??x.deps??[]).map(d=>{const y=tasks.find(z=>z.id===d);return y?originOf(y):d});
+  // Plan steps that a plan step builds on, directly or through others
+  function ancestors(wf,o){
+    const plan=planSteps(wf),seen=new Set();
+    const walk=id=>{const x=plan.find(p=>p.id===id);for(const d of x?planDepsOf(x):[])if(!seen.has(d)){seen.add(d);walk(d)}};
+    walk(o);return seen;
+  }
+  const sentBack=(wf,o)=>tasks.filter(x=>x.wf===wf&&x.rework&&originOf(x)===o).length;
+  function backTo(t){
+    if(t.wf==null)return '';
+    const plan=planSteps(t.wf),anc=ancestors(t.wf,originOf(t)),prev=plan.filter(p=>anc.has(p.id));
+    return prev.length?reworkGuide(prev.map(p=>({no:plan.indexOf(p)+1,name:p.name,title:p.stepTitle})),MAX_REWORK-sentBack(t.wf,originOf(t))):'';
+  }
+  // A finished step that sent work back: fix steps for the targets and the steps between them and this one,
+  // then this step again; later steps wait for the newest versions. Over the limit, the workflow stops here.
+  function checkRework(t){
+    const rw=parseRework(t.result);if(!rw)return;
+    t.result=rw.clean;
+    const o=originOf(t),plan=planSteps(t.wf),anc=ancestors(t.wf,o),no=id=>plan.findIndex(p=>p.id===id)+1;
+    const targets=rw.to.map(n=>plan[n-1]?.id).filter(id=>id!=null&&anc.has(id));
+    if(!targets.length){t.result+='\n\n_(Yêu cầu trả lại bị bỏ qua vì không trỏ tới bước trước hợp lệ.)_';return}
+    const used=sentBack(t.wf,o);
+    t.rework={to:targets.map(id=>`#${no(id)} ${plan[no(id)-1].name}`),reason:rw.reason};
+    if(used>=MAX_REWORK){Object.assign(t,{status:'error',error:`Vẫn chưa đạt sau ${MAX_REWORK} lần trả lại sửa: ${rw.reason}`});return}
+    const redo=plan.filter(p=>anc.has(p.id)&&(targets.includes(p.id)||[...ancestors(t.wf,p.id)].some(a=>targets.includes(a))));
+    const made={},now=new Date().toISOString();
+    const depsFor=x=>planDepsOf(x).map(d=>made[d]??newest(t.wf,d)?.id).filter(Boolean);
+    const copy=(src,over)=>({id:nextId++,kind:'step',wf:src.wf,wfTitle:src.wfTitle,request:src.request,agent:src.agent,name:src.name,role:src.role,priority:src.priority,
+      model:src.model,effort:src.effort,modelWhy:src.modelWhy,cwd:src.cwd,mode:src.mode,host:src.host,web:src.web,siteIds:src.siteIds,files:src.files,fileNames:src.fileNames,
+      status:'queued',created:now,...over});
+    for(const p of redo){// plan order, so a step's own fixes are made before the steps that use them
+      const prev=newest(t.wf,p.id),target=targets.includes(p.id),deps=[t.id,...depsFor(p)];
+      const why=target?`Bước #${no(o)} ${t.name} · ${t.stepTitle} đã TRẢ LẠI phần việc của bạn để sửa.
+Lý do: ${rw.reason}
+(Đánh giá đầy đủ nằm trong "Kết quả các bước trước".) Hãy sửa cho đạt và nêu rõ đã sửa những gì.`
+        :`Các bước trước phần việc của bạn đã được sửa lại theo yêu cầu của ${t.name}: ${rw.reason}
+Cập nhật phần việc của bạn cho khớp với kết quả mới và nêu rõ đã thay đổi gì.`;
+      const t2=copy(prev,{origin:p.id,stepTitle:`${p.stepTitle} · sửa lại`,deps,engine:prev.engine,resumeSession:prev.session||null,resumeThread:prev.codexThread||null,
+        text:`${why}
+
+Việc gốc của bạn: ${p.text}${prev.session||prev.codexThread?'':`
+
+Kết quả lần trước của bạn:
+${String(prev.result||'').slice(0,3000)}`}`});
+      made[p.id]=t2.id;tasks.unshift(t2);
+    }
+    const base=plan.find(p=>p.id===o)||t,round=used+2;
+    const again=copy(t,{origin:o,stepTitle:`${base.stepTitle} · vòng ${round}`,deps:depsFor(base),engine:t.engine,resumeSession:t.session||null,resumeThread:t.codexThread||null,
+      text:`${base.text}
+
+ĐÂY LÀ LẦN KIỂM TRA LẠI (vòng ${round}): lần trước bạn đã trả lại để sửa vì: ${rw.reason}
+Các bước đã sửa xong (xem "Kết quả các bước trước"). Kiểm tra lại toàn bộ, đặc biệt các điểm đã báo.`});
+    tasks.unshift(again);
+    // steps already waiting (e.g. a deploy after QA) now wait for the newest version of each step they depend on
+    const fresh=new Set([...Object.values(made),again.id]);
+    for(const x of tasks)if(x.wf===t.wf&&x.kind==='step'&&x.status==='queued'&&!fresh.has(x.id))
+      x.deps=(x.deps||[]).map(d=>{const y=tasks.find(z=>z.id===d);return y?newest(t.wf,originOf(y)).id:d});
+  }
   // A workflow step sees the user's original request and the results of the steps it waits for
   function stepContext(t){
     const prev=(t.deps||[]).map(id=>tasks.find(x=>x.id===id)).filter(Boolean);
@@ -235,7 +333,7 @@ Yêu cầu gốc của người dùng: ${t.request}
 ${prev.length?`Kết quả các bước trước (dùng làm đầu vào cho bước này):
 ${prev.map(p=>`--- ${p.name} · ${p.stepTitle} ---\n${String(p.result||'').slice(0,3500)}`).join('\n')}
 `:''}Chỉ làm phần việc của bước này; các bước khác do agent khác đảm nhận.
-`;
+${backTo(t)}`;
   }
   // Sites given to a web task: the ones the user picked, otherwise those whose host appears in the request
   function sitesFor(t){
@@ -255,6 +353,7 @@ TIẾT KIỆM TOKEN (bắt buộc): một trang đọc toàn bộ có thể dài
 ${list.length?`Tài khoản đăng nhập đã lưu (dùng khi trang yêu cầu đăng nhập):
 ${list.map((s,i)=>`- ${s.label} · ${s.url} · tên đăng nhập: ${s.username||'(không có)'} · mật khẩu: gõ CHÍNH XÁC chuỗi SITE_${i+1}_PASSWORD vào ô mật khẩu (bằng browser_type hoặc browser_fill_form). Hệ thống tự thay bằng mật khẩu thật; bạn không biết và không cần biết mật khẩu.`).join('\n')}
 Không bao giờ in, lưu ra file hay gửi đi mật khẩu. Nếu đăng nhập thất bại, mô tả thông báo lỗi trên trang thay vì thử lại nhiều lần.`:'Chưa có tài khoản đăng nhập nào được cung cấp cho nhiệm vụ này; nếu trang đòi đăng nhập, dừng lại và báo cho người dùng.'}
+XEM FILE TRÊN MÁY: trình duyệt chặn link file:// . Để mở một file trong thư mục làm việc (ví dụ trang HTML bạn vừa tạo), dùng http://localhost:${port}/api/machine/preview/${t.id}/<đường dẫn tương đối trong thư mục làm việc>, ví dụ http://localhost:${port}/api/machine/preview/${t.id}/ten-du-an/index.html (CSS, JS, ảnh đi kèm tải được bình thường).
 Khi xong việc trên web, đóng trình duyệt bằng browser_close.
 `;
   }
@@ -262,7 +361,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   function webSetup(t){
     if(!MCP_CLI)throw new Error('Chưa cài Playwright MCP (@playwright/mcp). Chạy npm install trong thư mục dự án.');
     const browser=findBrowser();if(!browser)throw new Error('Không tìm thấy Chrome hoặc Edge trên máy để agent dùng.');
-    const dir=join(RUNS_DIR,String(t.id));rmSync(dir,{recursive:true,force:true});mkdirSync(dir,{recursive:true});
+    const dir=join(RUNS_DIR,String(t.id));if(!t.asking)rmSync(dir,{recursive:true,force:true});mkdirSync(dir,{recursive:true});
     const secrets=join(dir,'secrets.env'),list=sitesFor(t);
     writeFileSync(secrets,list.map((s,i)=>`SITE_${i+1}_PASSWORD=${quoteEnv(s.password||'')}`).join('\n')+'\n',{mode:0o600});
     // Token savers: no page snapshot or generated Playwright code after each action, console errors only,
@@ -272,8 +371,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args}}}));
     t.siteLabels=list.map(s=>s.label);t.browser=browser;
     // Only the built-in tools a web task needs, and none of the browser tools it never uses (their schemas cost tokens every turn)
-    const tools=['Read','Glob','Grep','WebFetch',...(t.mode==='acceptEdits'?['Write','Edit']:[])];
-    return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','--disallowedTools',...WEB_TOOLS_OFF]};
+    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'?['Write','Edit']:[])];
+    return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','WebSearch','--disallowedTools',...WEB_TOOLS_OFF]};
   }
   // Workflow steps wait for their dependencies; if one fails or is stopped, the steps after it stop too
   function depState(t){
@@ -298,22 +397,25 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   }
   function start(t){
     if(t.kind==='plan')return startPlan(t);
-    t.engine=engineOf(t.agent);
+    if(!t.asking)t.engine=engineOf(t.agent);// a follow-up stays with the engine that holds the conversation
     // Codex not signed in: keep the workflow moving with Claude Code and say so in the log
     if(t.engine==='codex'&&codexAuthCache&&!codexAuthCache.kind&&bin){t.engine='claude';t.fallback='Codex chưa đăng nhập nên bước này chạy bằng Claude Code.'}
     if(t.engine==='codex')return startCodex(t);
     const wd=workdirState(t.cwd);
-    if(!bin||!getSavedClaudeToken()||!wd.writable){Object.assign(t,{status:'error',error:!bin?'Không tìm thấy Claude Code CLI trên máy.':!getSavedClaudeToken()?'Chưa đăng nhập tài khoản Claude trong ứng dụng.':`Thư mục làm việc không dùng được: ${t.cwd}`,finished:new Date().toISOString()});save();return}
+    if(!bin||!getSavedClaudeToken()||!wd.writable)return fail(t,!bin?'Không tìm thấy Claude Code CLI trên máy.':!getSavedClaudeToken()?'Chưa đăng nhập tài khoản Claude trong ứng dụng.':`Thư mục làm việc không dùng được: ${t.cwd}`);
     let web=null;
-    if(t.web)try{web=webSetup(t)}catch(e){Object.assign(t,{status:'error',error:e.message,finished:new Date().toISOString()});save();return}
-    Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Claude Code…',log:[]});
+    if(t.web)try{web=webSetup(t)}catch(e){return fail(t,e.message)}
+    const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.session);
+    if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
+    else Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Claude Code…',log:[]});
     // Step log for the progress popup: init, tool calls, their (shortened) output and Claude's own messages
     const note=(kind,text,isActivity=true)=>{text=redact(text);t.log.push({at:Date.now(),kind,text});if(t.log.length>200)t.log.shift();if(isActivity)t.activity=short(text,120)};
-    if(t.fallback)note('denied',t.fallback,false);
+    if(t.fallback&&!ask)note('denied',t.fallback,false);
+    if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     const outText=c=>Array.isArray(c)?c.map(x=>x.type==='text'?x.text:x.type==='image'?'[hình ảnh]':'').join(' '):String(c??'');
     const turns=String(t.web?WEB_TURNS:MAX_TURNS);
     // Browser tools loaded up front: saves the opening ToolSearch turn
-    const {child,done}=claude(['--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...(web?.args||[])],{cwd:t.cwd,input:prompt(t),timeout:TASK_TIMEOUT,env:web?{ENABLE_TOOL_SEARCH:'false'}:{},onEvent:ev=>{
+    const {child,done}=claude([...(resume?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...(web?.args||['--allowedTools','WebSearch,WebFetch'])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):prompt(t),timeout:TASK_TIMEOUT,env:web?{ENABLE_TOOL_SEARCH:'false'}:{},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
       if(ev.type==='system'&&ev.subtype==='init'&&web){const b=(ev.mcp_servers||[]).find(s=>s.name==='browser');if(b&&b.status!=='connected')note('denied',`Trình duyệt chưa sẵn sàng (${b.status})`,false)}
       if(ev.type==='system'&&ev.subtype==='init')note('init',`Đã khởi động Claude Code · model ${ev.model||'?'}${t.effort?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`);
       if(ev.type==='assistant')for(const c of ev.message?.content||[]){
@@ -333,8 +435,15 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         Object.assign(t,{status:'queued',model:latest,fallback:`${modelLabel(id)} không dùng được với tài khoản này, chạy lại bằng ${modelLabel(latest)}.`,activity:null});
         save();pump();return;
       }
+      if(ask){
+        // the saved session is gone (e.g. Claude data cleared): ask again once with a recap instead
+        if(!ok&&!cancelled&&resume&&/no conversation found|session/i.test(`${r?.result||''} ${out.stderr}`)){t.session=null;t.status='queued';note('denied','Không mở lại được phiên cũ, hỏi lại kèm tóm tắt ngữ cảnh.',false);save();pump();return}
+        return endAsk(t,ask,{answer:ok&&r.result,error:resultError(r,out,cancelled),cost:r?.total_cost_usd,turns:r?.num_turns});
+      }
+      if(!ok&&!cancelled&&t.resumeSession&&/no conversation found/i.test(`${r?.result||''} ${out.stderr}`)){t.resumeSession=null;t.status='queued';save();pump();return}
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(r.result||'').slice(0,20000)):null,error:ok?null:redact(resultError(r,out,cancelled)),
         durationMs:r?.duration_ms??(Date.now()-Date.parse(t.started)),turns:r?.num_turns??null,costUsd:r?.total_cost_usd??null,activity:null});
+      if(ok&&t.kind==='step')checkRework(t);
       save();pump();
     });
   }
@@ -358,7 +467,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       const ids={},who=id=>t.team.find(a=>a.id===id);
       for(const s of plan.steps){
         const a=who(s.agent),id=nextId++;ids[s.key]=id;
-        tasks.unshift({id,kind:'step',wf:t.id,wfTitle:t.wfTitle,stepTitle:s.title,request:t.text,deps:s.after.map(k=>ids[k]).filter(Boolean),
+        tasks.unshift({id,kind:'step',wf:t.id,wfTitle:t.wfTitle,stepTitle:s.title,request:t.text,deps:s.after.map(k=>ids[k]).filter(Boolean),planDeps:s.after.map(k=>ids[k]).filter(Boolean),
           agent:s.agent,name:a.name,role:a.role,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
           model:t.forcedModel||s.model,effort:t.forcedEffort||(t.forcedModel?null:s.effort),modelWhy:t.forcedModel||t.forcedEffort?'Chọn thủ công':s.why||'Director chọn',
           cwd:t.cwd,mode:t.mode,host:t.host,web:t.web,siteIds:t.siteIds,engine:engineOf(s.agent),files:t.files,fileNames:t.fileNames});
@@ -374,18 +483,23 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   // Same task flow as Claude, run by `codex exec`: read-only sandbox for 'default', workspace-write for 'acceptEdits'
   function startCodex(t){
     const wd=workdirState(t.cwd);
-    if(!codexBin||!wd.writable){Object.assign(t,{status:'error',error:!codexBin?'Không tìm thấy Codex CLI trên máy.':`Thư mục làm việc không dùng được: ${t.cwd}`,finished:new Date().toISOString()});save();return}
+    if(!codexBin||!wd.writable)return fail(t,!codexBin?'Không tìm thấy Codex CLI trên máy.':`Thư mục làm việc không dùng được: ${t.cwd}`);
     let web=null;
-    if(t.web)try{web=webSetup(t)}catch(e){Object.assign(t,{status:'error',error:e.message,finished:new Date().toISOString()});save();return}
-    Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Codex…',log:[]});
+    if(t.web)try{web=webSetup(t)}catch(e){return fail(t,e.message)}
+    const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.codexThread);
+    if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
+    else Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Codex…',log:[]});
     const note=(kind,text,isActivity=true)=>{text=redact(text);t.log.push({at:Date.now(),kind,text});if(t.log.length>200)t.log.shift();if(isActivity)t.activity=short(text,120)};
     const toml=v=>JSON.stringify(v);// JSON strings/arrays are valid TOML values
-    const extra=web?['-c',`mcp_servers.browser.command=${toml(process.execPath)}`,'-c',`mcp_servers.browser.args=${toml(web.mcpArgs)}`]:[];
-    for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);// attach images so Codex can see them
+    // `codex exec` never asks, so MCP calls need pre-approval; the same risky browser tools as for Claude are switched off
+    const extra=web?['-c',`mcp_servers.browser.command=${toml(process.execPath)}`,'-c',`mcp_servers.browser.args=${toml(web.mcpArgs)}`,
+      '-c','mcp_servers.browser.default_tools_approval_mode=approve','-c',`mcp_servers.browser.disabled_tools=${toml(WEB_TOOLS_OFF.map(n=>n.replace('mcp__browser__','')))}`]:[];
+    if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
+    else for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);// attach images so Codex can see them
     let turns=0;
-    const {child,done}=codexExec(codexBin,{cwd:t.cwd,input:prompt(t),sandbox:t.mode==='acceptEdits'?'workspace-write':'read-only',extra,timeout:TASK_TIMEOUT,onEvent:ev=>{
+    const {child,done}=codexExec(codexBin,{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):prompt(t),resume:resume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'?'workspace-write':'read-only',extra,timeout:TASK_TIMEOUT,onEvent:ev=>{
       const it=ev.item||{};
-      if(ev.type==='thread.started')note('init','Đã khởi động Codex (ChatGPT)');
+      if(ev.type==='thread.started'){if(ev.thread_id)t.codexThread=ev.thread_id;note('init','Đã khởi động Codex (ChatGPT)')}
       else if(ev.type==='turn.started')turns++;
       else if(ev.type==='item.started'&&it.type==='command_execution'){t.steps++;note('tool',short(`Chạy lệnh: ${it.command}`,120))}
       else if(ev.type==='item.started'&&it.type==='mcp_tool_call'){t.steps++;note('tool',describeTool({name:`mcp__${it.server}__${it.tool}`,input:it.arguments||{}}))}
@@ -404,8 +518,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       if(web)rmSync(web.secrets,{force:true});
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
       const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?'Quá thời gian cho phép (20 phút).':/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
+      if(ask)return endAsk(t,ask,{answer:ok&&out.message,error:err,turns});
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(out.message).slice(0,20000)):null,error:ok?null:redact(err),
         durationMs:Date.now()-Date.parse(t.started),turns:turns||null,costUsd:null,activity:null});
+      if(ok&&t.kind==='step')checkRework(t);
       save();pump();
     });
   }
@@ -455,12 +571,13 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   const readBody=req=>new Promise(r=>{let b='';req.on('data',c=>{b+=c;if(b.length>4e4)req.destroy()});req.on('end',()=>{try{r(JSON.parse(b||'{}'))}catch{r({})}})});
   const isLocal=a=>a==='127.0.0.1'||a==='::1'||a==='::ffff:127.0.0.1';
   // Never send the attachments' absolute paths or extracted text to the browser; the names are enough
-  const view=t=>({...t,files:undefined,log:(t.log||[]).slice(-8)});
+  const view=t=>({...t,files:undefined,log:(t.log||[]).slice(-8),thread:undefined,asks:t.thread?.length||0});
   const full=t=>({...t,files:undefined});
 
   return {
     name:'machine-bridge',
     configureServer(server){
+      server.httpServer?.on('listening',()=>{const a=server.httpServer.address();if(a?.port)port=a.port});
       if(!existsSync(config.workdir)&&config.workdir===DEFAULT_WORKDIR)try{mkdirSync(DEFAULT_WORKDIR,{recursive:true})}catch{}
       server.middlewares.use('/api/machine',async(req,res)=>{
         // Runs programs on this computer: only this computer may call it, and writes need the CSRF header
@@ -534,10 +651,23 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             if(t.wf!=null?busyWf.has(t.wf):active(t))return json(res,409,{error:'Việc vẫn đang chạy hoặc đang chờ. Hãy dừng trước khi xóa.'});
             const n=drop(t.wf!=null?tasks.filter(x=>x.wf===t.wf):[t]);return json(res,200,{removed:n,tasks:tasks.map(view)});
           }
+          // Follow-up question on a finished task: continues the same conversation (Claude --resume / codex exec resume)
+          const askM=req.method==='POST'&&path.match(/^\/tasks\/(\d+)\/ask$/);
+          if(askM){
+            const t=tasks.find(t=>t.id===+askM[1]);if(!t)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
+            const q=String((await readBody(req)).text||'').trim();
+            if(!q||q.length>8000)return json(res,400,{error:'Câu hỏi trống hoặc quá dài (tối đa 8000 ký tự).'});
+            if(t.status!=='done'||t.kind==='plan')return json(res,409,{error:'Chỉ hỏi thêm được việc đã hoàn thành.'});
+            await ensureBin();await ensureCodex();
+            (t.thread||=[]).push({q,at:new Date().toISOString()});if(t.thread.length>30)t.thread.shift();
+            Object.assign(t,{asking:true,status:'queued',activity:'Chờ đến lượt trả lời câu hỏi thêm'});save();pump();
+            return json(res,200,{task:full(t)});
+          }
           if(req.method==='POST'&&m){
             const t=tasks.find(t=>t.id===+m[1]);if(!t)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
             if(m[2]==='cancel'){
-              if(t.status==='queued')Object.assign(t,{status:'cancelled',error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});
+              if(t.status==='queued'&&t.asking){Object.assign(t.thread.at(-1),{error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});Object.assign(t,{status:'done',asking:false,activity:null})}
+              else if(t.status==='queued')Object.assign(t,{status:'cancelled',error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});
               else if(t.status==='running'){t.status='cancelled';killTree(procs.get(t.id))}
             }else if(t.status==='error'||t.status==='cancelled'){
               // a planning task that already created its steps is not re-planned
@@ -548,6 +678,19 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
               tasks=[t,...tasks.filter(x=>x!==t)];pump();
             }
             save();return json(res,200,{task:view(t)});
+          }
+          // A task's working folder over http, so its browser can open files it made (file:// is blocked in Playwright MCP).
+          // Only files inside that task's folder; this API only answers this computer.
+          const pv=req.method==='GET'&&path.match(/^\/preview\/(\d+)(\/.*)?$/);
+          if(pv){
+            const t=tasks.find(t=>t.id===+pv[1]);if(!t?.cwd)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
+            let rel;try{rel=decodeURIComponent(pv[2]||'/')}catch{return json(res,400,{error:'Đường dẫn không hợp lệ.'})}
+            const root=resolve(t.cwd);let file=resolve(root,'.'+rel);
+            const inside=relative(root,file);if(inside.startsWith('..')||isAbsolute(inside))return json(res,403,{error:'Ngoài thư mục làm việc.'});
+            if(existsSync(file)&&statSync(file).isDirectory())file=join(file,'index.html');
+            if(!existsSync(file)||!statSync(file).isFile())return json(res,404,{error:'Không có file.'});
+            res.setHeader('Content-Type',PREVIEW_TYPES[extname(file).toLowerCase()]||'application/octet-stream');res.setHeader('Cache-Control','no-store');
+            return res.end(readFileSync(file));
           }
           json(res,404,{error:'Not found'});
         }catch(e){json(res,e.code===400?400:500,{error:String(e?.message||e)})}
