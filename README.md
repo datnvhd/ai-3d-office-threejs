@@ -76,4 +76,12 @@ Any workflow step can send earlier steps back to be fixed: QA → dev when a tes
 2. adds the reviewer again as **· vòng N**, after the fixes, to check everything again;
 3. makes steps that were already waiting (e.g. a hand-over after QA) wait for the newest versions instead.
 
+Fix steps and re-check rounds jump the queue and may use 2 slots beyond the normal limit of 2 parallel tasks, so a sent-back agent starts right away instead of waiting for unrelated work.
+
 Each step can send back at most `MAX_REWORK` (3) times; if it still does not pass, that step ends with an error and the workflow stops for the user to decide (retry it, or ask it a follow-up). In simulation, QA or the Director sends back once 40% of the time.
+
+## Adding, editing and deleting agents
+
+**＋ Thêm** at the end of the agent picker adds an agent: name, short role, a description of what it does and how (sent with every task it gets, and shown to the Director when it plans workflows), a look (developer, designer, manager, young) and a colour. **✎** next to the selected agent edits its name, role and description (built-in agents too; their look stays); **🗑** deletes it. The Director cannot be deleted. Old tasks of a deleted agent are kept.
+
+The list is saved on the server in `~/.ai-3d-office/agents.json` (`GET/POST /api/machine/agents`), so every browser on this machine sees the same office; without that file the 7 built-in agents are used. The office has 12 desks: the 7 built-in ones and the 5 empty ones (back row by the windows, back-to-back desks in the glass room). A new agent takes the first free desk, including one freed by deleting an agent; agents at the 5 extra desks stay at their desk instead of walking around. Adding, deleting or changing an agent's look reloads the page. Custom agents run on Claude Code; a custom `public/models/<agent id>.glb` or the GLB of their look is used when present.

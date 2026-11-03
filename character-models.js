@@ -19,8 +19,8 @@ async function exists(url){
 }
 const load=url=>{if(!cache.has(url))cache.set(url,loader.loadAsync(url));return cache.get(url)};
 
-export async function attachModel(char,agentId){
-  const sheet=SHEET_OF[agentId];
+export async function attachModel(char,agentId,look){
+  const sheet=SHEET_OF[agentId]||look;// custom agents: the sheet of their chosen look
   for(const name of [agentId,sheet].filter(Boolean)){
     const url=`/models/${name}.glb`;
     if(!await exists(url))continue;

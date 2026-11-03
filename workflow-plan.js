@@ -86,7 +86,7 @@ export function planPrompt(text,owner,team){
 Hãy lập LUỒNG CÔNG VIỆC: chia yêu cầu thành các bước, mỗi bước giao cho đúng một agent phù hợp, theo thứ tự phụ thuộc.
 
 Đội ngũ (id · tên · vai trò):
-${team.map(a=>`- ${a.id} · ${a.name} · ${a.role}`).join('\n')}
+${team.map(a=>`- ${a.id} · ${a.name} · ${a.role}${a.desc?` · mô tả: ${String(a.desc).replace(/\s+/g,' ').slice(0,300)}`:''}`).join('\n')}
 
 Quy tắc:
 - Chỉ dùng các agent liên quan; tối đa ${MAX_STEPS} bước. Việc đơn giản chỉ cần 1–2 bước.

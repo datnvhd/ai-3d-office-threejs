@@ -19,8 +19,6 @@ const E=[['win','cA'],['cA','cB'],['cB','cC'],['cC','cD'],['cD','cE'],['cE','cF'
   ['cE','gOut'],['gOut','gIn'],['gIn','g2'],['g2','bkd'],['bkd','frd'],['cB','dl'],['dl','dsd'],
   ['l0','lounge1'],['lounge1','lounge2'],['lounge2','e0'],['e0','eb'],['eb','book'],
   ['l0','p0'],['p0','cooler'],['cooler','counter'],['p0','cafe1'],['counter','cafe2']];
-// Where each agent steps out from its desk (also where colleagues stand to chat with it)
-const DOOR={director:'cF',research:'cA',analyst:'cC',qa:'cD',frontend:'frd',backend:'bkd',designer:'dsd'};
 const PI=Math.PI,HOME_YAW=.35,SPEED=.95;
 const SPOTS=[['cooler',PI],['counter',PI],['cafe1',PI/2],['cafe2',-PI/2],['book',PI],['win',-PI/2],['lounge1',PI],['lounge2',PI]];
 const yawTo=(a,b)=>Math.atan2(b[0]-a[0],b[1]-a[1]);
@@ -30,7 +28,9 @@ export function createWander(agents,{isBusy=()=>false,maxOut=3}={}){
   const nodes={...N},adj={};
   const link=(a,b)=>{(adj[a]??=[]).push(b);(adj[b]??=[]).push(a)};
   E.forEach(([a,b])=>link(a,b));
-  for(const a of agents){nodes['h_'+a.id]=[a.x,a.z];link('h_'+a.id,DOOR[a.id])}
+  // agents without an aisle node (the extra desks) stay at their desk
+  const walkers=agents.filter(a=>a.door);
+  for(const a of walkers){nodes['h_'+a.id]=[a.x,a.z];link('h_'+a.id,a.door)}
   const dist=(a,b)=>Math.hypot(nodes[a][0]-nodes[b][0],nodes[a][1]-nodes[b][1]);
   function path(from,to){
     const d={[from]:0},prev={},todo=new Set([from]);
@@ -42,7 +42,7 @@ export function createWander(agents,{isBusy=()=>false,maxOut=3}={}){
     const out=[to];while(out[0]!==from)out.unshift(prev[out[0]]);return out.slice(1);
   }
   const taken=new Set();
-  const S=agents.map((a,i)=>({a,state:'home',at:'h_'+a.id,route:[],wait:2+i*1.7+Math.random()*4,yaw:HOME_YAW,face:HOME_YAW,spot:null,visit:null}));
+  const S=walkers.map((a,i)=>({a,state:'home',at:'h_'+a.id,route:[],wait:2+i*1.7+Math.random()*4,yaw:HOME_YAW,face:HOME_YAW,spot:null,visit:null}));
   const byId=Object.fromEntries(S.map(s=>[s.a.id,s]));
 
   // Re-routing mid-segment first walks back to the last node passed so nobody cuts through furniture
@@ -56,7 +56,7 @@ export function createWander(agents,{isBusy=()=>false,maxOut=3}={}){
     const free=SPOTS.filter(([k])=>!taken.has(k));
     if(others.length&&(Math.random()<.35||!free.length)){
       const o=others[Math.random()*others.length|0];
-      s.visit=o;s.spot=DOOR[o.a.id];o.visitor=s;
+      s.visit=o;s.spot=o.a.door;o.visitor=s;
     }else if(free.length){
       const [k,yaw]=free[Math.random()*free.length|0];s.spot=k;s.face=yaw;
     }else{s.wait=3;return}
@@ -92,5 +92,5 @@ export function createWander(agents,{isBusy=()=>false,maxOut=3}={}){
       s.yaw+=wrap(s.face-s.yaw)*Math.min(1,dt*8);g.rotation.y=s.yaw;
     }
   }
-  return {update,isOut:id=>byId[id].state!=='home'};
+  return {update,isOut:id=>!!byId[id]&&byId[id].state!=='home'};
 }

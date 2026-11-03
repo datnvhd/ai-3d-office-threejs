@@ -14,8 +14,9 @@ import {STORE_DIR,cleanEnv,run,findClaudeBinary,killTree,getSavedClaudeToken} fr
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
 import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework} from '../workflow-plan.js';
 
+const AGENTS_FILE=join(STORE_DIR,'agents.json');// the office's agent list (src.js); null = the 7 built-in agents
 const CONFIG_FILE=join(STORE_DIR,'machine.json'),TASKS_FILE=join(STORE_DIR,'tasks.json'),SITES_FILE=join(STORE_DIR,'sites.json'),RUNS_DIR=join(STORE_DIR,'runs'),UPLOADS_DIR=join(STORE_DIR,'uploads');
-const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,KEEP=200;
+const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,KEEP=200,URGENT_EXTRA=2,MAX_AGENTS=12;
 // Files droppable on the task box: images and PDF are read by the agent from disk; text/Word are extracted and inlined
 const FILE_KINDS={pdf:'pdf',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',docx:'text',txt:'text',md:'text',csv:'text'};
 const MAX_FILE=25*1024*1024,MAX_FILES=6,ATTACH_SUBDIR='.ai-office-files';
@@ -221,7 +222,9 @@ export function machineBridge(){
   // ---------- task runner ----------
   function prompt(t){
     return `Bạn là "${t.name}", AI agent đảm nhiệm vai trò "${t.role}" trong văn phòng AI của người dùng.
-Bạn đang chạy trực tiếp trên máy cá nhân của người dùng, trong thư mục làm việc hiện tại (${t.cwd}).
+${t.desc?`Mô tả công việc và cách làm việc người dùng đặt cho bạn (luôn tuân theo):
+${t.desc}
+`:''}Bạn đang chạy trực tiếp trên máy cá nhân của người dùng, trong thư mục làm việc hiện tại (${t.cwd}).
 Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?' Không tạo hoặc sửa file; chỉ đọc, phân tích và trả lời.':' Chỉ tạo/sửa file bên trong thư mục làm việc.'}
 Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
 ${t.kind==='step'?stepContext(t):''}${attachPrompt(t)}${t.web?webPrompt(t):''}
@@ -293,7 +296,7 @@ ${q}`;
     const redo=plan.filter(p=>anc.has(p.id)&&(targets.includes(p.id)||[...ancestors(t.wf,p.id)].some(a=>targets.includes(a))));
     const made={},now=new Date().toISOString();
     const depsFor=x=>planDepsOf(x).map(d=>made[d]??newest(t.wf,d)?.id).filter(Boolean);
-    const copy=(src,over)=>({id:nextId++,kind:'step',wf:src.wf,wfTitle:src.wfTitle,request:src.request,agent:src.agent,name:src.name,role:src.role,priority:src.priority,
+    const copy=(src,over)=>({id:nextId++,kind:'step',wf:src.wf,wfTitle:src.wfTitle,request:src.request,agent:src.agent,name:src.name,role:src.role,desc:src.desc,priority:src.priority,
       model:src.model,effort:src.effort,modelWhy:src.modelWhy,cwd:src.cwd,mode:src.mode,host:src.host,web:src.web,siteIds:src.siteIds,files:src.files,fileNames:src.fileNames,
       status:'queued',created:now,...over});
     for(const p of redo){// plan order, so a step's own fixes are made before the steps that use them
@@ -303,7 +306,7 @@ Lý do: ${rw.reason}
 (Đánh giá đầy đủ nằm trong "Kết quả các bước trước".) Hãy sửa cho đạt và nêu rõ đã sửa những gì.`
         :`Các bước trước phần việc của bạn đã được sửa lại theo yêu cầu của ${t.name}: ${rw.reason}
 Cập nhật phần việc của bạn cho khớp với kết quả mới và nêu rõ đã thay đổi gì.`;
-      const t2=copy(prev,{origin:p.id,stepTitle:`${p.stepTitle} · sửa lại`,deps,engine:prev.engine,resumeSession:prev.session||null,resumeThread:prev.codexThread||null,
+      const t2=copy(prev,{urgent:true,origin:p.id,stepTitle:`${p.stepTitle} · sửa lại`,deps,engine:prev.engine,resumeSession:prev.session||null,resumeThread:prev.codexThread||null,
         text:`${why}
 
 Việc gốc của bạn: ${p.text}${prev.session||prev.codexThread?'':`
@@ -313,7 +316,7 @@ ${String(prev.result||'').slice(0,3000)}`}`});
       made[p.id]=t2.id;tasks.unshift(t2);
     }
     const base=plan.find(p=>p.id===o)||t,round=used+2;
-    const again=copy(t,{origin:o,stepTitle:`${base.stepTitle} · vòng ${round}`,deps:depsFor(base),engine:t.engine,resumeSession:t.session||null,resumeThread:t.codexThread||null,
+    const again=copy(t,{urgent:true,origin:o,stepTitle:`${base.stepTitle} · vòng ${round}`,deps:depsFor(base),engine:t.engine,resumeSession:t.session||null,resumeThread:t.codexThread||null,
       text:`${base.text}
 
 ĐÂY LÀ LẦN KIỂM TRA LẠI (vòng ${round}): lần trước bạn đã trả lại để sửa vì: ${rw.reason}
@@ -384,12 +387,14 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   }
   function pump(){
     let changed=false;
-    for(const t of [...tasks].reverse()){
+    // oldest first, but fixes for sent-back work and their re-checks go first and may use extra slots, so they start right away
+    const order=[...tasks].reverse().sort((a,b)=>(b.urgent?1:0)-(a.urgent?1:0));
+    for(const t of order){
       if(t.status!=='queued')continue;
       const {blocked,waiting}=depState(t);
       if(blocked){Object.assign(t,{status:'cancelled',blockedBy:blocked?.id??null,activity:null,error:`Dừng vì bước trước chưa xong: ${blocked?`${blocked.name} · ${blocked.stepTitle||''}`:'đã bị xóa'}.`,finished:new Date().toISOString()});changed=true;continue}
       if(waiting.length){const a=`Chờ ${waiting.map(d=>d.name).join(', ')} hoàn thành`;if(t.activity!==a){t.activity=a;changed=true}continue}
-      if(procs.size>=MAX_PARALLEL)continue;
+      if(procs.size>=MAX_PARALLEL+(t.urgent?URGENT_EXTRA:0))continue;
       start(t);
     }
     // a step stopped above may unblock nothing, but steps waiting on it must stop too
@@ -468,7 +473,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       for(const s of plan.steps){
         const a=who(s.agent),id=nextId++;ids[s.key]=id;
         tasks.unshift({id,kind:'step',wf:t.id,wfTitle:t.wfTitle,stepTitle:s.title,request:t.text,deps:s.after.map(k=>ids[k]).filter(Boolean),planDeps:s.after.map(k=>ids[k]).filter(Boolean),
-          agent:s.agent,name:a.name,role:a.role,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
+          agent:s.agent,name:a.name,role:a.role,desc:a.desc,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
           model:t.forcedModel||s.model,effort:t.forcedEffort||(t.forcedModel?null:s.effort),modelWhy:t.forcedModel||t.forcedEffort?'Chọn thủ công':s.why||'Director chọn',
           cwd:t.cwd,mode:t.mode,host:t.host,web:t.web,siteIds:t.siteIds,engine:engineOf(s.agent),files:t.files,fileNames:t.fileNames});
       }
@@ -530,13 +535,13 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(!text||text.length>8000)throw Object.assign(new Error('Nội dung nhiệm vụ trống hoặc quá dài (tối đa 8000 ký tự).'),{code:400});
     if(!/^[a-z0-9_-]{1,40}$/i.test(body.agent||''))throw Object.assign(new Error('Agent không hợp lệ.'),{code:400});
     const siteIds=Array.isArray(body.siteIds)?body.siteIds.filter(id=>sites.some(s=>s.id===id)).slice(0,10):[];
-    const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),text,priority:short(body.priority||'Bình thường',30),
+    const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),desc:String(body.desc||'').slice(0,2000),text,priority:short(body.priority||'Bình thường',30),
       status:'queued',created:new Date().toISOString(),cwd:config.workdir,mode:config.mode,host:os.hostname(),web:!!body.web,siteIds,engine:engineOf(body.agent)};
     // Model and effort: what the user forced, otherwise picked from the request (workflow steps get theirs from the Director)
     const forced=modelId(body.model),forcedEffort=EFFORTS[body.effort]?body.effort:null,pick=pickModel(text);
     Object.assign(t,{model:forced||pick.model,effort:forcedEffort||(forced?null:pick.effort),modelWhy:forced||forcedEffort?'Chọn thủ công':'Tự chọn theo nội dung yêu cầu'});
     // Workflow: a Director planning task first; it creates the steps for the relevant agents when done
-    const team=Array.isArray(body.team)?body.team.filter(a=>/^[a-z0-9_-]{1,40}$/i.test(a?.id||'')).slice(0,20).map(a=>({id:a.id,name:short(a.name,60),role:short(a.role,80)})):[];
+    const team=Array.isArray(body.team)?body.team.filter(a=>/^[a-z0-9_-]{1,40}$/i.test(a?.id||'')).slice(0,20).map(a=>({id:a.id,name:short(a.name,60),role:short(a.role,80),desc:String(a.desc||'').slice(0,2000)})):[];
     if(body.workflow&&team.length){
       const d=team.find(a=>a.id==='director')||team.find(a=>a.id===body.agent)||team[0];
       // Planning is one short JSON answer: Sonnet 5.5 at medium effort, unless the user forced a stronger model
@@ -602,6 +607,22 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             saveConfig();return json(res,200,await status());
           }
           if(req.method==='GET'&&path==='/tasks')return json(res,200,{tasks:tasks.map(view)});
+          // agent list of the office: built-in ones by id (with the user's name/role/description), custom ones in full
+          if(req.method==='GET'&&path==='/agents')return json(res,200,{agents:readJson(AGENTS_FILE,null)});
+          if(req.method==='POST'&&path==='/agents'){
+            const list=(await readBody(req)).agents;
+            if(!Array.isArray(list)||list.length>MAX_AGENTS)return json(res,400,{error:`Danh sách agent không hợp lệ (tối đa ${MAX_AGENTS}).`});
+            const seen=new Set(),out=[];
+            for(const a of list){
+              const id=String(a?.id||''),name=String(a?.name||'').trim().slice(0,40);
+              if(!/^[a-z0-9_-]{1,40}$/i.test(id)||seen.has(id)||!name)return json(res,400,{error:'Agent cần có tên và mã hợp lệ, không trùng nhau.'});
+              seen.add(id);
+              out.push({id,name,role:String(a.role||'').trim().slice(0,80),desc:String(a.desc||'').trim().slice(0,2000),builtin:!!a.builtin,
+                ...(a.builtin?{}:{color:Number.isInteger(a.color)?a.color&0xffffff:0x9aa3b5,preset:String(a.preset||'dev').slice(0,20),slot:Number.isInteger(a.slot)?a.slot:-1})});
+            }
+            if(!seen.has('director'))return json(res,400,{error:'Không thể xóa Director.'});
+            writeJson(AGENTS_FILE,out);return json(res,200,{agents:out});
+          }
           // saved web logins: passwords go in, never come back out
           if(req.method==='POST'&&path==='/sites'){
             const b=await readBody(req),label=short(b.label,60),url=String(b.url||'').trim(),username=String(b.username||'').slice(0,200),password=typeof b.password==='string'?b.password.slice(0,500):'';
