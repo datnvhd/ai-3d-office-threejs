@@ -10,7 +10,7 @@ import {inflateRawSync} from 'node:zlib';
 import {createRequire} from 'node:module';
 import os from 'node:os';
 import {join,resolve,isAbsolute,dirname,basename,relative,extname} from 'node:path';
-import {STORE_DIR,cleanEnv,run,findClaudeBinary,killTree,getSavedClaudeToken} from './claude-bridge.js';
+import {STORE_DIR,NODE_ENV,cleanEnv,run,findClaudeBinary,killTree,getSavedClaudeToken} from './claude-bridge.js';
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
 import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework} from '../workflow-plan.js';
 
@@ -58,8 +58,13 @@ export function attachPrompt(t){
   return `\nTỆP ĐÍNH KÈM: Người dùng gửi kèm ${t.files.length} tệp cho yêu cầu này. Hãy sử dụng nội dung của chúng khi thực hiện.\n${parts.join('\n')}\n`;
 }
 const MCP_CLI=(()=>{try{return join(dirname(createRequire(import.meta.url).resolve('@playwright/mcp/package.json')),'cli.js')}catch{return null}})();
-const BROWSERS=[['chrome',['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',join(os.homedir(),'AppData/Local/Google/Chrome/Application/chrome.exe'),'/Applications/Google Chrome.app','/usr/bin/google-chrome']],
-  ['msedge',['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Microsoft/Edge/Application/msedge.exe','/Applications/Microsoft Edge.app']]];
+const BROWSERS=[['chrome',['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',join(os.homedir(),'AppData/Local/Google/Chrome/Application/chrome.exe'),'/Applications/Google Chrome.app','/opt/google/chrome/chrome']],
+  ['msedge',['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Microsoft/Edge/Application/msedge.exe','/Applications/Microsoft Edge.app','/opt/microsoft/msedge/msedge']]];
+// os.version() on Linux is the kernel build string ("#1 SMP …"): use the distribution's name instead
+const osName=()=>{
+  if(process.platform==='linux')try{const m=readFileSync('/etc/os-release','utf8').match(/^PRETTY_NAME="?([^"\n]+)/m);if(m)return m[1]}catch{}
+  return os.version?.()||os.type();
+};
 const findBrowser=()=>BROWSERS.find(([,paths])=>paths.some(p=>existsSync(p)))?.[0]||null;
 // Claude Code's answer when the account cannot use the requested model (retired, or not on this plan)
 const MODEL_MISSING=/not_found_error|may not exist|not have access to (it|this model)|model[^\n]{0,60}(not found|not available|unavailable|does not exist)/i;
@@ -371,7 +376,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // screenshots saved to the run folder for the user but not sent back to the model
     const args=[MCP_CLI,'--browser',browser,'--isolated','--secrets',secrets,'--output-dir',dir,'--viewport-size','1366x860',
       '--snapshot-mode','none','--codegen','none','--image-responses','omit','--console-level','error','--no-webmcp',...(config.browserVisible?[]:['--headless'])];
-    const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args}}}));
+    const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args,env:NODE_ENV}}}));
     t.siteLabels=list.map(s=>s.label);t.browser=browser;
     // Only the built-in tools a web task needs, and none of the browser tools it never uses (their schemas cost tokens every turn)
     const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'?['Write','Edit']:[])];
@@ -559,7 +564,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const b=await ensureBin(),a=b?await auth():null,wd=workdirState(),cpus=os.cpus();
     const cb=await ensureCodex(),ca=cb?await codexAuthKind():null;
     return {
-      host:{name:os.hostname(),os:`${os.version?.()||os.type()} (${os.release()})`,arch:os.arch(),cpu:cpus[0]?.model?.trim()||'?',cores:cpus.length,
+      host:{name:os.hostname(),os:`${osName()} (${os.release()})`,arch:os.arch(),cpu:cpus[0]?.model?.trim()||'?',cores:cpus.length,
         ramTotal:os.totalmem(),ramFree:os.freemem(),uptime:os.uptime(),user:os.userInfo().username,node:process.version},
       claude:{found:!!b,path:b,version,auth:a},
       codex:{found:!!cb,path:cb,version:codexVersion,auth:ca,ready:!!(cb&&ca&&wd.writable)},
@@ -579,7 +584,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   const view=t=>({...t,files:undefined,log:(t.log||[]).slice(-8),thread:undefined,asks:t.thread?.length||0});
   const full=t=>({...t,files:undefined});
 
-  return {
+  const plugin={
     name:'machine-bridge',
     configureServer(server){
       server.httpServer?.on('listening',()=>{const a=server.httpServer.address();if(a?.port)port=a.port});
@@ -719,4 +724,6 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       server.httpServer?.once('close',()=>{for(const p of procs.values())killTree(p)});
     }
   };
+  // Same middleware on the preview server: the desktop app (electron/main.js) serves the build with vite preview
+  return {...plugin,configurePreviewServer:plugin.configureServer};
 }

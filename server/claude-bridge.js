@@ -24,6 +24,9 @@ export function cleanEnv(extra={}){
   return {...env,...extra};
 }
 
+// Extra env for running a .js file with process.execPath: in the desktop app that is Electron, which acts as Node only with this
+export const NODE_ENV=process.versions.electron?{ELECTRON_RUN_AS_NODE:'1'}:{};
+
 export function run(bin,args,{env=cleanEnv(),timeout=30000}={}){
   return new Promise(resolve=>{
     const child=execFile(bin,args,{env,timeout,cwd:tmpdir(),windowsHide:true,maxBuffer:4<<20},(err,stdout,stderr)=>resolve({err,stdout:String(stdout),stderr:String(stderr)}));
@@ -57,7 +60,7 @@ export function findClaudeBinary(){
 function findBrowser(){
   const list=isWin
     ?[process.env.PROGRAMFILES,process.env['PROGRAMFILES(X86)'],process.env.LOCALAPPDATA].filter(Boolean).flatMap(d=>[join(d,'Google','Chrome','Application','chrome.exe'),join(d,'Microsoft','Edge','Application','msedge.exe')])
-    :['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome','/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge','/usr/bin/google-chrome','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/microsoft-edge'];
+    :['/Applications/Google Chrome.app/Contents/MacOS/Google Chrome','/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge','/usr/bin/google-chrome','/usr/bin/google-chrome-stable','/usr/bin/chromium','/usr/bin/chromium-browser','/usr/bin/microsoft-edge','/usr/bin/microsoft-edge-stable','/snap/bin/chromium'];
   return list.find(p=>existsSync(p))||null;
 }
 // `claude setup-token` opens $BROWSER with the sign-in URL: point it at a no-op so the default browser stays closed
@@ -160,7 +163,7 @@ export function claudeBridge(){
   const readBody=req=>new Promise(r=>{let b='';req.on('data',c=>{b+=c;if(b.length>1e4)req.destroy()});req.on('end',()=>{try{r(JSON.parse(b||'{}'))}catch{r({})}})});
   const isLocal=a=>a==='127.0.0.1'||a==='::1'||a==='::ffff:127.0.0.1';
 
-  return {
+  const plugin={
     name:'claude-bridge',
     configureServer(server){
       server.middlewares.use('/api/claude',async(req,res)=>{
@@ -199,6 +202,8 @@ export function claudeBridge(){
       server.httpServer?.once('close',stopLogin);
     }
   };
+  // Same middleware on the preview server: the desktop app (electron/main.js) serves the build with vite preview
+  return {...plugin,configurePreviewServer:plugin.configureServer};
 }
 
 // Used by the task runner (machine-bridge.js): the saved token is passed as CLAUDE_CODE_OAUTH_TOKEN to `claude -p`

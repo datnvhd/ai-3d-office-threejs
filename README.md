@@ -11,6 +11,32 @@ npm run dev
 
 Open the local Vite address shown in your terminal.
 
+## Desktop app (Windows installer)
+
+```bash
+npm run app    # build, then open the office in an Electron window
+npm run dist   # build release/AI 3D Office Setup <version>.exe
+```
+
+The installer bundles Electron (and its Node), so the other machine does not need Node.js or `npm install`. It still needs the **Claude Code CLI** (on `PATH`, `~/.local/bin` or the VS Code extension), **Chrome or Edge** for sign-in and web tasks, and optionally **Codex CLI**. Each machine signs in with its own account in the app; data goes to that user's `~/.ai-3d-office` as in dev (do not copy it between machines: it holds the token).
+
+`electron/main.js` serves `dist/` with `vite preview` on `127.0.0.1:47820` (the next free port if taken) with the same `/api` bridges as the dev server, and shows it in a window. Only one copy runs at a time; closing the window stops running tasks. Node scripts the server starts with `process.execPath` (Playwright MCP, a `.js` Codex) get `ELECTRON_RUN_AS_NODE=1` (`NODE_ENV` in `server/claude-bridge.js`). The app is not code-signed, so Windows SmartScreen shows "Windows protected your PC" on first run (**More info → Run anyway**). Launching Electron from a shell that has `ELECTRON_RUN_AS_NODE` set (e.g. a VS Code extension host) runs it as plain Node: unset it first.
+
+### Ubuntu (22.04 and later)
+
+```bash
+npm run dist:linux   # needs Docker; writes release/ai-3d-office_<version>_amd64.deb
+```
+
+`scripts/build-linux.js` copies the sources into a `node:22-bookworm` container and installs the dependencies there, so the native modules (node-pty, esbuild, rollup) are the Linux ones; it works from Windows too. On the Ubuntu machine:
+
+```bash
+sudo apt install ./ai-3d-office_1.0.0_amd64.deb   # pulls in the libraries it needs
+ai-3d-office                                       # or "AI 3D Office" in the app menu
+```
+
+Tested on clean Ubuntu 22.04 and 24.04 containers. The package declares `libgbm1` and `libasound2t64 | libasound2` besides electron-builder's default list (24.04 renamed the ALSA library; in the other order apt picks an OSS stand-in). On 24.04 the package installs an AppArmor profile so Chromium's sandbox works. Web tasks need **Google Chrome or Microsoft Edge** from their `.deb` (`/opt/google/chrome`, `/opt/microsoft/msedge`); snap Chromium is not supported by Playwright. Started from the app menu, the app takes `PATH` from the user's interactive login shell so `claude`/`codex` installed through nvm or `npm -g` are found.
+
 ## Claude Code connection
 
 The top bar shows whether the app is connected to Claude Code. The dev server (`server/claude-bridge.js`) finds the Claude Code CLI (`CLAUDE_BIN`, `PATH`, `~/.local/bin`, or the VS Code extension's bundled binary) and exposes `/api/claude/*`:

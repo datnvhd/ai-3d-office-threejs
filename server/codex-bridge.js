@@ -5,7 +5,7 @@ import {spawn,execFile} from 'node:child_process';
 import {existsSync,readdirSync} from 'node:fs';
 import {homedir,tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
-import {killTree} from './claude-bridge.js';
+import {killTree,NODE_ENV} from './claude-bridge.js';
 
 const isWin=process.platform==='win32';
 const LOGIN_TIMEOUT=10*60*1000;
@@ -47,11 +47,12 @@ export function findCodexBinary(){
 const versionKey=v=>v.split(/[.-]/).map(n=>n.padStart(6,'0')).join('.');
 // [command, args] for spawning the binary
 const cmd=(bin,args)=>bin.endsWith('.js')?[process.execPath,[bin,...args]]:[bin,args];
+const envFor=bin=>bin.endsWith('.js')?{...process.env,...NODE_ENV}:process.env;
 
 export function codexRun(bin,args,timeout=30000){
   return new Promise(resolve=>{
     const [c,a]=cmd(bin,args);
-    const child=execFile(c,a,{timeout,cwd:tmpdir(),windowsHide:true,maxBuffer:4<<20},(err,stdout,stderr)=>resolve({err,stdout:String(stdout),stderr:String(stderr)}));
+    const child=execFile(c,a,{timeout,cwd:tmpdir(),env:envFor(bin),windowsHide:true,maxBuffer:4<<20},(err,stdout,stderr)=>resolve({err,stdout:String(stdout),stderr:String(stderr)}));
     child.stdin?.end();
   });
 }
@@ -72,7 +73,7 @@ export async function codexAuth(bin){
 // (unquoted: the nvm codex.exe shim goes through cmd, which breaks on quotes; Codex reads a non-TOML value as a plain string).
 export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,timeout,resume}){
   const args=resume?['exec','resume','--json','--skip-git-repo-check','-c',`sandbox_mode=${sandbox}`,...extra,resume,'-']:['exec','--json','--skip-git-repo-check','-s',sandbox,'-C',cwd,...extra,'-'];
-  const child=spawn(...cmd(bin,args),{cwd,env:process.env,windowsHide:true});
+  const child=spawn(...cmd(bin,args),{cwd,env:envFor(bin),windowsHide:true});
   const done=new Promise(res=>{
     let buf='',stderr='',message=null,usage=null,error=null,timedOut=false;
     const timer=setTimeout(()=>{timedOut=true;killTree(child)},timeout);
@@ -105,7 +106,7 @@ export function codexBridge(){
     if(proc)return;
     if(!await ensureBin()){login={state:'error',message:'Không tìm thấy Codex CLI trên máy.'};return}
     login={state:'starting'};let out='';
-    proc=spawn(...cmd(bin,['login']),{cwd:tmpdir(),env:process.env,windowsHide:true});
+    proc=spawn(...cmd(bin,['login']),{cwd:tmpdir(),env:envFor(bin),windowsHide:true});
     const onData=d=>{
       out=(out+d).slice(-20000);const url=stripAnsi(out).match(URL_RE);
       if(url&&login.state==='starting')login={state:'waiting',url:url[0]};
@@ -137,7 +138,7 @@ export function codexBridge(){
   const json=(res,code,body)=>{res.statusCode=code;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store');res.end(JSON.stringify(body))};
   const isLocal=a=>a==='127.0.0.1'||a==='::1'||a==='::ffff:127.0.0.1';
 
-  return {
+  const plugin={
     name:'codex-bridge',
     configureServer(server){
       server.middlewares.use('/api/codex',async(req,res)=>{
@@ -159,4 +160,6 @@ export function codexBridge(){
       server.httpServer?.once('close',stopLogin);
     }
   };
+  // Same middleware on the preview server: the desktop app (electron/main.js) serves the build with vite preview
+  return {...plugin,configurePreviewServer:plugin.configureServer};
 }

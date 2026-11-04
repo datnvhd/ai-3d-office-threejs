@@ -1,19 +1,42 @@
 {
   "name": "ai-3d-office",
+  "productName": "AI 3D Office",
   "version": "1.0.0",
+  "description": "AI 3D Office",
+  "author": "TriNam",
+  "homepage": "https://github.com/datnvhd/ai-3d-office-threejs",
   "type": "module",
+  "main": "electron/main.js",
+  "desktopName": "ai-3d-office.desktop",
   "scripts": {
     "dev": "vite --host 0.0.0.0",
     "build": "vite build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "app": "vite build && electron .",
+    "dist": "vite build && electron-builder --win",
+    "dist:linux": "node scripts/build-linux.js"
   },
   "dependencies": {
+    "@lydell/node-pty": "^1.2.0-beta.18",
     "@playwright/mcp": "0.0.83",
-    "lucide": "^0.468.0",
-    "three": "^0.180.0",
     "vite": "^7.1.0"
   },
   "devDependencies": {
-    "@lydell/node-pty": "^1.2.0-beta.18"
+    "electron": "44.9.2",
+    "electron-builder": "26.17.0",
+    "lucide": "^0.468.0",
+    "three": "^0.180.0"
+  },
+  "build": {
+    "appId": "vn.trinam.ai-3d-office",
+    "productName": "AI 3D Office",
+    "directories": {"output": "release"},
+    "files": ["electron/**", "server/**", "workflow-plan.js", "dist/**", "package.json"],
+    "asar": false,
+    "npmRebuild": false,
+    "win": {"target": [{"target": "nsis", "arch": ["x64"]}]},
+    "linux": {"target": [{"target": "deb", "arch": ["x64"]}], "executableName": "ai-3d-office", "syncDesktopName": true,"category": "Development", "maintainer": "TriNam", "synopsis": "AI 3D Office", "artifactName": "${name}_${version}_${arch}.${ext}"},
+    "deb": {"depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0", "libgbm1", "libasound2t64 | libasound2"]},
+    "nsis": {"oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "shortcutName": "AI 3D Office"}
   }
 }
