@@ -353,6 +353,32 @@ function roomWall(p,len,pos,ry,{door}={}){
     const d=grp(g,a+.02,0,.06,-1.1);// door left open
     add(d,rbox(w-.04,2.0,.045,.01),M.lightWood,[(w-.04)/2,FY+1.0,0]);add(d,cyl(.015,.015,.14,8),M.metal,[w-.14,FY+1.0,.05],1,[PI/2,0,0])}
 }
+let meetingTV=null;
+// ---------- Monitors that run while someone sits at the desk ----------
+// A few shared animated canvases (code scrolling, tests passing, a document being typed, live charts); each desk gets a
+// screen overlay that is shown only while its agent sits there (src.js), so the cost stays at four small canvases.
+const WORK=(()=>{
+  const W=384,H=234,r=(()=>{let s=11;return()=>(s=s*16807%2147483647)/2147483647})();
+  const code=Array.from({length:48},()=>{let x=12+(r()*4|0)*16;return Array.from({length:1+r()*4|0},()=>{const w=18+r()*70,t={x,w,c:['#7fd1ff','#c792ea','#ffcb6b','#c3e88d','#f78c6c','#89ddff'][r()*6|0]};x+=w+8;return t}).filter(t=>t.x+t.w<W-10)});
+  const draw={
+    code(x,t){x.fillStyle='#1b1f2e';x.fillRect(0,0,W,H);x.fillStyle='#262b3d';x.fillRect(0,0,W,16);['#ff5f57','#febc2e','#28c840'].forEach((c,i)=>{x.fillStyle=c;x.beginPath();x.arc(10+i*12,8,3.5,0,7);x.fill()});
+      const off=(t/260|0)%code.length;for(let i=0;i<13;i++){const ln=code[(off+i)%code.length];x.fillStyle='#4b5168';x.fillRect(4,24+i*16,6,8);for(const k of ln){x.fillStyle=k.c;x.fillRect(k.x,24+i*16,k.w,8)}}
+      if((t/450|0)%2){x.fillStyle='#fff';x.fillRect(code[(off+12)%code.length].at(-1)?.x+code[(off+12)%code.length].at(-1)?.w+4||20,24+12*16,7,10)}},
+    test(x,t){x.fillStyle='#14181f';x.fillRect(0,0,W,H);x.font='bold 12px Consolas,monospace';const n=(t/380|0);
+      for(let i=0;i<12;i++){const k=n-11+i;if(k<0)continue;const bad=k%17===9;x.fillStyle=bad?'#ff6b6b':'#4ade80';x.fillText((bad?'✗ ':'✓ ')+`test case #${k+1} ${bad?'failed':'passed'}`,12,22+i*16);x.fillStyle='#5b6478';x.fillText(`${(20+k*7)%300}ms`,W-60,22+i*16)}
+      const p=(n%40)/40;x.fillStyle='#2a3140';x.fillRect(12,H-16,W-24,8);x.fillStyle='#4ade80';x.fillRect(12,H-16,(W-24)*p,8)},
+    doc(x,t){x.fillStyle='#e9edf5';x.fillRect(0,0,W,H);x.fillStyle='#fff';x.fillRect(40,8,W-80,H-8);x.fillStyle='#3b5bdb';x.fillRect(56,22,150,10);
+      const n=(t/120|0)%260;let left=n;for(let i=0;i<11&&left>0;i++){const full=i%4===3?120:250,w=Math.min(full,left);left-=full;x.fillStyle=i%4===0&&i?'#5c6b8a':'#aab3c5';x.fillRect(56+(i%4===0&&i?0:0),44+i*16,w,6)}
+      x.fillStyle='#3b5bdb';x.fillRect(56+Math.min(250,n%250),44+Math.min(10,n/250|0)*16-2,2,10)},
+    chart(x,t){x.fillStyle='#f6f8fc';x.fillRect(0,0,W,H);x.fillStyle='#1f2540';x.font='bold 11px sans-serif';x.fillText('Dashboard',12,18);
+      for(let i=0;i<8;i++){const h=30+Math.abs(Math.sin(t/900+i*1.3))*90;x.fillStyle=['#5b8def','#7fb2ff','#a78bfa','#38bdf8'][i%4];x.fillRect(14+i*22,H-20-h,14,h)}
+      x.strokeStyle='#f4966b';x.lineWidth=2.5;x.beginPath();for(let i=0;i<=10;i++){const px=210+i*16,py=150-Math.sin(t/700+i*.7)*30-i*6;i?x.lineTo(px,py):x.moveTo(px,py)}x.stroke();
+      const v=(t/40|0)%100;x.fillStyle='#e6e9f2';x.beginPath();x.arc(300,56,30,0,7);x.fill();x.strokeStyle='#4ade80';x.lineWidth=8;x.beginPath();x.arc(300,56,26,-PI/2,-PI/2+v/100*PI*2);x.stroke();x.fillStyle='#1f2540';x.fillText(v+'%',290,60)}
+  };
+  const mats={};for(const k of Object.keys(draw)){const c=document.createElement('canvas');c.width=W;c.height=H;const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;mats[k]={ctx:c.getContext('2d'),tex,m:new THREE.MeshBasicMaterial({map:tex,toneMapped:false}),used:0}}
+  let last=0;
+  return {mats,update(t,shown){if(t-last<120)return;last=t;for(const [k,o] of Object.entries(mats))if(shown[k]){draw[k](o.ctx,t);o.tex.needsUpdate=true}}};
+})();
 // Closed meeting room in the front-left of the added space, twice the first size (x∈[-5.44,1.2], z∈[5.4,11.6]): the outer
 // wall with its window is the left side; long table the team stands around when the Director plans (wander.js SEATS),
 // screen on the back wall, door on the aisle side
@@ -365,7 +391,10 @@ function meetingRoom(p){
   plant(g,-.6,.1,{s:.3,y:.78,seed:24,leaves:7});
   for(const x of[-3.6,-2.53,-1.47,-.4]){chair(p,x,7.45,0,.9);chair(p,x,9.55,PI,.9)}
   chair(p,-4.6,8.5,PI/2,.9);chair(p,.55,8.5,-PI/2,.9);
-  const s=grp(p,-2.0,FY,5.47);add(s,rbox(2.6,1.3,.06,.02),M.dark,[0,1.5,0]);add(s,plane(2.46,1.16),glow(0x8fb8ff,.9),[0,1.5,.035],1,null,false);
+  const s=grp(p,-2.0,FY,5.47);add(s,rbox(2.6,1.3,.06,.02),M.dark,[0,1.5,0]);
+  const c=document.createElement('canvas');c.width=1024;c.height=456;const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=8;
+  add(s,plane(2.46,1.16),new THREE.MeshBasicMaterial({map:tex,toneMapped:false}),[0,1.5,.035],1,null,false);
+  meetingTV={canvas:c,ctx:c.getContext('2d'),tex};
   plant(p,.75,11.2,{pot:0xfbfaf7,s:.85,seed:27});plant(p,-5.0,5.85,{pot:0xfbfaf7,s:.8,seed:33});
 }
 export function createOffice(world,renderer){
@@ -425,9 +454,16 @@ export function createOffice(world,renderer){
     else{desk(g,x,z-.65,0,opt);chair(g,x,z-.08,PI)}
     freeze(g);
   }
+  // Screen overlay on a desk monitor at (x,y,z) facing ry (tilted rx for a laptop lid); kind = code | test | doc | chart
+  const screens=[];
+  function addWorkScreen(x,y,z,ry=0,{rx=0,w=.615,h=.375,kind='code'}={}){
+    const m=new THREE.Mesh(plane(w,h),(WORK.mats[kind]||WORK.mats.code).m);m.position.set(x,y,z);m.rotation.set(rx,ry,0,'YXZ');m.visible=false;office.add(m);
+    const s={mesh:m,kind:WORK.mats[kind]?kind:'code'};screens.push(s);return {set:on=>{m.visible=!!on}};
+  }
   function update(){
+    const t=performance.now(),shown={};for(const s of screens)if(s.mesh.visible)shown[s.kind]=1;WORK.update(t,shown);
     const d=new Date(),s=d.getSeconds()+d.getMilliseconds()/1000,m=d.getMinutes()+s/60,h=d.getHours()%12+m/60;
     hands.s.rotation.z=-s/60*PI*2;hands.m.rotation.z=-m/60*PI*2;hands.h.rotation.z=-h/12*PI*2;
   }
-  return {group:office,setScenery,workstation,update,scenes:Object.fromEntries(Object.entries(SCENERY).map(([k,v])=>[k,{label:v.label,swatch:v.swatch}]))};
+  return {group:office,setScenery,workstation,update,addWorkScreen,meetingTV,scenes:Object.fromEntries(Object.entries(SCENERY).map(([k,v])=>[k,{label:v.label,swatch:v.swatch}]))};
 }

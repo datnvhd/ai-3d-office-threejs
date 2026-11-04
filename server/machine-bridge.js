@@ -261,9 +261,25 @@ Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?' Không tạo hoặc
 ${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. Lệnh khác sẽ bị chặn; không bao giờ push code.
 `:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
 ${t.kind==='step'?stepContext(t):''}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
+Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. File .md mới không được yêu cầu sẽ bị xóa khi xong việc.
 Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
 ${t.text}`;
+  }
+  // ---------- leftover .md files ----------
+  // A task's new .md files (reports, notes, plans the agent wrote on its own) are removed when it ends, unless the
+  // request asked for a markdown/README/document file. Files that existed before the run are never touched.
+  const MD_SKIP=new Set(['node_modules','dist','build','vendor','venv','.venv','__pycache__','coverage']);
+  function listMd(dir,depth=0,out=[]){
+    if(!dir||depth>4||out.length>3000)return out;let ents;try{ents=readdirSync(dir,{withFileTypes:true})}catch{return out}
+    for(const e of ents){if(e.isDirectory()){if(!MD_SKIP.has(e.name)&&!e.name.startsWith('.'))listMd(join(dir,e.name),depth+1,out)}else if(/\.md$/i.test(e.name))out.push(join(dir,e.name))}
+    return out;
+  }
+  const wantsMd=t=>/\.md\b|markdown|readme|changelog|ghi (ra|vào) file|lưu (ra |thành |vào )?file|xuất (ra )?file|tạo (một |1 )?file/i.test([t.text,t.request,...(t.thread||[]).map(x=>x.q),...(t.clarify||[]).map(x=>x.answer)].join(' '));
+  function cleanMd(t,before,note){
+    if(!before||wantsMd(t))return;const gone=[];
+    for(const f of listMd(t.cwd))if(!before.has(f)){try{rmSync(f,{force:true});gone.push(relative(t.cwd,f))}catch{}}
+    if(gone.length){t.cleaned=[...(t.cleaned||[]),...gone];note('out',`🧹 Đã xóa ${gone.length} file .md tạm không được yêu cầu: ${gone.join(', ')}`,false)}
   }
   // Follow-up question on a finished task. A resumed session already has the context; without one, recap it.
   function askPrompt(t,ask,resumed){
@@ -461,7 +477,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(t.engine==='codex')return startCodex(t);
     const wd=workdirState(t.cwd);
     if(!bin||!getSavedClaudeToken()||!wd.writable)return fail(t,!bin?'Không tìm thấy Claude Code CLI trên máy.':!getSavedClaudeToken()?'Chưa đăng nhập tài khoản Claude trong ứng dụng.':`Thư mục làm việc không dùng được: ${t.cwd}`);
-    let web=null;const kit=kitRules(t);
+    let web=null;const kit=kitRules(t),mdBefore=new Set(listMd(t.cwd));
     if(t.web)try{web=webSetup(t,kit)}catch(e){return fail(t,e.message)}
     const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.session),reply=!ask&&!!t.reply,replyResume=reply&&!!t.session;
     if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
@@ -488,6 +504,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     done.then(out=>{
       procs.delete(t.id);
       if(web)rmSync(web.secrets,{force:true});
+      cleanMd(t,mdBefore,note);
       const r=out.result,cancelled=t.status==='cancelled',ok=!cancelled&&r&&!r.is_error&&r.subtype==='success';
       // A pinned older version the account cannot use: run again once on the newest model of the same family
       const id=modelId(t.model),latest=LATEST[MODELS[id]?.family];
@@ -551,6 +568,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(!codexBin||!wd.writable)return fail(t,!codexBin?'Không tìm thấy Codex CLI trên máy.':`Thư mục làm việc không dùng được: ${t.cwd}`);
     let web=null;
     if(t.web)try{web=webSetup(t)}catch(e){return fail(t,e.message)}
+    const mdBefore=new Set(listMd(t.cwd));
     const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.codexThread),reply=!ask&&!!t.reply,replyResume=reply&&!!t.codexThread;
     if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
     else if(reply)Object.assign(t,{status:'running',activity:'Đang tiếp tục với câu trả lời của bạn…',log:t.log||[]});
@@ -583,6 +601,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     done.then(out=>{
       procs.delete(t.id);
       if(web)rmSync(web.secrets,{force:true});
+      cleanMd(t,mdBefore,note);
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
       const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?'Quá thời gian cho phép (20 phút).':/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
       if(ask)return endAsk(t,ask,{answer:ok&&out.message,error:err,turns});

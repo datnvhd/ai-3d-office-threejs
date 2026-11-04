@@ -27,10 +27,11 @@ const DOOR_OF={director:'cF',research:'cA',analyst:'cC',qa:'cD',frontend:'frd',b
 // Slot numbers are saved with custom agents, so new desks only ever get appended.
 const ROW_DESKS=[{screen:'code',props:['coffee','plant']},{screen:'chart',props:['notebook','coffee']},{screen:'ai',props:['plant','pens']},{screen:'design',divider:0xf28cb1,props:['notebook']},{screen:'dashboard',divider:0x5b8def,props:['coffee','robot']},{screen:'code',laptop:true,props:['pens','plant']}];
 // A workstation anchored at (x,z) (office.js): the agent stands beside the chair when idle and sits on it, facing the screen, while working
-const desked=(x,z)=>({x:x+.6,z:z+.1,sit:[x,z-.1,Math.PI],dx:x,dz:z});
-const SLOTS=[...BUILTIN.map(b=>({...desked(b.x,b.z),door:DOOR_OF[b.id]})),
+const desked=(x,z,wood)=>({x:x+.6,z:z+.1,sit:[x,z-.1,Math.PI],dx:x,dz:z,scr:wood?[x-.05,.838,z-.794,0,{rx:-.28,w:.32,h:.2}]:[x-.05,1.035,z-.7915,0]});
+const SLOTS=[...BUILTIN.map(b=>({...desked(b.x,b.z,b.desk.style==='wood'),door:DOOR_OF[b.id]})),
   // the stand-still desks already have a chair on the far side, facing the room
-  {x:-4.75,z:-3.6,sit:[-4.25,-3.52,0]},{x:-3.25,z:-3.6,sit:[-2.75,-3.52,0]},{x:-1.75,z:-3.6,sit:[-1.25,-3.52,0]},{x:-2.85,z:.97,sit:[-2.35,.95,0]},{x:-1.35,z:.97,sit:[-.85,.95,0]},
+  {x:-4.75,z:-3.6,sit:[-4.25,-3.52,0],scr:[-4.35,1.035,-2.8085,Math.PI]},{x:-3.25,z:-3.6,sit:[-2.75,-3.52,0],scr:[-2.85,1.035,-2.8085,Math.PI]},{x:-1.75,z:-3.6,sit:[-1.25,-3.52,0],scr:[-1.35,1.035,-2.8085,Math.PI]},
+  {x:-2.85,z:.97,sit:[-2.35,.95,0],scr:[-2.45,1.035,1.4415,Math.PI]},{x:-1.35,z:.97,sit:[-.85,.95,0],scr:[-.95,1.035,1.4415,Math.PI]},
   ...[['rA',-1.4],['rB',2.6],['rC',6.4],['rD',10.2]].flatMap(([row,z],r)=>ROW_X.map((x,i)=>({...desked(x,z),door:row+i,desk:ROW_DESKS[(i+r*2)%ROW_DESKS.length]})))];
 // New agents take a free built-in desk first, then the added rows, then the 5 stand-still desks
 const SLOT_ORDER=[...SLOTS.keys()].sort((a,b)=>(a>=7&&a<12)-(b>=7&&b<12)||a-b);
@@ -59,11 +60,14 @@ function agentCharacter(agent){const g=new THREE.Group();g.position.set(agent.x,
 for(const b of BUILTIN)room.workstation(b.x,b.z,b.desk);// built-in desks stay even when their agent is deleted
 for(const d of SLOTS)if(d.desk)room.workstation(d.dx,d.dz,d.desk);
 for(const a of agents){agentCharacter(a);attachModel(a.char,a.id,a.preset).then(n=>{if(n)console.info(`${a.name}: dùng mô hình 3D /models/${n}.glb`)})}
+// Each agent's monitor runs (code, tests, a document or charts, by team) while they sit at their desk
+const SCREEN_KIND=a=>({Frontend:'code',Backend:'code',QA:'test',BA:'doc',Research:'doc',Data:'chart',Design:'chart'})[teamOf(a)]||'chart';
+for(const a of agents){const s=SLOTS[a.slot]?.scr;if(s)a.screen=room.addWorkScreen(s[0],s[1],s[2],s[3],{...s[4],kind:SCREEN_KIND(a)})}
 // Streets, houses, traffic and passers-by around the building
 const outdoor=createOutdoor(world);
 // Idle agents stroll around the office; agents with unfinished tasks stay at (or return to) their desk
 const busyAgent=id=>allJobs().some(j=>j.agent===id&&(j.status==='running'||j.status==='queued'));
-const wander=createWander(agents,{isBusy:busyAgent});
+const wander=createWander(agents,{isBusy:busyAgent,onEvent:(...e)=>wanderEvent(...e)});
 const tagHTML=a=>`<span class="tagdot" style="background:#${a.color.toString(16).padStart(6,'0')}"></span>${escapeHTML(a.name)}`;
 const labels=document.getElementById('labels');agents.forEach(a=>{a.el=document.createElement('button');a.el.className='tag';a.el.innerHTML=tagHTML(a);a.el.onclick=()=>openAgent(a.id);labels.appendChild(a.el)});
 // Tasks run for real on the personal machine (Claude Code via /api/machine) or as a local simulation
@@ -183,14 +187,82 @@ function renderResults(){
 }
 // Planning meeting: while the Director plans a workflow (and 20 s after, for the briefing), the Director and one idle
 // colleague per role who can walk meet in the meeting room. Someone given a step gets busy and goes back to their desk.
-const BRIEFING_MS=20000;
+const BRIEFING_MS=20000;let lastMeeting=[];
 function updateMeeting(){
   const plans=allJobs().filter(j=>j.kind==='plan'&&(GROUP[j.status]==='running'||j.status==='done'&&j.finished&&Date.now()-j.finished<BRIEFING_MS));
   const ids=[...new Set(plans.map(j=>j.agent))].filter(id=>wander.canWalk(id)),roles=new Set(ids.map(id=>agentOf(id).role));
   if(plans.length)for(const a of agents){if(ids.length>=10)break;if(ids.includes(a.id)||roles.has(a.role)||!wander.canWalk(a.id)||busyAgent(a.id))continue;roles.add(a.role);ids.push(a.id)}
-  wander.setMeeting(ids);
+  wander.setMeeting(ids);lastMeeting=ids;
 }
 setInterval(updateMeeting,1000);
+// ---------- Meeting room TV: the plan while the Director plans and briefs, otherwise a work report per team ----------
+const TEAM_COLORS=['#5b8def','#f4966b','#4ade80','#a78bfa','#fbbf24','#38bdf8','#f472b6','#94a3b8'];
+const teamColor=t=>TEAM_COLORS[([...String(t)].reduce((h,c)=>h*31+c.charCodeAt(0)|0,3)>>>0)%TEAM_COLORS.length];
+function drawBoard(){
+  const tv=room.meetingTV;if(!tv)return;const x=tv.ctx,W=1024,H=456,jobs=allJobs(),now=Date.now();
+  const txt=(s,px,py,{size=18,color='#e8eefc',bold=false,max=0}={})=>{x.font=`${bold?'700 ':''}${size}px "Segoe UI",sans-serif`;x.fillStyle=color;let t=String(s);if(max)while(t.length>1&&x.measureText(t).width>max)t=t.slice(0,-2)+'…';x.fillText(t,px,py)};
+  x.fillStyle='#0f1730';x.fillRect(0,0,W,H);x.fillStyle='#1a2547';x.fillRect(0,0,W,52);
+  const plan=jobs.find(j=>j.kind==='plan'&&(GROUP[j.status]==='running'||j.status==='waiting'||j.status==='done'&&j.finished&&now-j.finished<BRIEFING_MS));
+  if(plan){
+    const steps=jobs.filter(j=>j.wf===plan.wf&&j.kind==='step').sort((a,b)=>(a.order??a.rid??0)-(b.order??b.rid??0));
+    txt('📋 KẾ HOẠCH THỰC HIỆN',22,34,{size:22,bold:true,color:'#ffd29a'});txt(plan.wfTitle||plan.text,330,34,{size:19,max:670});
+    if(!steps.length){
+      txt(plan.status==='waiting'?'❓ Director đang chờ bạn trả lời để lập kế hoạch':'Director đang phân tích yêu cầu và chia việc'+'.'.repeat(1+Math.floor(now/500)%3),30,100,{size:22,bold:true});
+      txt('Yêu cầu: '+plan.text,30,140,{size:17,color:'#aab6d6',max:960});
+      txt('Thành phần cuộc họp',30,190,{size:16,bold:true,color:'#ffd29a'});
+      (lastMeeting||[]).forEach((id,i)=>{const a=agentOf(id),cx=30+(i%5)*196,cy=210+(i/5|0)*62;x.fillStyle='#1d2a52';x.fillRect(cx,cy,184,50);x.fillStyle=teamColor(teamOf(a));x.fillRect(cx,cy,6,50);txt(a.name,cx+16,cy+22,{size:16,bold:true,max:160});txt(`${LEVELS[levelOf(a)]} · ${teamOf(a)}`,cx+16,cy+42,{size:13,color:'#9fb0d8',max:160})});
+      for(let i=0;i<5;i++){const w=200+Math.abs(Math.sin(now/700+i))*500;x.fillStyle='#22305e';x.fillRect(30,350+i*18,760,10);x.fillStyle=TEAM_COLORS[i];x.fillRect(30,350+i*18,w,10)}
+    }else{
+      // Gantt by dependency depth
+      const depth=new Map(),dep=j=>{if(depth.has(j.key))return depth.get(j.key);depth.set(j.key,0);const d=Math.max(0,...(j.deps||[]).map(k=>{const p=steps.find(s=>s.key===k);return p?dep(p)+1:0}));depth.set(j.key,d);return d};
+      steps.forEach(dep);const cols=Math.max(...depth.values())+1,rows=steps.slice(0,9),rowH=Math.min(38,330/rows.length),gx=330,gw=420;
+      txt('Bước · người phụ trách',22,80,{size:14,color:'#9fb0d8',bold:true});for(let c=0;c<cols;c++)txt('Giai đoạn '+(c+1),gx+c*gw/cols+6,80,{size:13,color:'#9fb0d8'});
+      rows.forEach((j,i)=>{const a=agentOf(j.agent),y=96+i*rowH,c=depth.get(j.key);
+        txt(`${i+1}. ${a.name} (${LEVELS[levelOf(a)]})`,22,y+rowH*.45,{size:14,bold:true,max:300});txt(j.stepTitle||'',22,y+rowH*.85,{size:12,color:'#aab6d6',max:300});
+        x.fillStyle='#1d2a52';x.fillRect(gx,y+4,gw,rowH-10);x.fillStyle=j.status==='done'?'#4ade80':GROUP[j.status]==='error'?'#f87171':teamColor(teamOf(a));
+        x.fillRect(gx+c*gw/cols+3,y+6,gw/cols-6,rowH-14)});
+      const done=steps.filter(j=>j.status==='done').length,pct=done/steps.length,cx=880,cy=150;
+      x.lineWidth=22;x.strokeStyle='#22305e';x.beginPath();x.arc(cx,cy,62,0,7);x.stroke();x.strokeStyle='#4ade80';x.beginPath();x.arc(cx,cy,62,-Math.PI/2,-Math.PI/2+pct*Math.PI*2);x.stroke();
+      txt(Math.round(pct*100)+'%',cx-28,cy+8,{size:26,bold:true});txt(`${done}/${steps.length} bước xong`,cx-58,cy+96,{size:14,color:'#9fb0d8'});
+      const byTeam={};for(const j of steps){const t=teamOf(agentOf(j.agent));byTeam[t]=(byTeam[t]||0)+1}
+      txt('Phân bổ theo đội',790,290,{size:14,bold:true,color:'#ffd29a'});Object.entries(byTeam).slice(0,5).forEach(([t,n],i)=>{x.fillStyle=teamColor(t);x.fillRect(790,302+i*28,n/steps.length*200,18);txt(`${t} · ${n}`,795+n/steps.length*200,316+i*28,{size:13})});
+    }
+  }else{
+    // report: what each team has done and has in hand
+    txt('📊 BÁO CÁO CÔNG VIỆC',22,34,{size:22,bold:true,color:'#ffd29a'});txt(new Date().toLocaleString('vi-VN'),760,34,{size:16,color:'#9fb0d8'});
+    const teams={};for(const a of agents)teams[teamOf(a)]={done:0,run:0,err:0,n:(teams[teamOf(a)]?.n||0)+1};
+    for(const j of jobs){const t=teamOf(agentOf(j.agent));if(!teams[t])continue;if(j.status==='done')teams[t].done++;else if(GROUP[j.status]==='running')teams[t].run++;else teams[t].err++}
+    const list=Object.entries(teams),max=Math.max(1,...list.map(([,v])=>v.done+v.run+v.err)),bw=Math.min(96,820/list.length);
+    list.forEach(([t,v],i)=>{const bx=60+i*(bw+14),base=370,k=250/max;let y=base;
+      for(const [n,c] of [[v.done,'#4ade80'],[v.run,'#fbbf24'],[v.err,'#f87171']]){x.fillStyle=c;x.fillRect(bx,y-n*k,bw,n*k);y-=n*k}
+      txt(t,bx,base+22,{size:14,bold:true,max:bw+10});txt(`${v.n} người`,bx,base+40,{size:12,color:'#9fb0d8'});txt(String(v.done+v.run+v.err),bx+bw/2-8,y-8,{size:14,bold:true})});
+    [['Hoàn thành','#4ade80'],['Đang làm','#fbbf24'],['Lỗi / dừng','#f87171']].forEach(([l,c],i)=>{x.fillStyle=c;x.fillRect(760,70+i*24,14,14);txt(l,782,82+i*24,{size:14})});
+  }
+  tv.tex.needsUpdate=true;
+}
+setInterval(drawBoard,1000);
+// ---------- Leaders on their rounds: a word of encouragement, sometimes a drink left on the desk ----------
+const CHEER=['Tiến độ sao rồi em?','Cố lên, sắp xong rồi! 💪','Làm tốt lắm 👍','Có vướng gì cứ báo anh/chị nhé','Nhớ test kỹ trước khi bàn giao nha','Giữ phong độ nhé!'];
+const REPLY_BUSY=['Dạ, em sắp xong rồi ạ!','Dạ em đang làm, ổn ạ','Em cảm ơn, em cố gắng ạ!'],REPLY_IDLE=['Dạ vâng ạ!','Em sẵn sàng nhận việc ạ','Dạ, em nắm rồi ạ'];
+const pick=a=>a[Math.random()*a.length|0];
+function makeCup(){const g=new THREE.Group(),m=c=>new THREE.MeshStandardMaterial({color:c,roughness:.5});
+  const cup=new THREE.Mesh(new THREE.CylinderGeometry(.045,.035,.11,14),m(0xffffff));cup.position.y=.055;g.add(cup);
+  const top=new THREE.Mesh(new THREE.CylinderGeometry(.043,.043,.01,14),m(0x7a4a2a));top.position.y=.106;g.add(top);
+  const band=new THREE.Mesh(new THREE.CylinderGeometry(.047,.042,.035,14),m(0xf4966b));band.position.y=.05;g.add(band);return g}
+function wanderEvent(type,a,b,info){
+  if(type==='desk')return a.screen?.set(b);
+  if(type==='pick'){a.cup?.removeFromParent();a.cup=makeCup();a.cup.position.set(.2,.82,.16);a.group.add(a.cup);return}
+  if(type==='drop'){a.cup?.removeFromParent();a.cup=null;return}
+  if(type==='visit'){
+    const busy=busyAgent(b.id);
+    if(info?.drink&&a.cup){
+      a.cup.removeFromParent();const c=a.cup;a.cup=null;const [sx,sz,yaw]=b.sit,fx=Math.sin(yaw),fz=Math.cos(yaw);
+      c.position.set(sx+fx*.42-fz*.3,.73,sz+fz*.42+fx*.3);office.add(c);setTimeout(()=>c.removeFromParent(),45000);
+      say(a.id,pick(['☕ Nước của em đây, cố lên nhé!','☕ Uống chút nước cho tỉnh táo nè','🧋 Anh/chị mời em ly nước']),6000);
+      setTimeout(()=>say(b.id,pick(['Em cảm ơn sếp! 💪','Ôi, cảm ơn anh/chị ạ ☺️','Có nước là em làm nhanh hơn liền!']),5000),1400);
+    }else{say(a.id,busy?pick(CHEER):pick(['Rảnh thì xem lại việc cũ giúp anh/chị nhé','Chuẩn bị nhận việc mới nha','Ổn không em?']),6000);setTimeout(()=>say(b.id,pick(busy?REPLY_BUSY:REPLY_IDLE),5000),1400)}
+  }
+}
 // ---------- Speech bubbles over agents: what they just took on, and who they hand over to when done ----------
 const bubbleLayer=document.createElement('div');bubbleLayer.id='bubbles';document.getElementById('app').appendChild(bubbleLayer);
 function say(id,text,ms=8000){

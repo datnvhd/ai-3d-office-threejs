@@ -46,7 +46,11 @@ const SPOTS=[['cooler',PI],['counter',PI],['cafe1',PI/2],['cafe2',-PI/2],['book'
 const yawTo=(a,b)=>Math.atan2(b[0]-a[0],b[1]-a[1]);
 const wrap=a=>Math.atan2(Math.sin(a),Math.cos(a));
 
-export function createWander(agents,{isBusy=()=>false,maxOut=Math.max(3,Math.round(agents.length/3))}={}){
+// Staff mostly stay at their desk; Leaders walk round their team (preferring people who are working) to check progress
+// and cheer them on, sometimes bringing a drink from the pantry. onEvent(type,…) lets the app show it:
+// 'desk' (agent, sitting at own desk?), 'pick' (leader took a drink), 'visit' (leader, member, {drink}), 'drop' (leader).
+const DRINKS=['cooler','counter','cf3','cl2'];
+export function createWander(agents,{isBusy=()=>false,onEvent=()=>{},maxOut=Math.max(3,Math.round(agents.length/4))}={}){
   const nodes={...N},adj={};
   const link=(a,b)=>{(adj[a]??=[]).push(b);(adj[b]??=[]).push(a)};
   E.forEach(([a,b])=>link(a,b));
@@ -67,14 +71,28 @@ export function createWander(agents,{isBusy=()=>false,maxOut=Math.max(3,Math.rou
   // first strolls spread over the first ~15 s whatever the office size (it used to grow with each agent's place in the list)
   // everyone starts seated at their desk, facing the screen
   const S=agents.map(a=>{const s={a,state:'home',at:'h_'+a.id,route:[],wait:2+Math.random()*13,yaw:HOME_YAW,face:HOME_YAW,spot:null,visit:null};
-    if(a.sit){a.group.position.x=a.sit[0];a.group.position.z=a.sit[1];Object.assign(s,{state:'sitting',yaw:a.sit[2],face:a.sit[2]});a.char.setSit?.(true)}
+    if(a.sit){a.group.position.x=a.sit[0];a.group.position.z=a.sit[1];Object.assign(s,{state:'sitting',yaw:a.sit[2],face:a.sit[2]});a.char.setSit?.(true);onEvent('desk',a,true)}
     return s});
   const byId=Object.fromEntries(S.map(s=>[s.a.id,s]));
+  const teamKey=a=>a.team||a.id,boss=a=>teamKey(a)==='Ban điều hành';
+  // Leaders with people to look after: their own team, or every team's Leader (and a few others) for the Director
+  for(const s of S)s.lead=s.a.level==='leader'&&!!s.a.door&&(boss(s.a)||S.some(o=>o!==s&&o.a.door&&teamKey(o.a)===teamKey(s.a)));
+  const crew=s=>S.filter(o=>o!==s&&o.a.door&&o.a.sit&&(boss(s.a)?o.a.level==='leader'||o.a.id.length%5===0:teamKey(o.a)===teamKey(s.a)));
+  const idleWait=s=>s.lead?10+Math.random()*18:120+Math.random()*180;
+  for(const s of S)s.wait=s.lead?3+Math.random()*12:25+Math.random()*150;
+  function patrol(s){
+    const pool=crew(s).filter(o=>o.state==='sitting'&&!o.visitor&&!o.meet);if(!pool.length)return;
+    const busy=pool.filter(o=>isBusy(o.a.id)),list=busy.length&&Math.random()<.75?busy:pool,o=list[Math.random()*list.length|0];
+    const drinks=DRINKS.filter(k=>!taken.has(k)),drink=Math.random()<.3&&drinks.length?drinks[Math.random()*drinks.length|0]:null;
+    if(drink){s.errand={to:o,spot:drink};s.spot=drink;taken.add(drink);go(s,drink,'go')}
+    else{s.patrol=true;s.visit=o;s.spot=o.a.door;o.visitor=s;taken.add(s.spot);go(s,s.spot,'go')}
+  }
 
   // Re-routing mid-segment first walks back to the last node passed so nobody cuts through furniture
   function go(s,to,state){
     const p=s.a.group.position,[x,z]=nodes[s.at];
     s.route=path(s.at,to);if(Math.hypot(p.x-x,p.z-z)>1e-3||!s.route.length)s.route.unshift(s.at);
+    if(s.state==='sitting'||s.state==='tosit')onEvent('desk',s.a,false);
     s.state=state;s.a.char.setSit?.(false);s.a.char.setWalk(true);
   }
   function leave(s){
@@ -88,7 +106,7 @@ export function createWander(agents,{isBusy=()=>false,maxOut=Math.max(3,Math.rou
     }else{s.wait=3;return}
     taken.add(s.spot);go(s,s.spot,'go');
   }
-  function release(s){if(s.spot)taken.delete(s.spot);if(s.visit)s.visit.visitor=null;s.spot=s.visit=null}
+  function release(s){if(s.spot)taken.delete(s.spot);if(s.visit)s.visit.visitor=null;if(s.errand?.got&&!s.errand.done)onEvent('drop',s.a);s.spot=s.visit=s.errand=null;s.patrol=false}
   function goHome(s){release(s);go(s,'h_'+s.a.id,'back')}
 
   // Planning meeting: id → seat index. The first id (the Director) gets the head of the table; seats are kept between calls
@@ -109,13 +127,13 @@ export function createWander(agents,{isBusy=()=>false,maxOut=Math.max(3,Math.rou
       const work=busy&&!s.meet&&s.a.sit;
       if(s.state==='meeting'){s.face=SEATS[+s.meet.slice(4)][2]}
       // at the desk an agent sits facing the screen (working or not); idle ones get up now and then for a stroll
-      else if(s.state==='sitting'){if(!busy&&!s.visitor&&s.a.door&&(s.wait-=dt)<=0){if(out<maxOut)leave(s);else s.wait=2+Math.random()*3}}
+      else if(s.state==='sitting'){if(!busy&&!s.visitor&&s.a.door&&(s.wait-=dt)<=0){if(out<maxOut)(s.lead?patrol:leave)(s);if(s.state==='sitting')s.wait=s.lead?4+Math.random()*6:idleWait(s)}}
       else if(s.state==='tosit'||s.state==='unsit'){
         // short straight step between the standing spot and the chair
         const [tx,tz]=s.state==='tosit'?s.a.sit:[s.a.x,s.a.z],dx=tx-g.position.x,dz=tz-g.position.z,d=Math.hypot(dx,dz),step=SPEED*.7*dt;
         if(d>1e-3)s.face=s.state==='tosit'&&d<.15?s.a.sit[2]:Math.atan2(dx,dz);
         if(d<=step){g.position.x=tx;g.position.z=tz;s.a.char.setWalk(false);
-          if(s.state==='tosit'){s.state='sitting';s.face=s.a.sit[2];s.a.char.setSit?.(true);if(s.wait<=0)s.wait=6+Math.random()*10}else{s.state='home';s.face=HOME_YAW;s.wait=4+Math.random()*8}}
+          if(s.state==='tosit'){s.state='sitting';s.face=s.a.sit[2];s.a.char.setSit?.(true);onEvent('desk',s.a,true);if(s.wait<=0)s.wait=idleWait(s)}else{s.state='home';s.face=HOME_YAW;s.wait=4+Math.random()*8}}
         else{g.position.x+=dx/d*step;g.position.z+=dz/d*step;s.a.char.setWalk(d>.25)}
         if(s.state==='unsit'&&work)s.state='tosit';
       }
@@ -135,8 +153,14 @@ export function createWander(agents,{isBusy=()=>false,maxOut=Math.max(3,Math.rou
           if(!s.route.length){
             s.a.char.setWalk(false);
             if(s.state==='meet'){s.state='meeting';s.a.char.setSit?.(true)}
-            else if(s.state==='back'){s.state='home';s.face=HOME_YAW;s.wait=6+Math.random()*10}
-            else{s.state='stay';s.wait=s.visit?5+Math.random()*4:3+Math.random()*5;if(!s.visit)s.face=SPOTS.find(([k])=>k===s.spot)?.[1]??s.face}
+            else if(s.state==='back'){s.state='home';s.face=HOME_YAW;s.wait=idleWait(s)}
+            // drink picked up at the pantry: now take it to the colleague (if they are still at their desk)
+            else if(s.errand&&!s.errand.got&&s.spot===s.errand.spot){
+              s.errand.got=true;onEvent('pick',s.a);taken.delete(s.spot);const o=s.errand.to;
+              if(o.state==='sitting'&&!o.visitor&&!o.meet){s.visit=o;s.spot=o.a.door;o.visitor=s;taken.add(s.spot);go(s,s.spot,'go')}else goHome(s)
+            }
+            else{s.state='stay';s.wait=s.visit?5+Math.random()*4:3+Math.random()*5;if(!s.visit)s.face=SPOTS.find(([k])=>k===s.spot)?.[1]??s.face;
+              if(s.visit&&(s.patrol||s.errand?.got)){const drink=!!s.errand?.got;if(drink)s.errand.done=true;onEvent('visit',s.a,s.visit.a,{drink})}}
           }
         }else{g.position.x+=dx/d*step;g.position.z+=dz/d*step}
       }
