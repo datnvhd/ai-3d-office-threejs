@@ -380,24 +380,28 @@ export function createCharacter(look){
   const bot=o.robot?robot(root,-.5,.15):null,phase=Math.random()*6;
   root.scale.setScalar(o.scale||1);
   mergeTree(root);
-  let blinkAt=800+Math.random()*3000,walking=false,w=0,lastT=0;
+  let blinkAt=800+Math.random()*3000,walking=false,w=0,lastT=0,sitting=false,st=0;
   // Walk cycle blends in/out (w: 0 = posed, 1 = full stride); the tablet pose keeps its arms
-  function swing(a,c){const {s,p}=a.sh.userData,keep=o.pose==='tablet'?1:1-w;
+  // Seated (st: 0 = standing, 1 = on the chair): arms move to a typing pose in front of the body
+  const TYPE={x:-.6,in:.28,out:0,e:-1.2,ez:0};
+  function swing(a,c){const {s,p:p0}=a.sh.userData,keep=o.pose==='tablet'&&!st?1:1-w;
+    const p=st?{x:p0.x+(TYPE.x-p0.x)*st,in:p0.in+(TYPE.in-p0.in)*st,out:p0.out*(1-st),e:p0.e+(TYPE.e+Math.sin(lastT*.018+s*2)*.06-p0.e)*st,ez:(p0.ez||0)*(1-st)}:p0;
     a.sh.rotation.set(p.x*keep+c*.45*(1-keep),-s*p.in*keep,s*(p.out*keep+.06*(1-keep)));
     a.el.rotation.set(p.e*keep-.3*(1-keep),0,s*(p.ez||0)*keep)}
   function update(t){
     const dt=Math.min(.1,(t-lastT)/1000);lastT=t;
-    w=walking?Math.min(1,w+dt*5):Math.max(0,w-dt*5);
-    head.rotation.set(Math.sin(t*.0009+phase)*.05,Math.sin(t*.0006+phase)*.12*(1-w),Math.sin(t*.0011+phase)*.04);
+    w=walking?Math.min(1,w+dt*5):Math.max(0,w-dt*5);st=sitting?Math.min(1,st+dt*3):Math.max(0,st-dt*3);
+    head.rotation.set(Math.sin(t*.0009+phase)*.05+.16*st,Math.sin(t*.0006+phase)*.12*(1-w),Math.sin(t*.0011+phase)*.04);
     if(t>blinkAt+160)blinkAt=t+2200+Math.random()*3800;
     const k=t-blinkAt,sy=k>0&&k<160?Math.max(.08,Math.abs(k-80)/80):1;eyes.forEach(e=>e.scale.y=sy);
     const c=Math.sin(t*.0095+phase);
-    lg.L.rotation.x=c*.5*w;lg.R.rotation.x=-c*.5*w;
-    b.position.y=Math.abs(c)*.03*w;
+    // seated: hips down onto the seat, legs forward under the desk
+    lg.L.rotation.x=c*.5*w-1.35*st;lg.R.rotation.x=-c*.5*w-1.35*st;
+    b.position.y=Math.abs(c)*.03*w-.3*st;
     b.scale.y=1+Math.sin(t*.0022+phase)*.006*(1-w);// breathing
     swing(arms.L,-c);swing(arms.R,c);
-    if(o.pose==='wave'&&w<.5)arms.R.el.rotation.z=-(1.7+Math.sin(t*.008)*.35)*(1-w*2);
+    if(o.pose==='wave'&&w<.5&&st<.5)arms.R.el.rotation.z=-(1.7+Math.sin(t*.008)*.35)*(1-w*2);
     if(bot)bot.position.y=.03+Math.sin(t*.003+phase)*.025;
   }
-  return {group:root,update,setWalk:v=>{walking=v}};
+  return {group:root,update,setWalk:v=>{walking=v},setSit:v=>{sitting=v}};
 }

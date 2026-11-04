@@ -39,7 +39,7 @@ export function pickModel(text){
 }
 
 export function ruleSteps(text,owner,team){
-  const t=plain(text),has=id=>team.some(a=>a.id===id);
+  const t=plain(text),has=id=>team.some(a=>a.id===id||teamOf(a)===BUILTIN_TEAM[id]);
   const bug=/\b(bug|fix|loi|sua loi|hong|crash|khong (chay|hoat dong|hien|load))\b/.test(t);
   const ui=/(trang|giao dien|man hinh|page|\bui\b|form|dang nhap|dang ky|login|signup|landing|dashboard|layout|\bnut\b|button|menu|popup|frontend|responsive)/.test(t);
   const be=/(dang nhap|dang ky|login|signup|api|database|co so du lieu|csdl|server|backend|xac thuc|auth|endpoint|luu tru)/.test(t);
@@ -77,6 +77,8 @@ export function ruleSteps(text,owner,team){
   }
   // Nothing matched: the agent the user picked does it (devs still get a test step)
   if(!s.length){const o=add(owner,'Thực hiện',text);if(['frontend','backend'].includes(owner))add('qa','Kiểm thử',`Kiểm thử kết quả: ${text}`,[o])}
+  const taken=new Set();
+  for(const x of s){const kind=/duyệt|tổng hợp/i.test(x.title)?'review':x.model===LATEST.opus?'hard':x.model===LATEST.haiku?'easy':'normal';x.agent=staff(team,x.agent,kind,taken)}
   return s.slice(0,MAX_STEPS);
 }
 
@@ -86,10 +88,12 @@ export function planPrompt(text,owner,team){
 Hãy lập LUỒNG CÔNG VIỆC: chia yêu cầu thành các bước, mỗi bước giao cho đúng một agent phù hợp, theo thứ tự phụ thuộc.
 
 Đội ngũ (id · tên · vai trò):
-${team.map(a=>`- ${a.id} · ${a.name} · ${a.role}${a.desc?` · mô tả: ${String(a.desc).replace(/\s+/g,' ').slice(0,300)}`:''}`).join('\n')}
+${team.map(a=>`- ${a.id} · ${a.name} · ${a.role} · đội ${teamOf(a)} · ${LEVELS[levelOf(a)]}${a.desc?` · mô tả: ${String(a.desc).replace(/\s+/g,' ').slice(0,300)}`:''}`).join('\n')}
 
 Quy tắc:
 - Chỉ dùng các agent liên quan; tối đa ${MAX_STEPS} bước. Việc đơn giản chỉ cần 1–2 bước.
+- Mỗi đội có 1 Leader và các cấp Senior, Middle, Junior. Giao bước theo độ khó: khó, kiến trúc, rủi ro cao → Senior (hoặc Leader khi đội không có Senior); việc thông thường → Middle; việc đơn giản, lặp lại → Junior. Bước duyệt/review kết quả của đội giao cho Leader của đội đó. Các bước song song trong cùng đội giao cho những người khác nhau.
+- Nếu yêu cầu quá mơ hồ để lập kế hoạch (không rõ cần làm gì, cho ai, kết quả mong muốn), thay vì kế hoạch hãy trả về đúng một khối JSON {"question":"câu hỏi ngắn","options":["lựa chọn 1","lựa chọn 2","lựa chọn 3"]} để hỏi lại người dùng. Chỉ hỏi khi thật cần; nếu có "Thông tin bổ sung" thì dùng nó để lập kế hoạch.
 - "after" liệt kê key của các bước phải xong trước (chỉ được trỏ tới bước đứng trước). Các bước không phụ thuộc nhau có thể chạy song song.
 - Mỗi "task" là chỉ dẫn cụ thể cho agent đó, viết bằng tiếng Việt; bước sau sẽ tự nhận kết quả của bước trước.
 - Ví dụ: "Tạo trang đăng nhập" → designer thiết kế → director duyệt thiết kế → frontend dựng giao diện + backend làm API (song song) → qa kiểm thử.
@@ -152,4 +156,59 @@ export function parseRework(text){
   const to=[...new Set((Array.isArray(j?.to)?j.to:[j?.to]).map(Number).filter(n=>Number.isInteger(n)&&n>0))];
   if(!to.length)return null;
   return {to,reason:String(j.reason||'').trim().slice(0,600)||'Chưa đạt yêu cầu',clean:String(text).replace(m[0],'').trim()};
+}
+
+// ---------- Teams and levels ----------
+// Every agent belongs to a team (built-in agents: their own) and has a level; each team has exactly one Leader.
+export const LEVELS={leader:'Leader',senior:'Senior',middle:'Middle',junior:'Junior'};
+export const BUILTIN_TEAM={director:'Ban điều hành',research:'Research',frontend:'Frontend',backend:'Backend',analyst:'Data',designer:'Design',qa:'QA'};
+export const teamOf=a=>a?.team||BUILTIN_TEAM[a?.id]||a?.role||a?.id||'';
+export const levelOf=a=>LEVELS[a?.level]?a.level:BUILTIN_TEAM[a?.id]?'leader':'middle';
+const RANK={leader:3,senior:2,middle:1,junior:0};
+// One Leader per team: none → the most senior member is promoted; several → the first stays, the others become Senior
+export function normalizeLeaders(list){
+  const byTeam=new Map();for(const a of list){const t=teamOf(a);if(!byTeam.has(t))byTeam.set(t,[]);byTeam.get(t).push(a)}
+  for(const members of byTeam.values()){
+    const leads=members.filter(a=>levelOf(a)==='leader');
+    if(!leads.length){const top=[...members].sort((a,b)=>RANK[levelOf(b)]-RANK[levelOf(a)])[0];top.level='leader'}
+    else leads.slice(1).forEach(a=>a.level='senior');
+    for(const a of members)a.level=levelOf(a);
+  }
+  return list;
+}
+// Who in a team takes a step: a review goes to the Leader; hard work to a Senior, normal work to a Middle, easy work to a
+// Junior, falling back to the nearest level. Members already given a step in this plan come last, so work spreads out.
+const PREF={review:['leader','senior','middle','junior'],hard:['senior','leader','middle','junior'],normal:['middle','senior','junior','leader'],easy:['junior','middle','senior','leader']};
+export function staff(team,anchorId,kind,taken=new Set()){
+  const anchor=team.find(a=>a.id===anchorId),t=anchor?teamOf(anchor):BUILTIN_TEAM[anchorId];
+  const members=team.filter(a=>teamOf(a)===t);if(!members.length)return anchorId;
+  for(const lv of PREF[kind]||PREF.normal){const c=members.filter(a=>levelOf(a)===lv);if(!c.length)continue;
+    const free=c.filter(a=>!taken.has(a.id)),pick=(free.length?free:c)[Math.random()*(free.length||c.length)|0];taken.add(pick.id);return pick.id}
+  return anchorId;
+}
+
+// ---------- Asking back when information is missing ----------
+// An agent that cannot make a sensible assumption ends its answer with a question block; the task then waits for the
+// user, who picks one of the options or writes their own answer, and the agent carries on in the same conversation.
+export const MAX_CLARIFY=3;
+export const QUESTION_GUIDE=`
+THIẾU THÔNG TIN: nếu thiếu thông tin quan trọng mà không thể tự giả định hợp lý (ví dụ không rõ dùng công nghệ nào, cho đối tượng nào, phạm vi tới đâu, dữ liệu ở đâu), ĐỪNG đoán. Dừng lại, nói ngắn gọn vì sao cần hỏi, rồi đặt ở CUỐI CÙNG đúng một khối:
+\`\`\`question
+{"question":"câu hỏi ngắn, rõ ràng","options":["lựa chọn 1","lựa chọn 2","lựa chọn 3"]}
+\`\`\`
+2–5 lựa chọn ngắn, cụ thể (người dùng cũng có thể tự nhập câu trả lời khác). Gộp mọi điều cần hỏi vào một câu hỏi. Nếu có thể tự giả định hợp lý thì cứ làm và ghi rõ giả định trong phần kết quả, không hỏi.
+`;
+const cleanOptions=o=>(Array.isArray(o)?o:[]).map(x=>String(x).trim().slice(0,160)).filter(Boolean).slice(0,6);
+export function parseQuestion(text){
+  const m=String(text||'').match(/```question\s*([\s\S]*?)```/i);if(!m)return null;
+  let j;try{j=JSON.parse(m[1])}catch{return null}
+  const q=String(j?.question||'').trim().slice(0,500);if(!q)return null;
+  return {question:q,options:cleanOptions(j.options),clean:String(text).replace(m[0],'').trim()};
+}
+// The Director's planning answer is JSON; a too-vague request gets {"question":…,"options":[…]} instead of steps
+export function parsePlanQuestion(raw){
+  const m=String(raw||'').match(/\{[\s\S]*\}/);if(!m)return null;
+  let j;try{j=JSON.parse(m[0])}catch{return null}
+  if(Array.isArray(j?.steps)&&j.steps.length||!String(j?.question||'').trim())return null;
+  return {question:String(j.question).trim().slice(0,500),options:cleanOptions(j.options)};
 }

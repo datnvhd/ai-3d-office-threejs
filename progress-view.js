@@ -6,7 +6,7 @@ const KIND={init:'Khởi động',tool:'Công cụ',out:'Đầu ra',denied:'Bị
 const pad=n=>String(n).padStart(2,'0');
 const dur=ms=>{const s=Math.max(0,Math.round(ms/1000));return s>=3600?`${Math.floor(s/3600)}:${pad(Math.floor(s/60)%60)}:${pad(s%60)}`:`${pad(Math.floor(s/60))}:${pad(s%60)}`};
 
-export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS,GROUP,onCancel,onRetry,onAssign,onAsk}){
+export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS,GROUP,onCancel,onRetry,onAssign,onAsk,onAnswer}){
   const modal=document.createElement('div');modal.className='modal hidden pv';
   modal.innerHTML='<div class="pv-box"><button class="close" data-pv="close">✕</button><div class="pv-head"></div><div class="pv-main"><aside class="pv-list"></aside><section class="pv-detail"></section></div></div>';
   document.getElementById('app').appendChild(modal);
@@ -55,6 +55,8 @@ export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS
       ${live?`<div class="pv-now">${j.status==='queued'?'⏳ Đang chờ đến lượt chạy…':`<span class="spinner"></span> ${esc(j.remote?j.activity||'Đang xử lý…':'Đang xử lý (mô phỏng)…')}`}</div><div class="progress ${j.remote?'live':''}"><i style="width:${j.progress}%"></i></div>`:''}
       ${j.remote?`<div class="section-title">NHẬT KÝ THỰC HIỆN <span>${log.length} mục</span></div><div class="pv-log">${log.length?log.map(e=>`<div class="pv-row k-${e.kind}"><time>+${dur(e.at-t0)}</time><i title="${KIND[e.kind]||''}">${ICON[e.kind]||'•'}</i><div>${e.kind==='text'?md(e.text):esc(e.text)}</div></div>`).join(''):`<p class="empty">${t?'Chưa có bước nào.':'Đang tải nhật ký…'}</p>`}${live&&j.status!=='queued'?'<div class="pv-row k-wait"><time></time><i><span class="spinner"></span></i><div>Đang chờ bước tiếp theo…</div></div>':''}</div>`:'<p class="claude-note">Việc mô phỏng không có nhật ký thật. Chọn nơi thực thi “Máy cá nhân” để xem từng bước Claude Code thực hiện.</p>'}
       ${j.web?`<div class="section-title">ẢNH CHỤP TRÌNH DUYỆT <span>${shots.length} ảnh</span></div>${shots.length?`<div class="pv-shots">${shots.map(s=>{const u=`/api/machine/tasks/${j.rid}/shots/${encodeURIComponent(s.name)}`;return `<a href="${u}" target="_blank" rel="noopener" title="${esc(new Date(s.at).toLocaleTimeString('vi-VN'))}"><img src="${u}" alt="Ảnh chụp" loading="lazy"><span>${esc(new Date(s.at).toLocaleTimeString('vi-VN'))}</span></a>`}).join('')}</div>`:'<p class="claude-note">Chưa có ảnh chụp nào.</p>'}`:''}
+      ${j.status==='waiting'?`<div class="section-title">CẦN BẠN TRẢ LỜI</div><div class="qbox pv-q-box"><p>${esc((t?.question||j.question)?.q||'')}</p>${((t?.question||j.question)?.options||[]).length?`<div class="qopts">${(t?.question||j.question).options.map(o=>`<button class="qopt" data-pv-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>`:''}<form class="pv-ask pv-answer"><textarea rows="2" maxlength="4000" placeholder="Hoặc tự nhập câu trả lời / thông tin bổ sung… (Enter gửi)"></textarea><button class="assign" type="submit">Gửi</button></form></div>`:''}
+      ${(t?.clarify||j.clarify||[]).length?`<div class="section-title">ĐÃ TRAO ĐỔI <span>${(t?.clarify||j.clarify).length} câu</span></div><div class="pv-thread">${(t?.clarify||j.clarify).map(x=>`<div class="pv-a"><b>❓ ${esc(x.q)}</b></div><div class="pv-q">${esc(x.answer)}</div>`).join('')}</div>`:''}
       ${j.rework?`<div class="pv-rework">↩ Đã trả lại cho <b>${esc(j.rework.to.join(', '))}</b> để sửa: ${esc(j.rework.reason)}</div>`:''}
       ${j.status==='done'?`<div class="section-title">KẾT QUẢ</div><div class="jobresult pv-result"><div class="restext md">${j.remote?md(j.result):esc(j.result)}</div></div>`:''}
       ${j.remote&&j.kind!=='plan'&&(j.status==='done'||t?.thread?.length)?askBlock(a,j,t):''}
@@ -78,16 +80,18 @@ export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS
       ${(t?.status||j.status)==='done'?`<form class="pv-ask"><textarea rows="2" maxlength="8000" placeholder="Hỏi thêm ${esc(a.name)} về việc này, không cần mô tả lại… (Enter gửi, Shift+Enter xuống dòng)"></textarea><button class="assign" type="submit">Gửi</button></form>`:''}`;
   }
   detail.addEventListener('submit',async e=>{
-    e.preventDefault();const box=e.target.querySelector('textarea'),btn=e.target.querySelector('button'),q=box.value.trim(),j=current();
+    e.preventDefault();
+    if(e.target.classList.contains('pv-answer')){const box=e.target.querySelector('textarea'),j=current();if(box.value.trim()&&j){await onAnswer?.(j,box.value);box.value='';full=null;lastDetail='';tick()}return}const box=e.target.querySelector('textarea'),btn=e.target.querySelector('button'),q=box.value.trim(),j=current();
     if(!q||!j?.remote||!onAsk)return;
     btn.disabled=box.disabled=true;
     try{await onAsk(j,q);box.value='';full=null;lastDetail='';tick()}catch{}finally{btn.disabled=box.disabled=false}
   });
-  detail.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.target.matches('.pv-ask textarea')){e.preventDefault();e.target.form.requestSubmit()}});
+  detail.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.isComposing&&e.target.matches('.pv-ask textarea, .pv-answer textarea')){e.preventDefault();e.target.form.requestSubmit()}});
 
   modal.addEventListener('click',async e=>{
     if(e.target===modal)return close();
     const item=e.target.closest('[data-key]');if(item){jobKey=item.dataset.key;full=null;lastLogLen=-1;lastList=lastDetail='';detail.innerHTML='';tick();return}
+    const pa=e.target.closest('[data-pv-answer]');if(pa){const j=current();if(j){await onAnswer?.(j,pa.dataset.pvAnswer);full=null;lastDetail='';tick()}return}
     const b=e.target.closest('[data-pv]');if(!b)return;
     const act=b.dataset.pv,j=current();
     if(act==='close')close();

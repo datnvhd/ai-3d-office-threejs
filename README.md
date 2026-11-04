@@ -110,4 +110,53 @@ Each step can send back at most `MAX_REWORK` (3) times; if it still does not pas
 
 **＋ Thêm** at the end of the agent picker adds an agent: name, short role, a description of what it does and how (sent with every task it gets, and shown to the Director when it plans workflows), a look (developer, designer, manager, young) and a colour. **✎** next to the selected agent edits its name, role and description (built-in agents too; their look stays); **🗑** deletes it. The Director cannot be deleted. Old tasks of a deleted agent are kept.
 
-The list is saved on the server in `~/.ai-3d-office/agents.json` (`GET/POST /api/machine/agents`), so every browser on this machine sees the same office; without that file the 7 built-in agents are used. The office has 12 desks: the 7 built-in ones and the 5 empty ones (back row by the windows, back-to-back desks in the glass room). A new agent takes the first free desk, including one freed by deleting an agent; agents at the 5 extra desks stay at their desk instead of walking around. Adding, deleting or changing an agent's look reloads the page. Custom agents run on Claude Code; a custom `public/models/<agent id>.glb` or the GLB of their look is used when present.
+The list is saved on the server in `~/.ai-3d-office/agents.json` (`GET/POST /api/machine/agents`), so every browser on this machine sees the same office; without that file the 7 built-in agents are used. The office has 36 desks: the 7 built-in ones, 24 in the added rows and 5 older stand-still ones (back row by the windows, back-to-back desks in the glass room). A new agent takes a free built-in desk first (one freed by deleting an agent), then the added rows, then the stand-still desks; custom agents already at a stand-still desk move to a free desk in the added rows. Agents at the stand-still desks stay put; all others walk around. Adding, deleting or changing an agent's look reloads the page. Custom agents run on Claude Code; a custom `public/models/<agent id>.glb` or the GLB of their look is used when present.
+
+## Office layout
+
+The office floor is 22.4 × 16 m (office coordinates x∈[-5.6,16.8], z∈[-4,12], see `ROOM` in `office.js`); the office group is shifted so its centre sits at the world origin, in the middle of the city block (`outdoor.js` roads moved out to fit). The original room is the back-left quarter (its former glass room no longer has glass walls). The added space has four rows of six desks (right and front-right), a closed meeting room (about 6.6 × 6.2 m, the outer wall with its window as one side) with a long table and a wall screen, a break area with two sofas, and a coffee corner with a water dispenser. Agents walk there along the aisles in `wander.js` (spine at x=5.9, one aisle per desk row) and stop at the sofas, the coffee corner, the ends of the desk aisles or a colleague's desk; about a third of them can be away from their desk at once.
+
+## Planning meetings
+
+While the Director plans a workflow (and for a 20-second briefing after), the Director walks to the head of the meeting table and one idle colleague per role (e.g. one frontend dev, one backend dev, one BA, one QA…) joins, up to 10 people (`updateMeeting()` in `src.js`, seats in `wander.js`). Anyone given a step gets busy and goes back to their desk; the others leave when the briefing ends. Agents at the stand-still desks do not join. Works for both the personal machine and simulation.
+
+## Teams, levels and leaders
+
+Every agent has a **team** and a **level**: Leader, Senior, Middle or Junior (set in the ✎ / ＋ Thêm form; shown as Lead/Sr/Mid/Jr in the picker). Each team always has exactly one Leader: `normalizeLeaders()` in `workflow-plan.js` promotes the most senior member when a team has none and turns extra Leaders into Seniors; choosing someone as Leader in the form makes the previous one Senior. Built-in agents are the Leaders of their own teams (Ban điều hành, Research, Frontend, Backend, Data, Design, QA).
+
+Work goes to the matching level. The Director's planning prompt lists everyone's team and level and asks for hard or risky steps → Senior (or the Leader), normal steps → Middle, simple repetitive steps → Junior, reviews → the team's Leader, and different people for parallel steps of one team. The keyword planner (fallback and simulation) does the same with `staff()`: difficulty comes from the step's model pick (Opus = hard, Haiku = easy) and "duyệt/tổng hợp" steps are reviews. Each agent's prompt says its team and level and what that level means.
+
+## At the desk
+
+At its desk an agent always sits on the chair facing the screen and types (from page load on, working or not); it only gets up to stroll, visit a colleague or join a planning meeting (`setSit()` in `characters.js`, `tosit`/`sitting` states in `wander.js`). Name labels above agents are hidden; click an agent (or its button in the picker) to select it.
+
+## Speech bubbles
+
+A bubble over an agent says what it just took on ("📥 Tiếp nhận: …"); when it finishes it says who it hands over to ("Tôi đã xong, chuyển đến QA Tester 4"), that it sent work back ("↩ Chưa đạt, trả lại …"), or, when the whole job is done, "Tôi đã xong ✅" and the result opens in the progress popup. The Director says who the plan goes to. Jobs that were already there when the page opened are not announced.
+
+## Pasting images and dropping files
+
+Paste a screenshot or copied file into the task box (Ctrl+V; pasted images are named `anh-dan-<time>.png`), or drop files anywhere on the left panel; they are attached like **📎 Đính kèm tệp**.
+
+## Toolkits for the IT team
+
+The **Máy cá nhân** window has **BỘ CÔNG CỤ CHO ĐỘI IT**: per team, which kits of shell commands its agents may run through Claude Code's Bash tool (`TOOLKITS` / `DEFAULT_TEAM_KITS` in `server/machine-bridge.js`, saved as `teamKits` in `~/.ai-3d-office/machine.json`):
+
+| Kit | Commands | Default teams |
+|---|---|---|
+| Xem file | ls, cat, find, grep, rg, tree… | all |
+| Git | status, diff, log, show, blame; add/commit/checkout/stash when edits are allowed | Frontend, Backend, QA, Ban điều hành |
+| Node.js ✎ | npm, pnpm, yarn, npx, node, tsc, eslint, prettier | Frontend, Backend |
+| Python ✎ | python, pip, pytest | Backend, Data |
+| Chạy test ✎ | npm test, vitest, jest, playwright test, pytest | Frontend, Backend, QA |
+| GitHub CLI | gh issue/pr/run view & list; create/comment when edits are allowed | Frontend, Backend |
+| Tài liệu & sơ đồ ✎ | Mermaid CLI, pandoc | BA |
+| Trình duyệt | web tools (Playwright) on for every task of the team | QA, Design |
+
+✎ kits only apply when the permission mode allows edits; in read-only mode only the looking commands are allowed. `git push`, `git reset --hard`, `git clean`, `rm -rf`, `npm publish` and deleting repos/releases are always blocked. Each agent's prompt lists the commands it may use; anything else asks for approval and is therefore refused. (Claude Code itself still lets a few harmless read-only commands through, such as `whoami` or `--version`.) Codex agents use their own sandbox instead.
+
+## Asking back when information is missing
+
+Every agent is told: if important information is missing and no sensible assumption can be made, don't guess — stop and end the answer with a `question` block (`{"question":"…","options":["…","…"]}`, parsed by `parseQuestion()` in `workflow-plan.js`); if it can assume, it goes on and states the assumption. The Director's planner may answer `{"question":…,"options":[…]}` instead of a plan when the request is too vague.
+
+The task then shows **Chờ bạn trả lời** (status `waiting`): the agent's bubble shows the question, the result card (and the workflow card, and the progress popup) shows the options as buttons plus a box for your own answer (Enter sends). Later workflow steps wait. Answering (`POST /api/machine/tasks/:id/answer {text}`) continues the same Claude/Codex session (or re-sends the task with the exchange if the session is gone); for the planner the answer is added to the request and the plan is made again. Each task can ask up to `MAX_CLARIFY` (3) times; after that the agent is told to assume. The exchange is listed under **ĐÃ TRAO ĐỔI** in the popup. In simulation, a request of fewer than six words makes the agent ask once.

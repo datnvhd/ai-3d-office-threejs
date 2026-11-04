@@ -5,16 +5,16 @@ import {attachModel} from './character-models.js';
 import {initClaudeConnect} from './claude-connect.js';
 import {initCodexConnect} from './codex-connect.js';
 import {createOffice} from './office.js';
-import {createWander} from './wander.js';
+import {createWander,ROW_X} from './wander.js';
 import {createOutdoor} from './outdoor.js';
 import {initMachineConnect,machineApi} from './machine-connect.js';
 import {createProgressView} from './progress-view.js';
-import {ruleSteps,MODELS,EFFORTS,modelId} from './workflow-plan.js';
+import {ruleSteps,MODELS,EFFORTS,modelId,LEVELS,BUILTIN_TEAM,teamOf,levelOf,normalizeLeaders} from './workflow-plan.js';
 import {initWebMCP} from './webmcp.js';
 const app=document.querySelector('#app');
 // Left column: assign work · right column: what the agents did with it (running, done with result, failed with error)
 app.innerHTML=`<div id="scene"></div><div class="top"><div class="brand"><span class="logo">▦</span><div><b>My Office <i>3D</i></b><small>AI AGENT WORKSPACE</small></div></div><div class="topstats"><span><em class="dot green"></em><b id="active">0</b> AI đang làm việc</span><span><em class="dot orange"></em><b id="queued">0</b> đang xử lý</span><span><em class="dot blue"></em><b id="done">0</b> hoàn thành</span><span><em class="dot red"></em><b id="failed">0</b> lỗi</span></div><div class="actions"><button id="reset">⟲ Đặt lại góc nhìn</button><button id="help">? Hướng dẫn</button></div></div><div class="floatinglabels" id="labels"></div>
-<aside class="side side-left"><div class="panel-kicker">① GIAO VIỆC</div><h2 class="side-title">Giao nhiệm vụ cho AI</h2><div class="section-title">CHỌN NHÂN VIÊN <span id="agent-count"></span></div><div class="agent-pick" id="avatars"></div><div class="profile"><div class="profile-avatar" id="profile-icon">◉</div><div class="profile-main"><h3 id="profile-name"></h3><span id="profile-role"></span><p class="profile-desc" id="profile-desc"></p></div><div class="profile-tools"><button class="ptool" id="agentEdit" title="Sửa tên, vai trò, mô tả">✎</button><button class="ptool" id="agentDel" title="Xóa agent">🗑</button></div></div><div class="status" id="profile-status"></div><div class="section-title">YÊU CẦU CÔNG VIỆC</div><textarea id="task" placeholder="Ví dụ: Phân tích báo cáo doanh thu quý III và tổng hợp 5 insight quan trọng..."></textarea><div class="opts"><div><label class="smalllabel">Mức ưu tiên</label><select id="priority"><option>Bình thường</option><option>Ưu tiên cao</option><option>Khẩn cấp</option></select></div><div><label class="smalllabel">Nơi thực thi</label><select id="runOn"><option value="machine">💻 Máy cá nhân</option><option value="sim">🎲 Mô phỏng</option></select></div><div><label class="smalllabel">Model AI</label><select id="model" title="Tự chọn: Director chọn model rẻ nhất đủ làm tốt từng bước. Giá: USD / 1 triệu token vào/ra"></select></div><div><label class="smalllabel">Mức suy luận</label><select id="effort" title="Suy luận càng sâu càng tốn token: Thấp ≈ một nửa Cao, Rất cao ≈ gấp đôi Cao"></select></div></div><label class="mcheck wfopt"><input type="checkbox" id="useWf"> 🔀 Tự tạo luồng công việc khi giao cho Director (Director chia việc cho các agent liên quan)</label><div class="webopt" id="webOpt"><label class="mcheck"><input type="checkbox" id="useWeb"> 🌐 Cho phép mở web & thao tác trình duyệt</label><select id="webSite" class="hidden"></select></div><p class="runnote" id="runNote"></p><button class="assign" id="assign">✦ Giao việc cho AI</button></aside>
+<aside class="side side-left"><div class="panel-kicker">① GIAO VIỆC</div><h2 class="side-title">Giao nhiệm vụ cho AI</h2><div class="section-title">CHỌN NHÂN VIÊN <span id="agent-count"></span></div><div class="agent-pick" id="avatars"></div><div class="profile"><div class="profile-avatar" id="profile-icon">◉</div><div class="profile-main"><h3 id="profile-name"></h3><span id="profile-role"></span><p class="profile-desc" id="profile-desc"></p></div><div class="profile-tools"><button class="ptool" id="agentEdit" title="Sửa tên, vai trò, mô tả">✎</button><button class="ptool" id="agentDel" title="Xóa agent">🗑</button></div></div><div class="status" id="profile-status"></div><div class="section-title">YÊU CẦU CÔNG VIỆC</div><textarea id="task" placeholder="Ví dụ: Phân tích báo cáo doanh thu quý III và tổng hợp 5 insight quan trọng... (dán ảnh bằng Ctrl+V hoặc kéo file vào đây)"></textarea><div class="opts"><div><label class="smalllabel">Mức ưu tiên</label><select id="priority"><option>Bình thường</option><option>Ưu tiên cao</option><option>Khẩn cấp</option></select></div><div><label class="smalllabel">Nơi thực thi</label><select id="runOn"><option value="machine">💻 Máy cá nhân</option><option value="sim">🎲 Mô phỏng</option></select></div><div><label class="smalllabel">Model AI</label><select id="model" title="Tự chọn: Director chọn model rẻ nhất đủ làm tốt từng bước. Giá: USD / 1 triệu token vào/ra"></select></div><div><label class="smalllabel">Mức suy luận</label><select id="effort" title="Suy luận càng sâu càng tốn token: Thấp ≈ một nửa Cao, Rất cao ≈ gấp đôi Cao"></select></div></div><label class="mcheck wfopt"><input type="checkbox" id="useWf"> 🔀 Tự tạo luồng công việc khi giao cho Director (Director chia việc cho các agent liên quan)</label><div class="webopt" id="webOpt"><label class="mcheck"><input type="checkbox" id="useWeb"> 🌐 Cho phép mở web & thao tác trình duyệt</label><select id="webSite" class="hidden"></select></div><p class="runnote" id="runNote"></p><button class="assign" id="assign">✦ Giao việc cho AI</button></aside>
 <aside class="side side-right"><div class="panel-kicker">② KẾT QUẢ XỬ LÝ</div><h2 class="side-title">Kết quả từ AI</h2><div class="result-tabs" id="resultTabs"></div><div id="results" class="tasklist"></div><p class="disclaimer">💻 Máy cá nhân: chạy thật bằng Claude Code (Designer dùng Codex/ChatGPT) trên máy của bạn · 🎲 Mô phỏng: tiến độ, kết quả và lỗi chỉ là giả lập.</p></aside>
 <div class="scenery" id="scenery"></div><div id="toast"></div><div class="modal hidden" id="guide"><div class="guide"><button class="close" id="closeguide">✕</button><h2>Điều khiển văn phòng</h2><p>🖱️ Kéo chuột để xoay góc nhìn 3D, cuộn để zoom. Bấm vào nhân viên, nhãn tên hoặc thẻ tên bên trái để chọn người nhận việc.</p><p>📋 Cột trái để giao việc, cột phải hiển thị việc đang xử lý, hoàn thành (kèm kết quả) hoặc gặp lỗi (có thể thử lại). Chọn nơi thực thi “Máy cá nhân” để chạy thật bằng Claude Code trên máy của bạn (bấm ô “Máy” trên thanh trên cùng để chọn thư mục làm việc, quyền và chạy kiểm tra), hoặc “Mô phỏng” để chạy thử giả lập.</p><button id="okguide" class="assign">Đã hiểu</button></div></div>`;
 // Built-in agents: look and desk per id (their desk position is fixed)
@@ -23,37 +23,56 @@ const BUILTIN=[{id:'director',name:'Director',role:'Điều phối dự án',col
 // the back row by the windows and the back-to-back desks in the glass room. Agents there stand behind the desk facing
 // the room and stay put. A desk freed by deleting an agent goes to the next new agent, so the office holds 12.
 const DOOR_OF={director:'cF',research:'cA',analyst:'cC',qa:'cD',frontend:'frd',backend:'bkd',designer:'dsd'};
-const SLOTS=[...BUILTIN.map(b=>({x:b.x,z:b.z,door:DOOR_OF[b.id]})),{x:-4.75,z:-3.6},{x:-3.25,z:-3.6},{x:-1.75,z:-3.6},{x:-2.85,z:.97},{x:-1.35,z:.97}];
+// Then 24 desks in the added space (4 rows of 6, see office.js/wander.js); their agents walk around too.
+// Slot numbers are saved with custom agents, so new desks only ever get appended.
+const ROW_DESKS=[{screen:'code',props:['coffee','plant']},{screen:'chart',props:['notebook','coffee']},{screen:'ai',props:['plant','pens']},{screen:'design',divider:0xf28cb1,props:['notebook']},{screen:'dashboard',divider:0x5b8def,props:['coffee','robot']},{screen:'code',laptop:true,props:['pens','plant']}];
+// A workstation anchored at (x,z) (office.js): the agent stands beside the chair when idle and sits on it, facing the screen, while working
+const desked=(x,z)=>({x:x+.6,z:z+.1,sit:[x,z-.1,Math.PI],dx:x,dz:z});
+const SLOTS=[...BUILTIN.map(b=>({...desked(b.x,b.z),door:DOOR_OF[b.id]})),
+  // the stand-still desks already have a chair on the far side, facing the room
+  {x:-4.75,z:-3.6,sit:[-4.25,-3.52,0]},{x:-3.25,z:-3.6,sit:[-2.75,-3.52,0]},{x:-1.75,z:-3.6,sit:[-1.25,-3.52,0]},{x:-2.85,z:.97,sit:[-2.35,.95,0]},{x:-1.35,z:.97,sit:[-.85,.95,0]},
+  ...[['rA',-1.4],['rB',2.6],['rC',6.4],['rD',10.2]].flatMap(([row,z],r)=>ROW_X.map((x,i)=>({...desked(x,z),door:row+i,desk:ROW_DESKS[(i+r*2)%ROW_DESKS.length]})))];
+// New agents take a free built-in desk first, then the added rows, then the 5 stand-still desks
+const SLOT_ORDER=[...SLOTS.keys()].sort((a,b)=>(a>=7&&a<12)-(b>=7&&b<12)||a-b);
 const LOOKS={dev:'Lập trình viên',designer:'Thiết kế / sáng tạo',manager:'Quản lý',student:'Trẻ trung'};
 // Saved agent list (server, shared by every browser on this machine); without one, the 7 built-in agents
 const savedAgents=await fetch('/api/machine/agents').then(r=>r.ok?r.json():null).then(d=>d?.agents).catch(()=>null);
 const agents=(savedAgents||BUILTIN.map(b=>({id:b.id,builtin:true}))).map(v=>{
   const b=BUILTIN.find(x=>x.id===v.id);
-  if(v.builtin)return b&&{...b,name:v.name||b.name,role:v.role??b.role,desc:v.desc||'',builtin:true,slot:BUILTIN.indexOf(b),door:DOOR_OF[b.id]};
+  if(v.builtin){if(!b)return null;const at=SLOTS[BUILTIN.indexOf(b)];return {...b,name:v.name||b.name,role:v.role??b.role,desc:v.desc||'',team:v.team||BUILTIN_TEAM[b.id],level:v.level,builtin:true,slot:BUILTIN.indexOf(b),door:at.door,x:at.x,z:at.z,sit:at.sit}}
   const at=SLOTS[v.slot];if(!at)return null;
   const preset=LOOKS[v.preset]?v.preset:'dev',seed=[...v.id].reduce((h,c)=>h*31+c.charCodeAt(0)|0,7)>>>0;
-  return {id:v.id,name:v.name,role:v.role||'',desc:v.desc||'',color:v.color??0x9aa3b5,preset,slot:v.slot,x:at.x,z:at.z,door:at.door,
+  return {id:v.id,name:v.name,role:v.role||'',desc:v.desc||'',color:v.color??0x9aa3b5,preset,slot:v.slot,x:at.x,z:at.z,door:at.door,sit:at.sit,team:v.team||v.role||'Khác',level:v.level,
     look:{...PRESETS[preset],top:v.color??PRESETS[preset].top,seed:seed%97}};
 }).filter(Boolean);
+// Custom agents at the 5 stand-still desks move to free desks in the added rows, where they walk around like the others
+{const used=new Set(agents.map(a=>a.slot));
+  for(const a of agents)if(!a.builtin&&a.slot>=7&&a.slot<12){const to=SLOT_ORDER.find(i=>i>=12&&!used.has(i));if(to==null)break;
+    used.delete(a.slot);used.add(to);Object.assign(a,{slot:to,x:SLOTS[to].x,z:SLOTS[to].z,door:SLOTS[to].door,sit:SLOTS[to].sit})}}
+normalizeLeaders(agents);
 const world=new THREE.Scene();
 const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.65;document.querySelector('#scene').appendChild(renderer.domElement);
-const camera=new THREE.PerspectiveCamera(40,1,.1,100);let theta=Math.PI/4,phi=.96,dist=20.5;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
+const camera=new THREE.PerspectiveCamera(40,1,.1,240);let theta=Math.PI/4,phi=.96,dist=37;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
 const room=createOffice(world,renderer),office=room.group,pickables=[];
 function agentCharacter(agent){const g=new THREE.Group();g.position.set(agent.x,0,agent.z);g.rotation.y=agent.yaw??.35;office.add(g);agent.char=createCharacter(agent.look);g.add(agent.char.group);const hit=new THREE.Mesh(new THREE.CylinderGeometry(.43,.43,2,12),new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));hit.position.y=1;hit.userData.agent=agent.id;g.add(hit);pickables.push(hit);agent.group=g;agent.labelPos=new THREE.Vector3(agent.x,2.05,agent.z);const ring=new THREE.Mesh(new THREE.RingGeometry(.37,.42,32),new THREE.MeshBasicMaterial({color:agent.color,side:THREE.DoubleSide,transparent:true,opacity:0}));ring.rotation.x=-Math.PI/2;ring.position.y=.013;g.add(ring);agent.ring=ring;return g}
 // Characters stand in front of their desk with the chair pushed to one side
 for(const b of BUILTIN)room.workstation(b.x,b.z,b.desk);// built-in desks stay even when their agent is deleted
+for(const d of SLOTS)if(d.desk)room.workstation(d.dx,d.dz,d.desk);
 for(const a of agents){agentCharacter(a);attachModel(a.char,a.id,a.preset).then(n=>{if(n)console.info(`${a.name}: dùng mô hình 3D /models/${n}.glb`)})}
 // Streets, houses, traffic and passers-by around the building
 const outdoor=createOutdoor(world);
 // Idle agents stroll around the office; agents with unfinished tasks stay at (or return to) their desk
-const wander=createWander(agents,{isBusy:id=>allJobs().some(j=>j.agent===id&&(j.status==='running'||j.status==='queued'))});
+const busyAgent=id=>allJobs().some(j=>j.agent===id&&(j.status==='running'||j.status==='queued'));
+const wander=createWander(agents,{isBusy:busyAgent});
 const tagHTML=a=>`<span class="tagdot" style="background:#${a.color.toString(16).padStart(6,'0')}"></span>${escapeHTML(a.name)}`;
 const labels=document.getElementById('labels');agents.forEach(a=>{a.el=document.createElement('button');a.el.className='tag';a.el.innerHTML=tagHTML(a);a.el.onclick=()=>openAgent(a.id);labels.appendChild(a.el)});
 // Tasks run for real on the personal machine (Claude Code via /api/machine) or as a local simulation
 const RESULTS={director:['Đã lập kế hoạch 3 giai đoạn, phân công cho 4 thành viên; mốc bàn giao: thứ Sáu tuần này.','Đã chốt phạm vi, rủi ro chính và lịch họp review hằng tuần với các bên liên quan.'],research:['Tổng hợp 12 nguồn tham khảo, rút ra 5 insight chính kèm trích dẫn; báo cáo 2 trang.','So sánh 4 giải pháp trên thị trường theo chi phí, tính năng và mức độ phổ biến.'],frontend:['Đã dựng 3 màn hình theo thiết kế, responsive cho mobile; bản xem thử đã sẵn sàng.','Sửa 6 lỗi giao diện, tối ưu tải trang từ 3,1s xuống 1,4s.'],backend:['Thêm 4 endpoint REST kèm 18 test tự động (pass 100%); thời gian phản hồi TB 120 ms.','Tối ưu truy vấn chính, giảm tải CPU database khoảng 35%.'],analyst:['Phân tích 24.580 dòng dữ liệu: doanh thu tăng 14% so với quý trước, nhóm khách mới đóng góp 38%.','Lập dashboard 6 chỉ số KPI, phát hiện 2 điểm bất thường cần kiểm tra.'],designer:['Bàn giao 2 phương án giao diện và bộ icon 24px; đã chú thích kích thước, màu sắc.','Cập nhật design system: 12 component mới, kiểm tra tương phản đạt chuẩn AA.'],qa:['Chạy 46 test case: 44 đạt, 2 lỗi mức thấp đã ghi nhận kèm bước tái hiện.','Kiểm thử hồi quy 5 luồng chính trên 3 trình duyệt, không phát hiện lỗi chặn.']};
+// Simulated result: the agent's own samples, else those of the built-in agent of its team, else a generic line
+const simResult=a=>{const pool=RESULTS[a.id]||RESULTS[Object.keys(BUILTIN_TEAM).find(k=>BUILTIN_TEAM[k]===teamOf(a))]||[`Đã hoàn thành phần việc của ${a.name} và bàn giao kết quả.`,`${a.name} đã xử lý xong yêu cầu, kèm ghi chú các điểm cần lưu ý.`];return pool[Math.random()*pool.length|0]};
 const ERRORS=['Hết thời gian chờ phản hồi từ công cụ (timeout 60s).','Không có quyền truy cập vào dữ liệu nguồn được yêu cầu.','Yêu cầu chưa đủ thông tin: cần mô tả rõ phạm vi và đầu ra mong muốn.','Lỗi kết nối tới dịch vụ bên ngoài (HTTP 503).'];
-const STATUS={queued:'Đang chờ',running:'Đang xử lý',done:'Hoàn thành',error:'Lỗi',cancelled:'Đã dừng'};
-const GROUP={queued:'running',running:'running',done:'done',error:'error',cancelled:'error'};
+const STATUS={queued:'Đang chờ',running:'Đang xử lý',waiting:'Chờ bạn trả lời',done:'Hoàn thành',error:'Lỗi',cancelled:'Đã dừng'};
+const GROUP={queued:'running',running:'running',waiting:'running',done:'done',error:'error',cancelled:'error'};
 let selected=agents[0],sim=[],remote=[],simId=0,filter='all',machine=null,lastSig='',syncTimer=null;const prevStatus=new Map();
 let runOn='machine',useWeb=false,useWf=true,model='auto',effort='auto';try{runOn=localStorage.getItem('office-run-on')||'machine';useWeb=localStorage.getItem('office-use-web')==='1';useWf=localStorage.getItem('office-use-wf')!=='0';model=modelId(localStorage.getItem('office-model'))||'auto';effort=localStorage.getItem('office-effort')||'auto'}catch{}
 // A workflow only when the job is given to the Director; a task given to another agent runs with that agent alone
@@ -64,7 +83,7 @@ const modelTag=j=>{const m=MODELS[modelId(j.model)];return j.engine==='codex'||!
 const modelOption=([id,m])=>`<option value="${id}">${m.label} · $${m.price[0]}/$${m.price[1]}</option>`;
 const modelOptions=`<option value="auto">✨ Tự chọn</option><optgroup label="Khuyên dùng">${Object.entries(MODELS).filter(([,m])=>m.auto).map(modelOption).join('')}</optgroup><optgroup label="Phiên bản khác">${Object.entries(MODELS).filter(([,m])=>!m.auto).map(modelOption).join('')}</optgroup>`;
 const effortOptions=`<option value="auto">✨ Tự chọn</option>${Object.entries(EFFORTS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}`;
-const team=()=>agents.map(a=>({id:a.id,name:a.name,role:a.role,desc:a.desc}));
+const team=()=>agents.map(a=>({id:a.id,name:a.name,role:a.role,desc:a.desc,team:teamOf(a),level:levelOf(a)}));
 const taskEl=document.getElementById('task'),$=id=>document.getElementById(id);
 const hex=c=>'#'+c.toString(16).padStart(6,'0'),clock=d=>d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'});
 const agentOf=id=>agents.find(a=>a.id===id)||{id,name:id,role:'',color:0x9aa3b5};
@@ -89,8 +108,8 @@ function md(src){
   }
   return out.join('');
 }
-const fromServer=t=>({key:'m'+t.id,rid:t.id,remote:true,agent:t.agent,text:t.text,priority:t.priority,status:t.status,steps:t.steps||0,activity:t.activity,started:t.started?new Date(t.started):null,result:t.result,error:t.error,created:new Date(t.created),finished:t.finished?new Date(t.finished):null,durationMs:t.durationMs,turns:t.turns,costUsd:t.costUsd,cwd:t.cwd,mode:t.mode,host:t.host,engine:t.engine||'claude',web:!!t.web,siteLabels:t.siteLabels||[],fileNames:t.fileNames||[],kind:t.kind,wf:t.wf!=null?'m'+t.wf:null,wfTitle:t.wfTitle,stepTitle:t.stepTitle,model:t.model,effort:t.effort,modelWhy:t.modelWhy,asks:t.asks||0,asking:!!t.asking,rework:t.rework||null,origin:t.origin??null,progress:t.status==='done'?100:Math.min(92,8+(t.steps||0)*9)});
-function selectAgent(id){selected=agentOf(id);$('profile-name').textContent=selected.name;$('profile-role').textContent=selected.role;$('profile-desc').textContent=selected.desc||'';$('profile-desc').title=selected.desc||'';$('agentDel').classList.toggle('hidden',selected.id==='director');$('profile-icon').style.background=hex(selected.color);$('profile-icon').textContent=selected.name[0];agents.forEach(a=>a.ring.material.opacity=a.id===id?.95:0);document.querySelectorAll('.tag').forEach((e,i)=>e.classList.toggle('selected',agents[i].id===id));document.querySelectorAll('#avatars [data-agent]').forEach(e=>e.classList.toggle('on',e.dataset.agent===id));renderProfile();renderRunNote()}
+const fromServer=t=>({key:'m'+t.id,rid:t.id,remote:true,agent:t.agent,text:t.text,priority:t.priority,status:t.status,steps:t.steps||0,activity:t.activity,started:t.started?new Date(t.started):null,result:t.result,error:t.error,created:new Date(t.created),finished:t.finished?new Date(t.finished):null,durationMs:t.durationMs,turns:t.turns,costUsd:t.costUsd,cwd:t.cwd,mode:t.mode,host:t.host,engine:t.engine||'claude',web:!!t.web,siteLabels:t.siteLabels||[],fileNames:t.fileNames||[],kind:t.kind,wf:t.wf!=null?'m'+t.wf:null,wfTitle:t.wfTitle,stepTitle:t.stepTitle,model:t.model,effort:t.effort,modelWhy:t.modelWhy,asks:t.asks||0,asking:!!t.asking,deps:(t.deps||[]).map(id=>'m'+id),question:t.question||null,clarify:t.clarify||[],rework:t.rework||null,origin:t.origin??null,progress:t.status==='done'?100:Math.min(92,8+(t.steps||0)*9)});
+function selectAgent(id){selected=agentOf(id);$('profile-name').textContent=selected.name;$('profile-role').textContent=[selected.role,`${LEVELS[levelOf(selected)]} · đội ${teamOf(selected)}`].filter(Boolean).join(' · ');$('profile-desc').textContent=selected.desc||'';$('profile-desc').title=selected.desc||'';$('agentDel').classList.toggle('hidden',selected.id==='director');$('profile-icon').style.background=hex(selected.color);$('profile-icon').textContent=selected.name[0];agents.forEach(a=>a.ring.material.opacity=a.id===id?.95:0);document.querySelectorAll('.tag').forEach((e,i)=>e.classList.toggle('selected',agents[i].id===id));document.querySelectorAll('#avatars [data-agent]').forEach(e=>e.classList.toggle('on',e.dataset.agent===id));renderProfile();renderRunNote()}
 // Which CLI the server runs this agent's tasks with (set in the machine config, Designer → Codex by default)
 const engineOf=id=>machine?.agentEngines?.[id]==='codex'?'codex':'claude';
 const engineName=id=>engineOf(id)==='codex'?'Codex (ChatGPT)':'Claude Code';
@@ -106,10 +125,15 @@ function renderRunNote(){
   el.className='runnote '+(runOn==='sim'?'sim':ready?'ok':'warn');
   el.innerHTML=runOn==='sim'?'Chỉ giả lập tiến độ và kết quả, không chạy thật.':!m?'Đang kiểm tra máy cá nhân…':ready?`${wfOn()?'🔀 Director lập kế hoạch rồi giao từng bước cho agent liên quan':`Chạy thật bằng ${engineName(selected.id)}`} trên <b>${escapeHTML(m.host.name)}</b> · ${escapeHTML(m.config.modes[m.config.mode])}${useWeb?' · 🌐 dùng trình duyệt':''}<br><code title="${escapeHTML(m.config.workdir)}">${escapeHTML(m.config.workdir)}</code> <button class="linkbtn" data-open-machine>Cài đặt</button>`:isCodex?`⚠ ${escapeHTML(selected.name)} làm việc bằng Codex nhưng Codex chưa ${m.codex?.found?'đăng nhập':'được cài'}. Bấm ô <b>Codex</b> trên thanh trên cùng để kết nối.`:`⚠ Máy cá nhân chưa sẵn sàng. <button class="linkbtn" data-open-machine>Mở cài đặt & kiểm tra</button>`;
 }
+// The agent's question with its options and a box for the user's own answer
+const qbox=j=>{const a=agentOf(j.agent),q=j.question||{};return `<div class="qbox" data-qjob="${j.key}"><b>❓ ${escapeHTML(a.name)} cần bạn trả lời</b><p>${escapeHTML(q.q||'')}</p>
+  ${(q.options||[]).length?`<div class="qopts">${q.options.map(o=>`<button class="qopt" data-answer="${j.key}" data-text="${escapeHTML(o)}">${escapeHTML(o)}</button>`).join('')}</div>`:''}
+  <div class="qfree"><input data-answer-input="${j.key}" maxlength="4000" placeholder="Hoặc tự nhập câu trả lời / thông tin bổ sung…"><button data-answer-send="${j.key}">Gửi</button></div></div>`};
 function card(j){
   const a=agentOf(j.agent),live=GROUP[j.status]==='running',where=j.remote?`<span class="where" title="${escapeHTML(j.cwd||'')}">${j.web?'🌐':'💻'} ${escapeHTML(j.host||'Máy cá nhân')} · ${j.engine==='codex'?'Codex':'Claude'}</span>`:'<span class="where">🎲 Mô phỏng</span>';
   let mid='';
-  if(live&&j.remote)mid=`<div class="activity">${j.status==='queued'?'Đang chờ đến lượt…':`Bước ${j.steps} · ${escapeHTML(j.activity||'Đang xử lý…')}`}</div><div class="progress live"><i style="width:${j.progress}%"></i></div><button class="ghost stop" data-cancel="${j.rid}">■ Dừng</button>`;
+  if(j.status==='waiting')mid=qbox(j)+(j.remote?`<button class="ghost stop" data-cancel="${j.rid}">■ Dừng</button>`:'');
+  else if(live&&j.remote)mid=`<div class="activity">${j.status==='queued'?'Đang chờ đến lượt…':`Bước ${j.steps} · ${escapeHTML(j.activity||'Đang xử lý…')}`}</div><div class="progress live"><i style="width:${j.progress}%"></i></div><button class="ghost stop" data-cancel="${j.rid}">■ Dừng</button>`;
   else if(live)mid=`<div class="progressrow"><span>${j.priority}</span><b>${j.progress}%</b></div><div class="progress"><i style="width:${j.progress}%"></i></div>`;
   else if(j.status==='done')mid=`<div class="jobresult"><b>Kết quả</b><div class="restext md">${j.remote?md(j.result):escapeHTML(j.result)}</div></div>${j.remote&&j.kind!=='plan'?'<button class="ghost retry" data-ask>💬 Hỏi thêm</button>':''}`;
   else mid=`<div class="joberr"><b>${j.status==='cancelled'?'Đã dừng':j.remote?'Lỗi':`Lỗi tại ${j.progress}%`}</b>${escapeHTML(j.error)}</div><button class="ghost retry" data-retry="${j.key}">⟲ Thử lại</button>`;
@@ -125,7 +149,7 @@ function wfCard(group){
     return `<div class="wfrow st-${j.status}${j.rework?' sentback':''}" data-job="${j.key}"><span class="wfnum">${i}</span><span class="tagdot" style="background:${hex(a.color)}"></span><div class="wfinfo"><b>${escapeHTML(a.name)}</b> · ${escapeHTML(j.stepTitle||'')}${modelTag(j)}<small>${GROUP[j.status]==='running'?escapeHTML(wait?j.activity:j.remote?(j.activity||'Đang xử lý…'):j.progress+'%'):GROUP[j.status]==='error'?escapeHTML(j.error||''):j.status==='done'?(j.rework?`↩ Trả lại ${escapeHTML(j.rework.to.join(', '))} để sửa`:'✓ Xong'+(j.finished?' lúc '+clock(j.finished):'')):''}</small></div><span class="badge ${GROUP[j.status]==='running'?'running':j.status==='done'?'done':'error'}">${wait?'Chờ':STATUS[j.status]}</span>${GROUP[j.status]==='error'?`<button class="linkbtn" data-retry="${j.key}">Thử lại</button>`:''}</div>`};
   const last=[...steps].reverse().find(j=>j.status==='done'),allDone=steps.length&&done===steps.length;
   return `<div class="job wf st-${st}"><div class="jobhead"><span class="wficon">🔀</span><b>${escapeHTML(plan.wfTitle||'Luồng công việc')}</b><span class="where">${plan.remote?'💻 Máy':'🎲 Mô phỏng'}</span><span class="badge ${st}">${label}</span>${live?'':`<button class="delbtn" data-del="${plan.key}" title="Xóa cả luồng công việc">🗑</button>`}</div><div class="jobtext">${escapeHTML(plan.text)}</div>
-    <div class="wfprog"><i style="width:${steps.length?Math.round(done/steps.length*100):5}%"></i></div><div class="wfsteps">${row(plan,0)}${steps.map((j,i)=>row(j,i+1)).join('')}</div>
+    <div class="wfprog"><i style="width:${steps.length?Math.round(done/steps.length*100):5}%"></i></div><div class="wfsteps">${row(plan,0)}${steps.map((j,i)=>row(j,i+1)).join('')}</div>${group.filter(j=>j.status==='waiting').map(qbox).join('')}
     ${allDone&&last?`<div class="jobresult"><b>Kết quả cuối · ${escapeHTML(agentOf(last.agent).name)}</b><div class="restext md">${last.remote?md(last.result):escapeHTML(last.result)}</div></div>`:''}<div class="jobmeta">${plan.priority} · giao lúc ${clock(plan.created)}</div></div>`;
 }
 // Finished tasks can be deleted; a workflow only as a whole and only when none of its steps runs or waits
@@ -151,12 +175,62 @@ function renderResults(){
   const list=items.map(x=>typeof x==='string'&&groups.has(x)?(groups.get(x).some(match)?wfCard(groups.get(x)):''):x).filter(Boolean);
   const html=list.length?list.join(''):`<p class="empty">${jobs.length?'Không có việc nào ở mục này.':'Chưa có việc nào. Giao việc ở cột bên trái, kết quả sẽ hiện ở đây.'}</p>`;
   // keep scroll/selection in long results when nothing changed
-  if(html!==lastSig){$('results').innerHTML=html;lastSig=html}
+  if(html!==lastSig){
+    const typed=[...document.querySelectorAll('[data-answer-input]')].map(i=>[i.dataset.answerInput,i.value,document.activeElement===i]);
+    $('results').innerHTML=html;lastSig=html;
+    for(const [k,v,f] of typed){const i=document.querySelector(`[data-answer-input="${k}"]`);if(i){i.value=v;if(f)i.focus()}}
+  }
 }
+// Planning meeting: while the Director plans a workflow (and 20 s after, for the briefing), the Director and one idle
+// colleague per role who can walk meet in the meeting room. Someone given a step gets busy and goes back to their desk.
+const BRIEFING_MS=20000;
+function updateMeeting(){
+  const plans=allJobs().filter(j=>j.kind==='plan'&&(GROUP[j.status]==='running'||j.status==='done'&&j.finished&&Date.now()-j.finished<BRIEFING_MS));
+  const ids=[...new Set(plans.map(j=>j.agent))].filter(id=>wander.canWalk(id)),roles=new Set(ids.map(id=>agentOf(id).role));
+  if(plans.length)for(const a of agents){if(ids.length>=10)break;if(ids.includes(a.id)||roles.has(a.role)||!wander.canWalk(a.id)||busyAgent(a.id))continue;roles.add(a.role);ids.push(a.id)}
+  wander.setMeeting(ids);
+}
+setInterval(updateMeeting,1000);
+// ---------- Speech bubbles over agents: what they just took on, and who they hand over to when done ----------
+const bubbleLayer=document.createElement('div');bubbleLayer.id='bubbles';document.getElementById('app').appendChild(bubbleLayer);
+function say(id,text,ms=8000){
+  const a=agents.find(x=>x.id===id);if(!a)return;
+  if(!a.bubble){a.bubble=document.createElement('div');a.bubble.className='bubble';bubbleLayer.appendChild(a.bubble)}
+  a.bubble.textContent=text;a.bubble.classList.remove('pop');void a.bubble.offsetWidth;a.bubble.classList.add('show','pop');
+  clearTimeout(a.bubbleT);a.bubbleT=setTimeout(()=>a.bubble.classList.remove('show'),ms);
+}
+const cut=(s,n)=>{s=String(s||'').replace(/\s+/g,' ').trim();return s.length>n?s.slice(0,n-1)+'…':s};
+const names=list=>{const n=[...new Set(list.map(x=>agentOf(x.agent).name))];return n.length>3?n.slice(0,3).join(', ')+'…':n.join(', ')};
+// Status changes seen since the page opened (jobs already there at load are not announced)
+const seenStatus=new Map();let watching=false;setTimeout(()=>{for(const j of allJobs())seenStatus.set(j.key,j.status);watching=true},3500);
+function watchJobs(){
+  if(!watching)return;
+  for(const j of allJobs()){
+    const prev=seenStatus.get(j.key);if(prev===j.status)continue;seenStatus.set(j.key,j.status);
+    if(j.status==='running')say(j.agent,`📥 Tiếp nhận: ${cut(j.stepTitle||j.text,70)}`,9000);
+    else if(j.status==='error')say(j.agent,'⚠ Tôi gặp lỗi, cần xem lại',9000);
+    else if(j.status==='waiting'){say(j.agent,`❓ ${cut(j.question?.q||'Tôi cần thêm thông tin',90)}`,20000);toast(`❓ ${agentOf(j.agent).name} cần bạn trả lời một câu hỏi`)}
+    else if(j.status==='done'&&prev)announceDone(j);
+  }
+}
+function announceDone(j){
+  const jobs=allJobs();
+  if(j.rework)return say(j.agent,`↩ Chưa đạt, trả lại ${j.rework.to.join(', ')} để sửa`,10000);
+  if(j.kind==='plan'){const first=jobs.filter(x=>x.wf===j.wf&&x.kind==='step'&&!(x.deps||[]).length);return say(j.agent,first.length?`Đã lên kế hoạch, chuyển đến ${names(first)}`:'Đã lên kế hoạch',10000)}
+  if(j.wf){
+    const next=jobs.filter(x=>x.wf===j.wf&&x.kind==='step'&&(x.deps||[]).includes(j.key)&&x.status!=='done');
+    if(next.length)return say(j.agent,`Tôi đã xong, chuyển đến ${names(next)}`,10000);
+    if(jobs.some(x=>x.wf===j.wf&&GROUP[x.status]==='running'))return say(j.agent,'Tôi đã xong',8000);// other branches still going
+  }
+  say(j.agent,'Tôi đã xong ✅',10000);
+  // everything is done: show the result (not for follow-up answers)
+  if(!j.asks&&!document.querySelector('.agent-form')?.closest('.modal:not(.hidden)')){selectAgent(j.agent);pv.open(j.agent,j.key)}
+}
+setInterval(watchJobs,1000);
 function updateStats(){const jobs=allJobs(),run=jobs.filter(j=>GROUP[j.status]==='running');$('active').textContent=new Set(run.map(j=>j.agent)).size;$('queued').textContent=run.length;$('done').textContent=jobs.filter(j=>j.status==='done').length;$('failed').textContent=jobs.filter(j=>GROUP[j.status]==='error').length;agents.forEach(a=>a.el.classList.toggle('busy',run.some(j=>j.agent===a.id)));renderResults();renderProfile();pv?.refresh()}
 function renderAvatars(){
   $('agent-count').textContent=`· ${agents.length} AI`;
-  $('avatars').innerHTML=agents.map(a=>`<button title="${escapeHTML(a.role)}" data-agent="${a.id}"><i style="background:${hex(a.color)}">${escapeHTML(a.name[0])}</i>${escapeHTML(a.name)}</button>`).join('')+`<button class="add-agent" data-add-agent ${freeSlot()<0?'disabled title="Văn phòng đã đủ 12 chỗ ngồi"':'title="Thêm agent mới"'}>＋ Thêm</button>`;
+  $('avatars').innerHTML=agents.map(a=>`<button title="${escapeHTML(a.role)}" data-agent="${a.id}"><i style="background:${hex(a.color)}">${escapeHTML(a.name[0])}</i>${escapeHTML(a.name)}<em class="lvl lvl-${levelOf(a)}">${{leader:'Lead',senior:'Sr',middle:'Mid',junior:'Jr'}[levelOf(a)]}</em></button>`).join('')+`<button class="add-agent" data-add-agent ${freeSlot()<0?`disabled title="Văn phòng đã đủ ${SLOTS.length} chỗ ngồi"`:'title="Thêm agent mới"'}>＋ Thêm</button>`;
   document.querySelectorAll('#avatars [data-agent]').forEach(el=>el.onclick=()=>selectAgent(el.dataset.agent));
   $('avatars').querySelector('[data-add-agent]').onclick=()=>openAgentForm(null);
 }
@@ -177,9 +251,9 @@ const cancelJob=async j=>{try{await machineApi(`/tasks/${j.rid}/cancel`,{method:
 // Follow-up question on a finished machine task: same conversation, no need to explain the task again
 const askJob=async(j,text)=>{try{await machineApi(`/tasks/${j.rid}/ask`,{method:'POST',body:JSON.stringify({text})});toast(agentOf(j.agent).name+' đang trả lời câu hỏi thêm');syncRemote()}catch(e){toast(e.message);throw e}};
 const retryJob=async j=>{try{if(j.remote){await machineApi(`/tasks/${j.rid}/retry`,{method:'POST'});syncRemote()}else{start(j,.08);if(j.wf)for(const x of sim)if(x.wf===j.wf&&x.blockedBy)Object.assign(x,{status:'queued',error:null,finished:null,blockedBy:null});updateStats()}toast(agentOf(j.agent).name+' đang thử lại nhiệm vụ')}catch(e){toast(e.message)}};
-var pv=createProgressView({agentOf,allJobs,machineApi,md,esc:escapeHTML,hex,STATUS,GROUP,onCancel:cancelJob,onRetry:retryJob,onAsk:askJob,onAssign:id=>{selectAgent(id);taskEl.focus()}});
+var pv=createProgressView({agentOf,allJobs,machineApi,md,esc:escapeHTML,hex,STATUS,GROUP,onCancel:cancelJob,onRetry:retryJob,onAsk:askJob,onAnswer:(j,t)=>answerJob(j,t),onAssign:id=>{selectAgent(id);taskEl.focus()}});
 function openAgent(id){selectAgent(id);pv.open(id)}
-const machineUI=initMachineConnect({toast,onStatus:s=>{machine=s;renderRunNote()}});
+const machineUI=initMachineConnect({toast,onStatus:s=>{machine=s;renderRunNote()},getTeams:()=>[...new Set(agents.map(teamOf))]});
 $('useWeb').onchange=e=>{useWeb=e.target.checked;try{localStorage.setItem('office-use-web',useWeb?'1':'0')}catch{}renderRunNote()};
 $('useWf').onchange=e=>{useWf=e.target.checked;try{localStorage.setItem('office-use-wf',useWf?'1':'0')}catch{}renderRunNote()};
 $('runOn').onchange=e=>{runOn=e.target.value;try{localStorage.setItem('office-run-on',runOn)}catch{}renderRunNote()};
@@ -216,11 +290,19 @@ const addFiles=list=>{for(const f of list)uploadFile(f)};
 $('attachAdd').onclick=()=>$('fileInput').click();
 $('fileInput').onchange=e=>{addFiles(e.target.files);e.target.value=''};
 attachBar.addEventListener('click',e=>{const b=e.target.closest('[data-rm]');if(b){attachments.splice(+b.dataset.rm,1);renderAttach()}});
-// drag & drop onto the task box
-let dragN=0;const dz=taskEl;
-['dragenter','dragover'].forEach(ev=>dz.addEventListener(ev,e=>{if(![...e.dataTransfer.types].includes('Files'))return;e.preventDefault();dragN++;dz.classList.add('dropping')}));
-['dragleave','dragend'].forEach(ev=>dz.addEventListener(ev,()=>{if(--dragN<=0){dragN=0;dz.classList.remove('dropping')}}));
-dz.addEventListener('drop',e=>{if(!e.dataTransfer.files.length)return;e.preventDefault();dragN=0;dz.classList.remove('dropping');addFiles(e.dataTransfer.files)});
+// paste screenshots or copied files into the task box (text still pastes as usual)
+taskEl.addEventListener('paste',e=>{
+  const items=[...(e.clipboardData?.items||[])].filter(i=>i.kind==='file'),files=items.map(i=>i.getAsFile()).filter(Boolean);if(!files.length)return;
+  if(!e.clipboardData.getData('text/plain'))e.preventDefault();
+  addFiles(files.map((f,i)=>!f.name||/^image\.\w+$/i.test(f.name)?new File([f],`anh-dan-${new Date().toISOString().slice(11,19).replace(/:/g,'')}-${i+1}.${(f.type.split('/')[1]||'png').replace('jpeg','jpg')}`,{type:f.type}):f));
+  toast(`📎 Đã dán ${files.length} tệp vào yêu cầu`);
+});
+// drag & drop files anywhere on the left panel; the task box lights up
+let dragN=0;const dz=document.querySelector('.side-left');
+dz.addEventListener('dragenter',e=>{if(![...e.dataTransfer.types].includes('Files'))return;e.preventDefault();dragN++;taskEl.classList.add('dropping')});
+dz.addEventListener('dragover',e=>{if([...e.dataTransfer.types].includes('Files'))e.preventDefault()});
+['dragleave','dragend'].forEach(ev=>dz.addEventListener(ev,()=>{if(--dragN<=0){dragN=0;taskEl.classList.remove('dropping')}}));
+dz.addEventListener('drop',e=>{dragN=0;taskEl.classList.remove('dropping');if(!e.dataTransfer.files.length)return;e.preventDefault();addFiles(e.dataTransfer.files)});
 
 // Give a task to an agent; used by the assign button and by the WebMCP tools. Returns the new job.
 async function submitTask({agentId=selected.id,text,priority='Bình thường',where=runOn,model:m=model,effort:ef=effort,workflow,web=useWeb,files=[],siteIds=[]}){
@@ -229,7 +311,7 @@ async function submitTask({agentId=selected.id,text,priority='Bình thường',w
   const wf=a.id==='director'&&(workflow??useWf);let j;
   if(where==='machine'){
     if(wf?!machine?.ready:!engineReady(a.id)){const codex=!wf&&engineOf(a.id)==='codex';throw Object.assign(new Error(codex?`${a.name} dùng Codex: hãy đăng nhập Codex (ô Codex trên thanh trên cùng)`:'Máy cá nhân chưa sẵn sàng: kiểm tra kết nối trước khi giao việc'),{openMachine:!codex})}
-    const {task}=await machineApi('/tasks',{method:'POST',body:JSON.stringify({agent:a.id,name:a.name,role:a.role,desc:a.desc,text,priority,model:m,effort:ef,workflow:wf,team:team(),files,web,siteIds})});
+    const {task}=await machineApi('/tasks',{method:'POST',body:JSON.stringify({agent:a.id,name:a.name,role:a.role,desc:a.desc,agentTeam:teamOf(a),level:levelOf(a),text,priority,model:m,effort:ef,workflow:wf,team:team(),files,web,siteIds})});
     j=fromServer(task);remote.unshift(j);prevStatus.set(j.key,j.status);toast(wf?'🔀 Director đang lập kế hoạch và chia việc cho các agent liên quan':`Đã gửi nhiệm vụ cho ${a.name}, chạy trên máy ${task.host}`);syncTimer=setTimeout(syncRemote,800);
   }else if(wf){const k='s'+(++simId);j=start({key:k,wf:k,kind:'plan',owner:a.id,agent:'director',stepTitle:'Lập kế hoạch & phân công',text,priority,created:new Date()},0);sim.unshift(j);toast('🔀 Director đang lập kế hoạch (mô phỏng)')}
   else{j=start({key:'s'+(++simId),agent:a.id,text,priority,created:new Date()},.18);sim.unshift(j);toast('Đã giao nhiệm vụ mô phỏng cho '+a.name)}
@@ -245,7 +327,21 @@ $('assign').onclick=async()=>{
   finally{btn.disabled=false}
 };
 $('resultTabs').onclick=async e=>{if(e.target.closest('[data-clear]')){try{await clearFinished()}catch(err){toast(err.message)}return}const b=e.target.closest('[data-filter]');if(b){filter=b.dataset.filter;renderResults()}};
+// Answer a waiting task: machine tasks carry on in the same conversation; simulated ones just continue
+async function answerJob(j,text){
+  text=String(text||'').trim();if(!j||!text)return;
+  try{
+    if(j.remote){await machineApi(`/tasks/${j.rid}/answer`,{method:'POST',body:JSON.stringify({text})});syncRemote()}
+    else{(j.clarify||=[]).push({q:j.question?.q,answer:text});Object.assign(j,{status:'running',question:null,asked:true,text:`${j.text} (${text})`,failAt:j.failAt!=null&&j.failAt<=j.progress+5?null:j.failAt});updateStats()}
+    say(j.agent,'👍 Đã rõ, tôi làm tiếp',6000);toast(agentOf(j.agent).name+' đang tiếp tục với câu trả lời của bạn');
+  }catch(e){toast(e.message)}
+}
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.matches?.('[data-answer-input]')){e.preventDefault();answerJob(allJobs().find(j=>j.key===e.target.dataset.answerInput),e.target.value)}});
 $('results').onclick=async e=>{
+  const qa=e.target.closest('[data-answer]'),qs=e.target.closest('[data-answer-send]');
+  if(qa)return answerJob(allJobs().find(j=>j.key===qa.dataset.answer),qa.dataset.text);
+  if(qs)return answerJob(allJobs().find(j=>j.key===qs.dataset.answerSend),document.querySelector(`[data-answer-input="${qs.dataset.answerSend}"]`)?.value);
+  if(e.target.closest('.qbox'))return;
   const r=e.target.closest('[data-retry]'),c=e.target.closest('[data-cancel]'),d=e.target.closest('[data-del]');
   try{
     if(d){await deleteJob(allJobs().find(j=>j.key===d.dataset.del));return}
@@ -282,12 +378,13 @@ setInterval(()=>{let changed=false;
     if(bad){Object.assign(j,{status:'cancelled',blockedBy:bad?.key||'?',error:`Dừng vì bước trước chưa xong: ${bad?agentOf(bad.agent).name:''}`,finished:new Date()});changed=true}
     else{const w=deps.filter(d=>d.status!=='done');if(w.length)j.activity='Chờ '+w.map(d=>agentOf(d.agent).name).join(', ')+' hoàn thành';else{start(j,.1);j.activity=null;changed=true}}}
   for(const j of [...sim]){if(j.status!=='running')continue;changed=true;j.progress=Math.min(100,j.progress+Math.ceil(Math.random()*8));const a=agentOf(j.agent);
+  if(!j.asked&&j.kind!=='step'&&j.progress>=30&&String(j.text).trim().split(/\s+/).length<6){Object.assign(j,{status:'waiting',asked:true,question:{q:`Yêu cầu "${j.text}" hơi ngắn: bạn muốn kết quả theo hướng nào?`,options:['Bản ngắn gọn, làm nhanh','Bản đầy đủ, chi tiết','Làm theo chuẩn đang dùng trong dự án']}});continue}
   if(j.failAt!==null&&j.progress>=j.failAt){j.progress=j.failAt;j.status='error';j.error=ERRORS[Math.random()*ERRORS.length|0];j.finished=new Date();toast(`⚠ ${a.name} gặp lỗi khi xử lý nhiệm vụ`)}
-  else if(j.progress>=100){j.status='done';j.finished=new Date();if(j.kind==='plan')simPlanDone(j);else if(simRework(j)){toast(`↩ ${a.name} trả lại cho ${j.rework.to.join(', ')} để sửa`);continue}else j.result=RESULTS[a.id][Math.random()*2|0];toast(`✓ ${a.name} đã hoàn thành nhiệm vụ`)}}
+  else if(j.progress>=100){j.status='done';j.finished=new Date();if(j.kind==='plan')simPlanDone(j);else if(simRework(j)){toast(`↩ ${a.name} trả lại cho ${j.rework.to.join(', ')} để sửa`);continue}else j.result=simResult(a);toast(`✓ ${a.name} đã hoàn thành nhiệm vụ`)}}
   if(changed)updateStats()},2200);
 selectAgent(selected.id);renderRunNote();updateStats();syncRemote();
-const HOME_VIEW=[Math.PI/4,.96,20.5];$('reset').onclick=()=>{[theta,phi,dist]=HOME_VIEW;updateCamera()};const guide=$('guide');$('help').onclick=()=>guide.classList.remove('hidden');$('closeguide').onclick=$('okguide').onclick=()=>guide.classList.add('hidden');
-let dragging=false,moved=0,px=0,py=0;renderer.domElement.addEventListener('pointerdown',e=>{dragging=true;moved=0;px=e.clientX;py=e.clientY;renderer.domElement.setPointerCapture(e.pointerId)});renderer.domElement.addEventListener('pointermove',e=>{if(!dragging)return;const dx=e.clientX-px,dy=e.clientY-py;moved+=Math.abs(dx)+Math.abs(dy);theta-=dx*.006;phi=Math.max(.40,Math.min(1.38,phi+dy*.005));px=e.clientX;py=e.clientY;updateCamera()});renderer.domElement.addEventListener('pointerup',e=>{dragging=false;if(moved>7)return;const p=new THREE.Vector2(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);const ray=new THREE.Raycaster();ray.setFromCamera(p,camera);const hits=ray.intersectObjects(pickables);if(hits.length)openAgent(hits[0].object.userData.agent)});renderer.domElement.addEventListener('wheel',e=>{dist=Math.max(10,Math.min(30,dist+e.deltaY*.012));updateCamera()},{passive:true});let lastT=0;function animate(t){requestAnimationFrame(animate);const dt=Math.min(.1,(t-lastT)/1000);lastT=t;wander.update(dt);outdoor.update(t,dt);renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();for(const a of agents){a.labelPos.set(a.group.position.x,2.05,a.group.position.z);const p=a.labelPos.clone().project(camera);const visible=p.z<1;const x=(p.x*.5+.5)*innerWidth,y=(-p.y*.5+.5)*innerHeight;a.el.style.transform=`translate(-50%,-50%) translate(${x}px,${y}px)`;a.el.style.display=visible?'flex':'none';a.char.update(t)}room.update(t);renderer.render(world,camera)}requestAnimationFrame(animate);
+const HOME_VIEW=[Math.PI/4,.96,37];$('reset').onclick=()=>{[theta,phi,dist]=HOME_VIEW;updateCamera()};const guide=$('guide');$('help').onclick=()=>guide.classList.remove('hidden');$('closeguide').onclick=$('okguide').onclick=()=>guide.classList.add('hidden');
+let dragging=false,moved=0,px=0,py=0;renderer.domElement.addEventListener('pointerdown',e=>{dragging=true;moved=0;px=e.clientX;py=e.clientY;renderer.domElement.setPointerCapture(e.pointerId)});renderer.domElement.addEventListener('pointermove',e=>{if(!dragging)return;const dx=e.clientX-px,dy=e.clientY-py;moved+=Math.abs(dx)+Math.abs(dy);theta-=dx*.006;phi=Math.max(.40,Math.min(1.38,phi+dy*.005));px=e.clientX;py=e.clientY;updateCamera()});renderer.domElement.addEventListener('pointerup',e=>{dragging=false;if(moved>7)return;const p=new THREE.Vector2(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);const ray=new THREE.Raycaster();ray.setFromCamera(p,camera);const hits=ray.intersectObjects(pickables);if(hits.length)openAgent(hits[0].object.userData.agent)});renderer.domElement.addEventListener('wheel',e=>{dist=Math.max(10,Math.min(60,dist+e.deltaY*.02));updateCamera()},{passive:true});let lastT=0;function animate(t){requestAnimationFrame(animate);const dt=Math.min(.1,(t-lastT)/1000);lastT=t;wander.update(dt);outdoor.update(t,dt);renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();for(const a of agents){a.group.getWorldPosition(a.labelPos);a.labelPos.y=2.05;const p=a.labelPos.clone().project(camera);const visible=p.z<1;const x=(p.x*.5+.5)*innerWidth,y=(-p.y*.5+.5)*innerHeight;a.el.style.transform=`translate(-50%,-50%) translate(${x}px,${y}px)`;a.el.style.display=visible?'flex':'none';if(a.bubble?.classList.contains('show')){a.bubble.style.transform=`translate(-50%,-100%) translate(${x}px,${y-12}px)`;a.bubble.style.visibility=visible?'visible':'hidden'}a.char.update(t)}room.update(t);renderer.render(world,camera)}requestAnimationFrame(animate);
 
 // Outdoor scenery switcher (remembered per browser)
 const sceneryEl=document.getElementById('scenery');sceneryEl.innerHTML='<span>BỐI CẢNH</span>'+Object.entries(room.scenes).map(([k,s])=>`<button data-scene="${k}" title="${s.label}"><i style="background:${s.swatch}"></i><em>${s.label}</em></button>`).join('');
@@ -298,16 +395,18 @@ let savedScene='day';try{savedScene=new URLSearchParams(location.search).get('sc
 initClaudeConnect({toast});
 initCodexConnect({toast,onChange:()=>machineUI.refresh()});
 // ---------- Manage agents: add (up to 12 desks), edit name/role/description, delete (not the Director) ----------
-function freeSlot(){const used=new Set(agents.map(a=>a.slot));return SLOTS.findIndex((_,i)=>!used.has(i))}
-const agentRecord=a=>a.builtin?{id:a.id,builtin:true,name:a.name,role:a.role,desc:a.desc}:{id:a.id,name:a.name,role:a.role,desc:a.desc,color:a.color,preset:a.preset,slot:a.slot};
-const saveAgents=list=>machineApi('/agents',{method:'POST',body:JSON.stringify({agents:list})});
+function freeSlot(){const used=new Set(agents.map(a=>a.slot));return SLOT_ORDER.find(i=>!used.has(i))??-1}
+const agentRecord=a=>({...(a.builtin?{id:a.id,builtin:true}:{id:a.id,color:a.color,preset:a.preset,slot:a.slot}),name:a.name,role:a.role,desc:a.desc,team:teamOf(a),level:levelOf(a)});
+const saveAgents=list=>machineApi('/agents',{method:'POST',body:JSON.stringify({agents:normalizeLeaders(list)})});
 const agentForm=document.createElement('div');agentForm.className='modal hidden';document.getElementById('app').appendChild(agentForm);
 function openAgentForm(a){
-  if(!a&&freeSlot()<0){toast('Văn phòng đã đủ 12 chỗ ngồi: xóa bớt agent để thêm mới');return}
+  if(!a&&freeSlot()<0){toast(`Văn phòng đã đủ ${SLOTS.length} chỗ ngồi: xóa bớt agent để thêm mới`);return}
   const looks=Object.entries(LOOKS).map(([k,v])=>`<option value="${k}" ${(a?.preset||'dev')===k?'selected':''}>${v}</option>`).join('');
   agentForm.innerHTML=`<form class="guide claude-box agent-form"><button type="button" class="close" data-close>✕</button><div class="panel-kicker">${a?'SỬA AGENT':'THÊM AGENT MỚI'}</div><h2>${a?escapeHTML(a.name):'Agent mới'}</h2>
     <label>Tên<input name="name" maxlength="40" required value="${escapeHTML(a?.name||'')}" placeholder="Ví dụ: SEO Specialist"></label>
     <label>Vai trò (ngắn)<input name="role" maxlength="80" value="${escapeHTML(a?.role||'')}" placeholder="Ví dụ: Tối ưu SEO & nội dung"></label>
+    <div class="agent-look"><label>Đội<input name="team" maxlength="40" list="teamList" value="${escapeHTML(a?teamOf(a):'')}" placeholder="Ví dụ: Frontend"><datalist id="teamList">${[...new Set(agents.map(teamOf))].map(t=>`<option value="${escapeHTML(t)}">`).join('')}</datalist></label>
+      <label>Cấp bậc<select name="level">${Object.entries(LEVELS).map(([k,v])=>`<option value="${k}" ${(a?levelOf(a):'middle')===k?'selected':''}>${v}</option>`).join('')}</select></label></div>
     <label>Mô tả & cách làm việc<textarea name="desc" maxlength="2000" rows="6" placeholder="Agent này làm gì, làm theo cách nào, tiêu chuẩn đầu ra, điều cần tránh… Mô tả được gửi kèm mỗi việc giao cho agent và Director dùng nó để phân việc.">${escapeHTML(a?.desc||'')}</textarea></label>
     ${a?.builtin?'':`<div class="agent-look"><label>Ngoại hình<select name="preset">${looks}</select></label><label>Màu<input type="color" name="color" value="${hex(a?.color??(0x1000000*Math.random()|0)|0x303030)}"></label></div>`}
     <p class="agent-note">${a?'Đổi ngoại hình sẽ tải lại trang.':'Agent mới được xếp vào bàn trống tiếp theo và trang sẽ tải lại.'}${runOn==='sim'&&sim.some(j=>GROUP[j.status]==='running')&&(!a||!a.builtin)?' Việc mô phỏng đang chạy sẽ mất khi tải lại.':''}</p>
@@ -316,7 +415,9 @@ function openAgentForm(a){
   const form=agentForm.querySelector('form');
   form.onsubmit=async e=>{
     e.preventDefault();const f=Object.fromEntries(new FormData(form)),btn=form.querySelector('[type=submit]');
-    const vals={name:f.name.trim(),role:f.role.trim(),desc:f.desc.trim()};if(!vals.name)return;
+    const vals={name:f.name.trim(),role:f.role.trim(),desc:f.desc.trim(),team:f.team.trim()||f.role.trim()||'Khác',level:f.level};if(!vals.name)return;
+    // a new Leader replaces the team's current one (who becomes Senior)
+    if(vals.level==='leader')for(const x of agents)if(x!==a&&teamOf(x)===vals.team&&levelOf(x)==='leader')x.level='senior';
     const look=a?.builtin?{}:{preset:f.preset,color:parseInt(f.color.slice(1),16)};
     let list,reload=!a;
     if(a){reload=!a.builtin&&(look.preset!==a.preset||look.color!==a.color);list=agents.map(x=>agentRecord(x===a?{...x,...vals,...look}:x))}
@@ -324,7 +425,7 @@ function openAgentForm(a){
     btn.disabled=true;
     try{await saveAgents(list)}catch(err){toast(err.message);btn.disabled=false;return}
     if(reload){try{localStorage.setItem('office-select',a?.id||list.at(-1).id)}catch{}location.reload();return}
-    Object.assign(a,vals);a.el.innerHTML=tagHTML(a);renderAvatars();selectAgent(selected.id);agentForm.classList.add('hidden');toast('Đã lưu '+a.name);
+    Object.assign(a,vals);normalizeLeaders(agents);a.el.innerHTML=tagHTML(a);renderAvatars();selectAgent(selected.id);agentForm.classList.add('hidden');toast('Đã lưu '+a.name);
   };
 }
 agentForm.addEventListener('click',e=>{if(e.target===agentForm||e.target.closest('[data-close]'))agentForm.classList.add('hidden')});

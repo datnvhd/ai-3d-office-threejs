@@ -12,11 +12,13 @@ import os from 'node:os';
 import {join,resolve,isAbsolute,dirname,basename,relative,extname} from 'node:path';
 import {STORE_DIR,NODE_ENV,cleanEnv,run,findClaudeBinary,killTree,getSavedClaudeToken} from './claude-bridge.js';
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
-import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework} from '../workflow-plan.js';
+import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parsePlanQuestion} from '../workflow-plan.js';
+// What each level means for the agent doing the work
+const LEVEL_NOTE={leader:'Bạn là Leader của đội: chịu trách nhiệm chất lượng chung, làm và duyệt kỹ, chỉ ra rủi ro.',senior:'Bạn là Senior: xử lý được việc khó, chủ động đề xuất giải pháp tốt.',middle:'Bạn là Middle: làm chắc chắn việc thông thường, hỏi lại khi yêu cầu chưa rõ.',junior:'Bạn là Junior: làm cẩn thận từng bước, nêu rõ chỗ chưa chắc chắn để người có kinh nghiệm xem lại.'};
 
 const AGENTS_FILE=join(STORE_DIR,'agents.json');// the office's agent list (src.js); null = the 7 built-in agents
 const CONFIG_FILE=join(STORE_DIR,'machine.json'),TASKS_FILE=join(STORE_DIR,'tasks.json'),SITES_FILE=join(STORE_DIR,'sites.json'),RUNS_DIR=join(STORE_DIR,'runs'),UPLOADS_DIR=join(STORE_DIR,'uploads');
-const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,KEEP=200,URGENT_EXTRA=2,MAX_AGENTS=12;
+const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,KEEP=200,URGENT_EXTRA=2,MAX_AGENTS=36;
 // Files droppable on the task box: images and PDF are read by the agent from disk; text/Word are extracted and inlined
 const FILE_KINDS={pdf:'pdf',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',docx:'text',txt:'text',md:'text',csv:'text'};
 const MAX_FILE=25*1024*1024,MAX_FILES=6,ATTACH_SUBDIR='.ai-office-files';
@@ -73,6 +75,22 @@ const modelArgs=t=>[...(t.model?['--model',modelId(t.model)||t.model]:[]),...(EF
 // Browser tools web tasks never need; run_code_unsafe would also run arbitrary code next to the secrets file
 const WEB_TOOLS_OFF=['run_code_unsafe','network_requests','network_request','emulate_media','drag','drop','resize','console_messages'].map(n=>`mcp__browser__browser_${n}`);
 const PREVIEW_TYPES={'.html':'text/html; charset=utf-8','.htm':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.ico':'image/x-icon','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.pdf':'application/pdf','.mp4':'video/mp4','.webm':'video/webm'};
+// Toolkits for an IT team: shell commands an agent may run through Claude Code's Bash tool, switched on per team in the
+// Máy cá nhân window. "write" kits (and writeCmds) only apply when the permission mode allows edits. browser = web tools on.
+const TOOLKITS={
+  files:{short:'Xem file',label:'Xem file & tìm kiếm (ls, cat, find, grep…)',cmds:['ls','dir','cat','head','tail','wc','find','grep','rg','tree']},
+  git:{short:'Git',label:'Git: status, diff, log (thêm add/commit khi được sửa file; không bao giờ push)',cmds:['git status','git diff','git log','git show','git branch','git blame'],writeCmds:['git add','git commit','git checkout','git switch','git stash','git restore']},
+  node:{short:'Node.js',label:'Node.js: npm, pnpm, yarn, npx, node, tsc, eslint, prettier',write:true,cmds:['npm','pnpm','yarn','npx','node','tsc','eslint','prettier']},
+  python:{short:'Python',label:'Python: python, pip, pytest',write:true,cmds:['python','python3','py','pip','pytest']},
+  test:{short:'Chạy test',label:'Chạy test tự động: npm test, vitest, jest, playwright test, pytest',write:true,cmds:['npm test','npm run test','npx vitest','npx jest','npx playwright test','pytest']},
+  gh:{short:'GitHub CLI',label:'GitHub CLI: xem issue, PR, CI (bình luận/tạo issue khi được sửa file)',cmds:['gh issue view','gh issue list','gh pr view','gh pr list','gh pr diff','gh pr checks','gh run list','gh run view'],writeCmds:['gh issue create','gh issue comment','gh pr comment']},
+  docs:{short:'Tài liệu & sơ đồ',label:'Tài liệu & sơ đồ: Mermaid CLI (mmdc), pandoc',write:true,cmds:['npx -y @mermaid-js/mermaid-cli','mmdc','pandoc']},
+  browser:{short:'Trình duyệt',label:'Trình duyệt tự động (Playwright) bật sẵn cho mọi việc của đội',web:true}
+};
+const DEFAULT_TEAM_KITS={Frontend:['files','git','node','test','gh'],Backend:['files','git','node','python','test','gh'],QA:['files','git','test','browser'],BA:['files','docs'],
+  Design:['files','browser'],Data:['files','python'],Research:['files'],'Ban điều hành':['files','git'],'*':['files']};
+// never allowed, whatever the kits say
+const DENY_CMDS=['git push','git reset --hard','git clean','rm -rf','npm publish','gh repo delete','gh release create'];
 const MODES={default:'Chỉ đọc & phân tích',acceptEdits:'Cho phép tạo/sửa file trong thư mục làm việc'};
 const DEFAULT_WORKDIR=join(os.homedir(),'AI-Office-Workspace');
 // Which CLI runs each agent's tasks; agents not listed use Claude Code
@@ -103,6 +121,14 @@ export function machineBridge(){
   let config={workdir:DEFAULT_WORKDIR,mode:'default',browserVisible:true,...readJson(CONFIG_FILE,{})};
   config.agentEngines={...DEFAULT_AGENT_ENGINES,...config.agentEngines};
   const engineOf=agent=>config.agentEngines[agent]==='codex'?'codex':'claude';
+  const kitsFor=team=>(config.teamKits||{})[team]??DEFAULT_TEAM_KITS[team]??DEFAULT_TEAM_KITS['*'];
+  // Bash rules for a task from its team's kits; read-only mode keeps only the commands that just look
+  function kitRules(t){
+    const write=t.mode==='acceptEdits',cmds=[];
+    for(const k of kitsFor(t.team||'')){const kit=TOOLKITS[k];if(!kit||kit.web||kit.write&&!write)continue;cmds.push(...kit.cmds,...(write?kit.writeCmds||[]:[]))}
+    const list=[...new Set(cmds)];
+    return {cmds:list,allow:list.map(c=>`Bash(${c}:*)`),deny:DENY_CMDS.map(c=>`Bash(${c}:*)`)};
+  }
   let codexBin=null,codexChecked=false,codexVersion=null,codexAuthCache=null;
   let lastCheck=readJson(CONFIG_FILE,{}).lastCheck||null;
   // Tasks interrupted by a server restart cannot be resumed
@@ -137,7 +163,7 @@ export function machineBridge(){
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
   const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel})=>({name,kind,rel}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
-  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,lastCheck});
+  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,teamKits:config.teamKits,lastCheck});
 
   // ---------- saved web logins (passwords stay in this file and are never sent to the page or to Claude) ----------
   let sites=readJson(SITES_FILE,[]);
@@ -227,12 +253,14 @@ export function machineBridge(){
   // ---------- task runner ----------
   function prompt(t){
     return `Bạn là "${t.name}", AI agent đảm nhiệm vai trò "${t.role}" trong văn phòng AI của người dùng.
-${t.desc?`Mô tả công việc và cách làm việc người dùng đặt cho bạn (luôn tuân theo):
+${t.team?`Đội: ${t.team} · cấp bậc: ${LEVELS[levelOf(t)]}. ${LEVEL_NOTE[levelOf(t)]}
+`:''}${t.desc?`Mô tả công việc và cách làm việc người dùng đặt cho bạn (luôn tuân theo):
 ${t.desc}
 `:''}Bạn đang chạy trực tiếp trên máy cá nhân của người dùng, trong thư mục làm việc hiện tại (${t.cwd}).
 Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?' Không tạo hoặc sửa file; chỉ đọc, phân tích và trả lời.':' Chỉ tạo/sửa file bên trong thư mục làm việc.'}
-Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
-${t.kind==='step'?stepContext(t):''}${attachPrompt(t)}${t.web?webPrompt(t):''}
+${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. Lệnh khác sẽ bị chặn; không bao giờ push code.
+`:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
+${t.kind==='step'?stepContext(t):''}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
 Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
 ${t.text}`;
@@ -254,6 +282,26 @@ Người dùng hỏi thêm: ${x.q}
 Bạn trả lời: ${String(x.answer).slice(0,3000)}`).join('\n')}
 
 ${q}`;
+  }
+  // The user answered the agent's question: a resumed session only needs the answer; otherwise the whole exchange is recapped
+  function replyPrompt(t,resumed){
+    const c=t.clarify.at(-1),more=(t.clarifies||0)<MAX_CLARIFY?'':' Không hỏi thêm nữa; nếu vẫn còn thiếu thì tự giả định hợp lý và ghi rõ giả định.';
+    if(resumed)return `Người dùng trả lời câu hỏi "${c.q}" của bạn: ${c.answer}
+Tiếp tục làm nhiệm vụ với thông tin này.${more}`;
+    return `${prompt(t)}
+
+TRAO ĐỔI TRƯỚC ĐÓ VỚI NGƯỜI DÙNG:
+${t.clarify.map(x=>`Bạn hỏi: ${x.q}
+Người dùng trả lời: ${x.answer}`).join('\n')}
+
+Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
+  }
+  // A finished run that ends with a question block: the task waits for the user's answer (up to MAX_CLARIFY times)
+  function checkQuestion(t){
+    const q=parseQuestion(t.result);if(!q)return false;
+    if((t.clarifies||0)>=MAX_CLARIFY){t.result=`${q.clean}\n\n_(Agent muốn hỏi thêm: ${q.question}, nhưng đã hết lượt hỏi.)_`;return false}
+    Object.assign(t,{status:'waiting',result:q.clean||null,question:{q:q.question,options:q.options,at:new Date().toISOString()},activity:'Chờ bạn trả lời câu hỏi',finished:null});
+    return true;
   }
   // A task that cannot start: a follow-up keeps the task done and puts the error on the question
   function fail(t,msg){
@@ -301,7 +349,7 @@ ${q}`;
     const redo=plan.filter(p=>anc.has(p.id)&&(targets.includes(p.id)||[...ancestors(t.wf,p.id)].some(a=>targets.includes(a))));
     const made={},now=new Date().toISOString();
     const depsFor=x=>planDepsOf(x).map(d=>made[d]??newest(t.wf,d)?.id).filter(Boolean);
-    const copy=(src,over)=>({id:nextId++,kind:'step',wf:src.wf,wfTitle:src.wfTitle,request:src.request,agent:src.agent,name:src.name,role:src.role,desc:src.desc,priority:src.priority,
+    const copy=(src,over)=>({id:nextId++,kind:'step',wf:src.wf,wfTitle:src.wfTitle,request:src.request,agent:src.agent,name:src.name,role:src.role,desc:src.desc,team:src.team,level:src.level,priority:src.priority,
       model:src.model,effort:src.effort,modelWhy:src.modelWhy,cwd:src.cwd,mode:src.mode,host:src.host,web:src.web,siteIds:src.siteIds,files:src.files,fileNames:src.fileNames,
       status:'queued',created:now,...over});
     for(const p of redo){// plan order, so a step's own fixes are made before the steps that use them
@@ -366,7 +414,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
 `;
   }
   // Per-task Playwright MCP config + secrets file (deleted when the task ends); screenshots land in the run folder
-  function webSetup(t){
+  function webSetup(t,kit={allow:[],deny:[]}){
     if(!MCP_CLI)throw new Error('Chưa cài Playwright MCP (@playwright/mcp). Chạy npm install trong thư mục dự án.');
     const browser=findBrowser();if(!browser)throw new Error('Không tìm thấy Chrome hoặc Edge trên máy để agent dùng.');
     const dir=join(RUNS_DIR,String(t.id));if(!t.asking)rmSync(dir,{recursive:true,force:true});mkdirSync(dir,{recursive:true});
@@ -379,8 +427,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args,env:NODE_ENV}}}));
     t.siteLabels=list.map(s=>s.label);t.browser=browser;
     // Only the built-in tools a web task needs, and none of the browser tools it never uses (their schemas cost tokens every turn)
-    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'?['Write','Edit']:[])];
-    return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','WebSearch','--disallowedTools',...WEB_TOOLS_OFF]};
+    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'?['Write','Edit']:[]),...(kit.allow.length?['Bash']:[])];
+    return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','WebSearch',...kit.allow,'--disallowedTools',...WEB_TOOLS_OFF,...kit.deny]};
   }
   // Workflow steps wait for their dependencies; if one fails or is stopped, the steps after it stop too
   function depState(t){
@@ -413,19 +461,21 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(t.engine==='codex')return startCodex(t);
     const wd=workdirState(t.cwd);
     if(!bin||!getSavedClaudeToken()||!wd.writable)return fail(t,!bin?'Không tìm thấy Claude Code CLI trên máy.':!getSavedClaudeToken()?'Chưa đăng nhập tài khoản Claude trong ứng dụng.':`Thư mục làm việc không dùng được: ${t.cwd}`);
-    let web=null;
-    if(t.web)try{web=webSetup(t)}catch(e){return fail(t,e.message)}
-    const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.session);
+    let web=null;const kit=kitRules(t);
+    if(t.web)try{web=webSetup(t,kit)}catch(e){return fail(t,e.message)}
+    const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.session),reply=!ask&&!!t.reply,replyResume=reply&&!!t.session;
     if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
+    else if(reply)Object.assign(t,{status:'running',activity:'Đang tiếp tục với câu trả lời của bạn…',log:t.log||[]});
     else Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Claude Code…',log:[]});
     // Step log for the progress popup: init, tool calls, their (shortened) output and Claude's own messages
     const note=(kind,text,isActivity=true)=>{text=redact(text);t.log.push({at:Date.now(),kind,text});if(t.log.length>200)t.log.shift();if(isActivity)t.activity=short(text,120)};
     if(t.fallback&&!ask)note('denied',t.fallback,false);
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
+    if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
     const outText=c=>Array.isArray(c)?c.map(x=>x.type==='text'?x.text:x.type==='image'?'[hình ảnh]':'').join(' '):String(c??'');
     const turns=String(t.web?WEB_TURNS:MAX_TURNS);
     // Browser tools loaded up front: saves the opening ToolSearch turn
-    const {child,done}=claude([...(resume?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...(web?.args||['--allowedTools','WebSearch,WebFetch'])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):prompt(t),timeout:TASK_TIMEOUT,env:web?{ENABLE_TOOL_SEARCH:'false'}:{},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
+    const {child,done}=claude([...(resume||replyResume?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...(web?.args||['--allowedTools','WebSearch','WebFetch',...kit.allow,'--disallowedTools',...kit.deny])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),timeout:TASK_TIMEOUT,env:web?{ENABLE_TOOL_SEARCH:'false'}:{},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
       if(ev.type==='system'&&ev.subtype==='init'&&web){const b=(ev.mcp_servers||[]).find(s=>s.name==='browser');if(b&&b.status!=='connected')note('denied',`Trình duyệt chưa sẵn sàng (${b.status})`,false)}
       if(ev.type==='system'&&ev.subtype==='init')note('init',`Đã khởi động Claude Code · model ${ev.model||'?'}${t.effort?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`);
       if(ev.type==='assistant')for(const c of ev.message?.content||[]){
@@ -451,9 +501,11 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         return endAsk(t,ask,{answer:ok&&r.result,error:resultError(r,out,cancelled),cost:r?.total_cost_usd,turns:r?.num_turns});
       }
       if(!ok&&!cancelled&&t.resumeSession&&/no conversation found/i.test(`${r?.result||''} ${out.stderr}`)){t.resumeSession=null;t.status='queued';save();pump();return}
+      if(!ok&&!cancelled&&replyResume&&/no conversation found/i.test(`${r?.result||''} ${out.stderr}`)){t.session=null;t.status='queued';save();pump();return}
+      t.reply=null;
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(r.result||'').slice(0,20000)):null,error:ok?null:redact(resultError(r,out,cancelled)),
         durationMs:r?.duration_ms??(Date.now()-Date.parse(t.started)),turns:r?.num_turns??null,costUsd:r?.total_cost_usd??null,activity:null});
-      if(ok&&t.kind==='step')checkRework(t);
+      if(ok&&!checkQuestion(t)&&t.kind==='step')checkRework(t);
       save();pump();
     });
   }
@@ -470,6 +522,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     (run?run.done:Promise.resolve(null)).then(out=>{
       procs.delete(t.id);
       if(t.status==='cancelled'){Object.assign(t,{error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString(),activity:null});save();pump();return}
+      const pq=out?.result&&!out.result.is_error&&(t.clarifies||0)<MAX_CLARIFY?parsePlanQuestion(out.result.result):null;
+      if(pq){note('text',`❓ ${pq.question}`);Object.assign(t,{status:'waiting',question:{q:pq.question,options:pq.options,at:new Date().toISOString()},activity:'Chờ bạn trả lời câu hỏi',
+        turns:out.result.num_turns??null,costUsd:out.result.total_cost_usd??null});save();pump();return}
       const ai=out?.result&&!out.result.is_error?parsePlan(out.result.result,t.team):null;
       if(!ai)note('denied',out?'Không đọc được kế hoạch từ Claude, dùng bộ chia việc theo từ khóa.':'Claude Code chưa sẵn sàng, dùng bộ chia việc theo từ khóa.');
       const plan=ai||{title:'',steps:ruleSteps(t.text,t.owner,t.team)};
@@ -478,9 +533,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       for(const s of plan.steps){
         const a=who(s.agent),id=nextId++;ids[s.key]=id;
         tasks.unshift({id,kind:'step',wf:t.id,wfTitle:t.wfTitle,stepTitle:s.title,request:t.text,deps:s.after.map(k=>ids[k]).filter(Boolean),planDeps:s.after.map(k=>ids[k]).filter(Boolean),
-          agent:s.agent,name:a.name,role:a.role,desc:a.desc,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
+          agent:s.agent,name:a.name,role:a.role,desc:a.desc,team:a.team,level:a.level,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
           model:t.forcedModel||s.model,effort:t.forcedEffort||(t.forcedModel?null:s.effort),modelWhy:t.forcedModel||t.forcedEffort?'Chọn thủ công':s.why||'Director chọn',
-          cwd:t.cwd,mode:t.mode,host:t.host,web:t.web,siteIds:t.siteIds,engine:engineOf(s.agent),files:t.files,fileNames:t.fileNames});
+          cwd:t.cwd,mode:t.mode,host:t.host,web:t.web||kitsFor(a.team||'').includes('browser'),siteIds:t.siteIds,engine:engineOf(s.agent),files:t.files,fileNames:t.fileNames});
       }
       const name=id=>t.team.find(a=>a.id===id)?.name||id;
       t.result=`**Luồng công việc: ${t.wfTitle}** (${plan.steps.length} bước${ai?'':' · chia theo từ khóa'})\n\n${plan.steps.map((s,i)=>`${i+1}. **${name(s.agent)}** · ${s.title} · _${modelLabel(t.forcedModel||s.model)}${(t.forcedEffort||(!t.forcedModel&&s.effort))?`, suy luận ${EFFORTS[t.forcedEffort||s.effort].toLowerCase()}`:''}${!t.forcedModel&&!t.forcedEffort&&s.why?`: ${s.why}`:''}_${s.after.length?` _(sau bước ${s.after.map(k=>plan.steps.findIndex(x=>x.key===k)+1).join(', ')})_`:''}`).join('\n')}`;
@@ -496,8 +551,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(!codexBin||!wd.writable)return fail(t,!codexBin?'Không tìm thấy Codex CLI trên máy.':`Thư mục làm việc không dùng được: ${t.cwd}`);
     let web=null;
     if(t.web)try{web=webSetup(t)}catch(e){return fail(t,e.message)}
-    const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.codexThread);
+    const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.codexThread),reply=!ask&&!!t.reply,replyResume=reply&&!!t.codexThread;
     if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
+    else if(reply)Object.assign(t,{status:'running',activity:'Đang tiếp tục với câu trả lời của bạn…',log:t.log||[]});
     else Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Codex…',log:[]});
     const note=(kind,text,isActivity=true)=>{text=redact(text);t.log.push({at:Date.now(),kind,text});if(t.log.length>200)t.log.shift();if(isActivity)t.activity=short(text,120)};
     const toml=v=>JSON.stringify(v);// JSON strings/arrays are valid TOML values
@@ -505,9 +561,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const extra=web?['-c',`mcp_servers.browser.command=${toml(process.execPath)}`,'-c',`mcp_servers.browser.args=${toml(web.mcpArgs)}`,
       '-c','mcp_servers.browser.default_tools_approval_mode=approve','-c',`mcp_servers.browser.disabled_tools=${toml(WEB_TOOLS_OFF.map(n=>n.replace('mcp__browser__','')))}`]:[];
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
+    if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
     else for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);// attach images so Codex can see them
     let turns=0;
-    const {child,done}=codexExec(codexBin,{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):prompt(t),resume:resume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'?'workspace-write':'read-only',extra,timeout:TASK_TIMEOUT,onEvent:ev=>{
+    const {child,done}=codexExec(codexBin,{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'?'workspace-write':'read-only',extra,timeout:TASK_TIMEOUT,onEvent:ev=>{
       const it=ev.item||{};
       if(ev.type==='thread.started'){if(ev.thread_id)t.codexThread=ev.thread_id;note('init','Đã khởi động Codex (ChatGPT)')}
       else if(ev.type==='turn.started')turns++;
@@ -529,9 +586,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
       const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?'Quá thời gian cho phép (20 phút).':/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
       if(ask)return endAsk(t,ask,{answer:ok&&out.message,error:err,turns});
+      t.reply=null;
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(out.message).slice(0,20000)):null,error:ok?null:redact(err),
         durationMs:Date.now()-Date.parse(t.started),turns:turns||null,costUsd:null,activity:null});
-      if(ok&&t.kind==='step')checkRework(t);
+      if(ok&&!checkQuestion(t)&&t.kind==='step')checkRework(t);
       save();pump();
     });
   }
@@ -540,13 +598,13 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(!text||text.length>8000)throw Object.assign(new Error('Nội dung nhiệm vụ trống hoặc quá dài (tối đa 8000 ký tự).'),{code:400});
     if(!/^[a-z0-9_-]{1,40}$/i.test(body.agent||''))throw Object.assign(new Error('Agent không hợp lệ.'),{code:400});
     const siteIds=Array.isArray(body.siteIds)?body.siteIds.filter(id=>sites.some(s=>s.id===id)).slice(0,10):[];
-    const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),desc:String(body.desc||'').slice(0,2000),text,priority:short(body.priority||'Bình thường',30),
-      status:'queued',created:new Date().toISOString(),cwd:config.workdir,mode:config.mode,host:os.hostname(),web:!!body.web,siteIds,engine:engineOf(body.agent)};
+    const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),desc:String(body.desc||'').slice(0,2000),team:short(body.agentTeam||'',40),level:LEVELS[body.level]?body.level:undefined,text,priority:short(body.priority||'Bình thường',30),
+      status:'queued',created:new Date().toISOString(),cwd:config.workdir,mode:config.mode,host:os.hostname(),web:!!body.web||kitsFor(short(body.agentTeam||'',40)).includes('browser'),siteIds,engine:engineOf(body.agent)};
     // Model and effort: what the user forced, otherwise picked from the request (workflow steps get theirs from the Director)
     const forced=modelId(body.model),forcedEffort=EFFORTS[body.effort]?body.effort:null,pick=pickModel(text);
     Object.assign(t,{model:forced||pick.model,effort:forcedEffort||(forced?null:pick.effort),modelWhy:forced||forcedEffort?'Chọn thủ công':'Tự chọn theo nội dung yêu cầu'});
     // Workflow: a Director planning task first; it creates the steps for the relevant agents when done
-    const team=Array.isArray(body.team)?body.team.filter(a=>/^[a-z0-9_-]{1,40}$/i.test(a?.id||'')).slice(0,20).map(a=>({id:a.id,name:short(a.name,60),role:short(a.role,80),desc:String(a.desc||'').slice(0,2000)})):[];
+    const team=Array.isArray(body.team)?body.team.filter(a=>/^[a-z0-9_-]{1,40}$/i.test(a?.id||'')).slice(0,20).map(a=>({id:a.id,name:short(a.name,60),role:short(a.role,80),desc:String(a.desc||'').slice(0,2000),team:short(teamOf(a),40),level:levelOf(a)})):[];
     if(body.workflow&&team.length){
       const d=team.find(a=>a.id==='director')||team.find(a=>a.id===body.agent)||team[0];
       // Planning is one short JSON answer: Sonnet 5.5 at medium effort, unless the user forced a stronger model
@@ -569,7 +627,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       claude:{found:!!b,path:b,version,auth:a},
       codex:{found:!!cb,path:cb,version:codexVersion,auth:ca,ready:!!(cb&&ca&&wd.writable)},
       engines:ENGINES,agentEngines:config.agentEngines,
-      config:{workdir:config.workdir,mode:config.mode,modes:MODES,defaultWorkdir:DEFAULT_WORKDIR,browserVisible:config.browserVisible},
+      config:{workdir:config.workdir,mode:config.mode,modes:MODES,defaultWorkdir:DEFAULT_WORKDIR,browserVisible:config.browserVisible,
+        toolkits:Object.fromEntries(Object.entries(TOOLKITS).map(([k,v])=>[k,{short:v.short,label:v.label,write:!!v.write}])),teamKits:config.teamKits||{},defaultKits:DEFAULT_TEAM_KITS},
       browser:{mcp:!!MCP_CLI,channel:findBrowser(),sites:sites.map(siteView)},
       workdir:wd,lastCheck,
       running:tasks.filter(t=>t.status==='running').length,queued:tasks.filter(t=>t.status==='queued').length,
@@ -608,6 +667,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             }
             if(b.mode!==undefined){if(!MODES[b.mode])return json(res,400,{error:'Chế độ quyền không hợp lệ.'});config.mode=b.mode}
             if(b.browserVisible!==undefined)config.browserVisible=!!b.browserVisible;
+            if(b.teamKits&&typeof b.teamKits==='object')for(const [team,list] of Object.entries(b.teamKits).slice(0,40))
+              if(team.length<=40&&Array.isArray(list))(config.teamKits??={})[team]=list.filter(k=>TOOLKITS[k]);
             if(b.agent!==undefined){if(!/^[a-z0-9_-]{1,40}$/i.test(b.agent)||!ENGINES[b.engine])return json(res,400,{error:'Agent hoặc công cụ không hợp lệ.'});config.agentEngines[b.agent]=b.engine}
             saveConfig();return json(res,200,await status());
           }
@@ -623,6 +684,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
               if(!/^[a-z0-9_-]{1,40}$/i.test(id)||seen.has(id)||!name)return json(res,400,{error:'Agent cần có tên và mã hợp lệ, không trùng nhau.'});
               seen.add(id);
               out.push({id,name,role:String(a.role||'').trim().slice(0,80),desc:String(a.desc||'').trim().slice(0,2000),builtin:!!a.builtin,
+                team:String(a.team||'').trim().slice(0,40),level:LEVELS[a.level]?a.level:'middle',
                 ...(a.builtin?{}:{color:Number.isInteger(a.color)?a.color&0xffffff:0x9aa3b5,preset:String(a.preset||'dev').slice(0,20),slot:Number.isInteger(a.slot)?a.slot:-1})});
             }
             if(!seen.has('director'))return json(res,400,{error:'Không thể xóa Director.'});
@@ -689,11 +751,24 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             Object.assign(t,{asking:true,status:'queued',activity:'Chờ đến lượt trả lời câu hỏi thêm'});save();pump();
             return json(res,200,{task:full(t)});
           }
+          // Answer to an agent's question: the task carries on (a plan is made again with the answer added to the request)
+          const ansM=req.method==='POST'&&path.match(/^\/tasks\/(\d+)\/answer$/);
+          if(ansM){
+            const t=tasks.find(t=>t.id===+ansM[1]);if(!t)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
+            const text=String((await readBody(req)).text||'').trim();
+            if(!text||text.length>4000)return json(res,400,{error:'Câu trả lời trống hoặc quá dài (tối đa 4000 ký tự).'});
+            if(t.status!=='waiting'||!t.question)return json(res,409,{error:'Việc này không còn chờ câu trả lời.'});
+            (t.clarify||=[]).push({q:t.question.q,options:t.question.options,answer:text,at:new Date().toISOString()});
+            t.clarifies=(t.clarifies||0)+1;
+            if(t.kind==='plan')t.text+=`\n\nThông tin bổ sung (trả lời câu hỏi "${t.question.q}"): ${text}`;else t.reply=text;
+            Object.assign(t,{question:null,status:'queued',urgent:true,activity:'Chờ đến lượt tiếp tục'});save();pump();
+            return json(res,200,{task:full(t)});
+          }
           if(req.method==='POST'&&m){
             const t=tasks.find(t=>t.id===+m[1]);if(!t)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
             if(m[2]==='cancel'){
               if(t.status==='queued'&&t.asking){Object.assign(t.thread.at(-1),{error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});Object.assign(t,{status:'done',asking:false,activity:null})}
-              else if(t.status==='queued')Object.assign(t,{status:'cancelled',error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});
+              else if(t.status==='queued'||t.status==='waiting')Object.assign(t,{status:'cancelled',question:null,reply:null,error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});
               else if(t.status==='running'){t.status='cancelled';killTree(procs.get(t.id))}
             }else if(t.status==='error'||t.status==='cancelled'){
               // a planning task that already created its steps is not re-planned

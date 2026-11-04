@@ -10,7 +10,7 @@ export async function machineApi(path,opt={}){
   return d;
 }
 
-export function initMachineConnect({toast,onStatus=()=>{}}){
+export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
   const chip=document.createElement('button');chip.id='machineChip';chip.className='claude-chip';chip.innerHTML='<span class="cdot checking"></span><span class="mtext">Máy cá nhân…</span>';
   document.querySelector('.actions').prepend(chip);
   const modal=document.createElement('div');modal.className='modal hidden';
@@ -44,6 +44,10 @@ export function initMachineConnect({toast,onStatus=()=>{}}){
       ${workdir.writable?'':`<p class="claude-err">${esc(workdir.exists?`Không ghi được vào thư mục${workdir.error?': '+workdir.error:''}`:'Thư mục không tồn tại.')} <button class="linkbtn" data-act="create">Tạo thư mục này</button></p>`}
       <div class="section-title">QUYỀN THỰC THI</div>
       <div class="mmodes">${Object.entries(config.modes).map(([k,l])=>`<label><input type="radio" name="mMode" value="${k}" ${k===config.mode?'checked':''}> ${esc(l)}${k==='default'?' <em>(an toàn, khuyên dùng)</em>':''}</label>`).join('')}</div>
+      <div class="section-title">BỘ CÔNG CỤ CHO ĐỘI IT</div>
+      <p class="claude-note">Lệnh dòng lệnh mỗi đội được phép chạy. Ở chế độ <b>Chỉ đọc</b> chỉ các lệnh xem (git status/diff/log, ls, cat…) được dùng; các bộ có dấu ✎ cần chế độ được sửa file. Không bao giờ cho phép git push, xóa hàng loạt hay publish.</p>
+      <div class="mkits">${getTeams().map(team=>{const on=new Set(config.teamKits[team]??config.defaultKits[team]??config.defaultKits['*']);
+        return `<div class="mkit"><b>${esc(team)}</b><div>${Object.entries(config.toolkits).map(([k,v])=>`<label class="kchip ${on.has(k)?'on':''}" title="${esc(v.label)}"><input type="checkbox" data-kit="${k}" data-team="${esc(team)}" ${on.has(k)?'checked':''}>${esc(v.short)}${v.write?' ✎':''}</label>`).join('')}</div></div>`}).join('')}</div>
       <div class="section-title">TRÌNH DUYỆT & TÀI KHOẢN WEB</div>
       ${rows([['Công cụ trình duyệt',st.browser.mcp?'Playwright MCP đã cài':'<em class="bad">chưa cài @playwright/mcp</em>'],['Trình duyệt dùng',st.browser.channel?esc(st.browser.channel==='chrome'?'Google Chrome':'Microsoft Edge'):'<em class="bad">không tìm thấy Chrome/Edge</em>']])}
       <label class="mcheck"><input type="checkbox" id="mVisible" ${config.browserVisible?'checked':''}> Hiện cửa sổ trình duyệt khi agent thao tác (bỏ chọn để chạy ẩn)</label>
@@ -64,6 +68,8 @@ export function initMachineConnect({toast,onStatus=()=>{}}){
       else if(name==='check'){checking=true;render();const r=await machineApi('/check',{method:'POST'});st=r.status;onStatus(st);toast(r.check.ok?'✓ Máy cá nhân hoạt động tốt, sẵn sàng chạy việc':'✗ Kiểm tra máy chưa đạt, xem chi tiết trong cửa sổ')}
       else if(name==='workdir'||name==='create'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({workdir:body.querySelector('#mWorkdir').value,create:name==='create'})});onStatus(st);toast('Đã cập nhật thư mục làm việc')}
       else if(name==='mode'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({mode:el.value})});onStatus(st);toast('Quyền thực thi: '+st.config.modes[st.config.mode])}
+      else if(name==='kits'){const team=el.dataset.team,list=[...body.querySelectorAll('[data-kit]')].filter(x=>x.dataset.team===team&&x.checked).map(x=>x.dataset.kit);
+        st=await machineApi('/config',{method:'POST',body:JSON.stringify({teamKits:{[team]:list}})});onStatus(st);toast(`Đã cập nhật bộ công cụ của đội ${team}`)}
       else if(name==='visible'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({browserVisible:el.checked})});onStatus(st);toast(el.checked?'Agent sẽ mở cửa sổ trình duyệt để bạn theo dõi':'Agent sẽ chạy trình duyệt ẩn')}
       else if(name==='saveSite'){
         const v=id=>body.querySelector('#'+id).value;
@@ -77,7 +83,7 @@ export function initMachineConnect({toast,onStatus=()=>{}}){
     finally{busy=false;checking=false;render()}
   }
   body.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b)});
-  body.addEventListener('change',e=>{if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target)});
+  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target)});
   body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir')});
 
   refresh();

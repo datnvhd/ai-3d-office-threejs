@@ -3,10 +3,10 @@ import {mergeGeometries} from 'three/addons/utils/BufferGeometryUtils.js';
 import {createCharacter,PRESETS} from './characters.js';
 // City around the office: street grid with markings, crossings and traffic lights, cars that stop on red,
 // lawns with houses and shops near the office, apartment blocks further out, trees, street lamps and passers-by.
-// Pavement sits at y=GY just under the office slab (office.js floor spans x∈[-5.6,5.6], z∈[-4,4]).
+// Pavement sits at y=GY just under the office slab (the office is centred on the origin: x∈[-11.2,11.2], z∈[-8,8]).
 const GY=-.46,PI=Math.PI,HALF=1.8,WALK=1.3,EDGE=48,LOOP=78;
 // Roads running along z (at these x) and along x (at these z); the office block is the cell around the origin
-const XR=[-30.5,-10.5,11.4,31.4],ZR=[-29.5,-9.5,9.4,29.4];
+const XR=[-36.5,-16.5,16.5,36.5],ZR=[-33.5,-13.5,13.5,33.5];
 const rng=seed=>()=>(seed=seed*16807%2147483647)/2147483647;
 const r=rng(20261102),pick=a=>a[r()*a.length|0],between=(a,b)=>a+r()*(b-a);
 const geoCache=new Map(),matCache=new Map();
@@ -198,12 +198,12 @@ export function createOutdoor(world){
   }
   // the office's own block: paved plinth with an entrance path, trees behind, low hedges in front
   SHADOW=true;
-  add(stat,box(12.4,.16,9.4),M.plinth,[0,GY+.08,.1]);add(stat,box(2.2,.12,1.5),M.plinth,[0,GY+.06,5.5]);
-  for(let x=-6.6;x<=7.6;x+=2.4)tree(stat,x,-5.55,1.1+r()*.2);
-  for(let z=-3.6;z<=4.2;z+=2.6)tree(stat,-6.85,z,1);
-  for(let x=-6.4;x<=7.8;x+=.75)if(Math.abs(x)>1.3)bush(stat,x,5.6,.75);
-  for(let z=-4.2;z<=5.6;z+=.75)bush(stat,7.4,z,.7);
-  bench(stat,-3.6,5.9,PI);bench(stat,3.6,5.9,PI);
+  add(stat,box(23.6,.16,17.4),M.plinth,[0,GY+.08,.1]);add(stat,box(2.2,.12,1.5),M.plinth,[0,GY+.06,9.5]);
+  for(let x=-12.2;x<=13.2;x+=2.4)tree(stat,x,-9.55,1.1+r()*.2);
+  for(let z=-7.6;z<=8.2;z+=2.6)tree(stat,-12.45,z,1);
+  for(let x=-12;x<=13.4;x+=.75)if(Math.abs(x)>1.3)bush(stat,x,9.6,.75);
+  for(let z=-8.2;z<=9.6;z+=.75)bush(stat,13,z,.7);
+  bench(stat,-6,9.9,PI);bench(stat,6,9.9,PI);
   const city=bake(stat);world.add(city);
 
   // traffic: two lanes per road (right-hand traffic), cars stop at red lights and keep their distance
@@ -251,7 +251,7 @@ export function createOutdoor(world){
     const dusk=name==='sunset';
     M.lamp.emissiveIntensity=dusk?2.6:.15;M.win.emissiveIntensity=dusk?.85:0;M.head.emissiveIntensity=dusk?2:.6;
     FACADES.forEach(f=>f.emissiveIntensity=dusk?.9:0);
-    world.fog=new THREE.Fog(world.background?.getHex?.()??0xeef0fb,42,88);
+    world.fog=new THREE.Fog(world.background?.getHex?.()??0xeef0fb,60,130);
   }
   return {update,setScene};
 }

@@ -6,6 +6,9 @@ import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js'
 // Layout (x right, z toward the camera): back-left open pod by the corner windows · glass room front-middle-left ·
 // wooden desk by the small left window · cabinet/AC, TV + console, bookshelf on the back wall · lounge in front of the TV ·
 // pantry counter, water dispenser and cafe table front-right. wander.js holds the matching aisle graph.
+// Room: x∈[-5.6,16.8], z∈[-4,12] in office coordinates (agents, desks and aisles use these); the office group is shifted
+// so the room's centre sits at the world origin, in the middle of the city block (outdoor.js)
+export const ROOM={x0:-5.6,x1:16.8,z0:-4,z1:12,w:22.4,d:16,cx:5.6,cz:4};
 const FY=-.06,WALL_H=2.8,WIN=[.85,2.35],TALL=[FY+.05,2.62],PI=Math.PI;
 const geoCache=new Map(),matCache=new Map();
 const geo=(k,make)=>{if(!geoCache.has(k))geoCache.set(k,make());return geoCache.get(k)};
@@ -121,12 +124,12 @@ function floorSlab(p){
     for(let i=0;i<n;i++)for(let j=0;j<n;j++){const v=r()*5-2.5,g=x.createLinearGradient(i*s,j*s,(i+1)*s,(j+1)*s);
       g.addColorStop(0,`hsl(32,${42+v}%,${80+v*.3}%)`);g.addColorStop(1,`hsl(30,${40+v}%,${76+v*.3}%)`);x.fillStyle=g;x.fillRect(i*s,j*s,s,s);
       x.fillStyle='rgba(255,255,255,.18)';x.fillRect(i*s+6,j*s+6,s*.5,4)}
-    x.fillStyle='#bfa98e';for(let k=0;k<=n;k++){x.fillRect(k*s-3,0,6,H);x.fillRect(0,k*s-3,W,6)}},[5.6,4]);
+    x.fillStyle='#bfa98e';for(let k=0;k<=n;k++){x.fillRect(k*s-3,0,6,H);x.fillRect(0,k*s-3,W,6)}},[11.2,8]);
   const top=new THREE.MeshStandardMaterial({map:tex,roughness:.5}),side=mat(0xd2a26c,.6);
-  add(p,box(11.2,.3,8),[side,side,top,side,side,side],[0,FY-.15,0],1,null,false);
+  add(p,box(ROOM.w,.3,ROOM.d),[side,side,top,side,side,side],[ROOM.cx,FY-.15,ROOM.cz],1,null,false);
   // wood edge band around the base
-  add(p,rbox(11.5,.2,8.3,.04),mat(0xc99a66,.55),[0,FY-.36,0],1,null,false);
-  add(p,rbox(11.62,.06,8.42,.03),mat(0xb5844f,.6),[0,FY-.47,0],1,null,false);
+  add(p,rbox(ROOM.w+.3,.2,ROOM.d+.3,.04),mat(0xc99a66,.55),[ROOM.cx,FY-.36,ROOM.cz],1,null,false);
+  add(p,rbox(ROOM.w+.42,.06,ROOM.d+.42,.03),mat(0xb5844f,.6),[ROOM.cx,FY-.47,ROOM.cz],1,null,false);
 }
 // Glass wall along local x (0..len): thin dark frame and posts, clear glass; an optional door gap [a,b] gets a
 // framed glass door with long bar handles
@@ -340,22 +343,44 @@ function cafeTable(p,x,z){
 
 // ---------- public API ----------
 // Desk slots in the open pod (back-left) and in the glass room; agents in src.js stand in front of these
+// Solid interior wall along local x from 0 to len (same rotation rules as glassPartition), optional door opening
+function roomWall(p,len,pos,ry,{door}={}){
+  const g=grp(p,...pos,ry),H=2.4,T=.12,wm=M.wall,segs=door?[[0,door[0]],[door[1],len]]:[[0,len]];
+  for(const [a,b] of segs)if(b-a>.02)add(g,box(b-a,H,T),wm,[(a+b)/2,FY+H/2,0]);
+  add(g,box(len,.04,T+.02),M.white,[len/2,FY+H,0]);
+  if(door){const [a,b]=door,w=b-a;
+    add(g,box(w,H-2.05,T),wm,[(a+b)/2,FY+2.05+(H-2.05)/2,0]);// above the door
+    const d=grp(g,a+.02,0,.06,-1.1);// door left open
+    add(d,rbox(w-.04,2.0,.045,.01),M.lightWood,[(w-.04)/2,FY+1.0,0]);add(d,cyl(.015,.015,.14,8),M.metal,[w-.14,FY+1.0,.05],1,[PI/2,0,0])}
+}
+// Closed meeting room in the front-left of the added space, twice the first size (x∈[-5.44,1.2], z∈[5.4,11.6]): the outer
+// wall with its window is the left side; long table the team stands around when the Director plans (wander.js SEATS),
+// screen on the back wall, door on the aisle side
+function meetingRoom(p){
+  roomWall(p,6.64,[-5.44,0,5.4],0,{door:[5.64,6.44]});roomWall(p,6.2,[1.2,0,5.4],-PI/2);roomWall(p,6.64,[-5.44,0,11.6],0);
+  const g=grp(p,-2.0,FY,8.5);
+  add(g,rbox(4.4,.08,1.4,.04),M.lightWood,[0,.74,0]);
+  for(const sx of[-1.8,0,1.8])add(g,rbox(.14,.7,.8,.03),mat(0xeeeef0,.45),[sx,.37,0]);
+  [[-1.2,-.2],[.4,.25],[1.5,-.3]].forEach(([x,z],i)=>add(g,rbox(.3,.02,.22,.006),mat([0xf7f3ec,0x5b8def,0xa78bfa][i],.6),[x,.79,z],1,[0,i*.4,0]));
+  plant(g,-.6,.1,{s:.3,y:.78,seed:24,leaves:7});
+  for(const x of[-3.6,-2.53,-1.47,-.4]){chair(p,x,7.45,0,.9);chair(p,x,9.55,PI,.9)}
+  chair(p,-4.6,8.5,PI/2,.9);chair(p,.55,8.5,-PI/2,.9);
+  const s=grp(p,-2.0,FY,5.47);add(s,rbox(2.6,1.3,.06,.02),M.dark,[0,1.5,0]);add(s,plane(2.46,1.16),glow(0x8fb8ff,.9),[0,1.5,.035],1,null,false);
+  plant(p,.75,11.2,{pot:0xfbfaf7,s:.85,seed:27});plant(p,-5.0,5.85,{pot:0xfbfaf7,s:.8,seed:33});
+}
 export function createOffice(world,renderer){
-  const office=grp(world);
+  const office=grp(world,-ROOM.cx,0,-ROOM.cz);
   const hemi=new THREE.HemisphereLight(0xffffff,0xcccccc,2.6);world.add(hemi);
-  const sun=new THREE.DirectionalLight(0xffffff,3);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-12,right:12,top:12,bottom:-12});sun.shadow.bias=-.00025;sun.shadow.normalBias=.02;world.add(sun);
+  const sun=new THREE.DirectionalLight(0xffffff,3);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-19,right:19,top:19,bottom:-19});sun.shadow.bias=-.00025;sun.shadow.normalBias=.02;world.add(sun);
   floorSlab(office);
   // Walls: floor-to-ceiling glass around the back-left corner, a smaller window at the front of the left wall
   const views={
-    back:wall(office,{x0:-5.6,x1:5.6,openings:[[-5.3,-1.6,...TALL]]},[0,0,-4],0),
-    left:wall(office,{x0:-4,x1:4,t:.16,openings:[[.25,3.8,...TALL],[-3.35,-1.35]]},[-5.52,0,0],PI/2)
+    back:wall(office,{x0:-5.6,x1:16.8,openings:[[-5.3,-1.6,...TALL],[6.3,10.2,...TALL],[12.3,16.2,...TALL]]},[0,0,-4],0),
+    left:wall(office,{x0:-12,x1:4,t:.16,openings:[[.25,3.8,...TALL],[-3.35,-1.35],[-9.6,-6.4]]},[-5.52,0,0],PI/2)
   };
   // Open pod by the windows: front row desks for agents (src.js), back-to-back row facing the windows
   for(const x of[-4.4,-2.9,-1.4]){desk(office,x,-2.95,PI,{screen:['code','chart','ai'][Math.round((x+4.4)/1.5)],props:['coffee']});chair(office,x+.15,-3.56,0,.95)}
-  // Glass room: back-to-back desks facing the glass wall behind the dev desks
-  glassPartition(office,3.95,[-3.45,0,.6],0,{door:[3.3,3.9]});
-  glassPartition(office,3.4,[-3.45,0,.6],-PI/2);
-  glassPartition(office,3.4,[.5,0,.6],-PI/2);
+  // Former glass room (its glass walls were removed): back-to-back desks behind the dev desks
   desk(office,-2.5,1.3,PI,{screen:'design',divider:0xf28cb1,props:['notebook']});chair(office,-2.35,.92,0,.9);
   desk(office,-1.0,1.3,PI,{screen:'code',divider:0x5b8def,props:['pens']});chair(office,-.85,.92,0,.9);
   // Back wall: cabinet + AC by the corner, big TV over the console, bookshelf with trailing vine
@@ -368,9 +393,16 @@ export function createOffice(world,renderer){
   lounge(office,3.0,-1.5);
   pantry(office,4.2,1.2,0);waterCooler(office,2.6,1.2,0);trashBin(office,2.15,1.0);
   cafeTable(office,3.9,2.9);
+  // ---- added space: the glass room gets its front wall; desks right and front-right (src.js puts agents there),
+  // meeting room and break area front-left
+  meetingRoom(office);
+  lounge(office,3.2,6.0);lounge(office,3.2,9.2);
+  cafeTable(office,14.6,4.4);waterCooler(office,16.45,4.4,-PI/2);
+  for(const x of[9.5,13.0])cabinet(office,x,-3.68,0);bookshelf(office,16.2,-3.68,0,{w:1.05,h:1.75,seed:5});
   // Greenery: white round pots around the room
   const pots={pot:0xfbfaf7};
-  for(const [x,z,s,seed] of[[-5.1,-3.55,1.1,2],[-5.15,.45,.95,3],[-3.25,3.65,.85,5],[.95,3.6,1.05,8],[5.25,3.6,1.1,11],[.75,-3.6,.8,13],[-4.95,3.65,.8,19]])plant(office,x,z,{...pots,s,seed});
+  for(const [x,z,s,seed] of[[-5.1,-3.55,1.1,2],[-5.15,.45,.95,3],[-3.25,3.65,.85,5],[.95,3.6,1.05,8],[5.25,3.6,1.1,11],[.75,-3.6,.8,13],[-4.95,3.65,.8,19],
+    [7.6,-3.55,1,23],[11.25,-3.55,.9,29],[14.8,-3.55,1,31],[7.7,11.6,.9,41],[11.3,11.6,1,43],[14.9,11.6,.9,47],[2.0,11.65,1,53],[5.2,11.5,.95,59]])plant(office,x,z,{...pots,s,seed});
   freeze(office);
 
   function setScenery(name){
@@ -385,12 +417,12 @@ export function createOffice(world,renderer){
     sun.color.set(s.sun[0]);sun.intensity=s.sun[1];sun.position.set(...s.sunPos);
     renderer.toneMappingExposure=s.exposure;
   }
-  // Workstation for an agent standing at (x,z), desk behind the agent. opt.style 'wood' = small wooden desk with a
-  // wooden chair on its left; otherwise an office desk (opt.divider colour) with an ergonomic chair on its right.
+  // Workstation anchored at (x,z): desk behind that point with its screen facing +z, chair in front of the desk facing
+  // the screen (the agent sits there while working, src.js). opt.style 'wood' = small wooden desk and chair.
   function workstation(x,z,opt={}){
     const g=grp(office);
-    if(opt.style==='wood'){woodDesk(g,x,z-.6,0,opt);woodChair(g,x-.6,z-.2,PI/2)}
-    else{desk(g,x,z-.65,0,opt);chair(g,x+.72,z-.12,-.5)}
+    if(opt.style==='wood'){woodDesk(g,x,z-.6,0,opt);woodChair(g,x,z-.08,PI)}
+    else{desk(g,x,z-.65,0,opt);chair(g,x,z-.08,PI)}
     freeze(g);
   }
   function update(){
