@@ -197,7 +197,20 @@ THIẾU THÔNG TIN: nếu thiếu thông tin quan trọng mà không thể tự 
 {"question":"câu hỏi ngắn, rõ ràng","options":["lựa chọn 1","lựa chọn 2","lựa chọn 3"]}
 \`\`\`
 2–5 lựa chọn ngắn, cụ thể (người dùng cũng có thể tự nhập câu trả lời khác). Gộp mọi điều cần hỏi vào một câu hỏi. Nếu có thể tự giả định hợp lý thì cứ làm và ghi rõ giả định trong phần kết quả, không hỏi.
+Bạn đang chạy không tương tác: chỉ khối question ở trên mới hiện ô cho người dùng trả lời, và việc sẽ dừng chờ đến khi họ trả lời. Khi đã làm xong thì đừng kết thúc bằng câu hỏi (kể cả câu gợi ý kiểu "Bạn có muốn tôi… không?"), vì câu hỏi ở cuối sẽ được coi là cần người dùng trả lời.
 `;
+// Fallback when the agent asks in plain text instead of a question block: the answer ends with a question
+// (optionally followed by a short list of choices), so the task should wait for the user instead of carrying on
+export function parseLooseQuestion(text){
+  const strip=l=>l.replace(/^[>#\s]+/,'').replace(/\*\*|__/g,'').trim();
+  const lines=String(text||'').replace(/\r/g,'').split('\n').map(l=>l.trim()).filter(Boolean);
+  let end=lines.length;const opts=[];
+  while(end>0&&opts.length<7&&/^([-*•]|\d+[.)]|[a-eA-E][.)])\s+/.test(lines[end-1]))opts.unshift(strip(lines[--end].replace(/^([-*•]|\d+[.)]|[a-eA-E][.)])\s+/,'')));
+  if(opts.length>6)return null;
+  const q=strip(lines[end-1]||'');
+  if(!/[?？]\s*:?$/.test(q)||q.length>500)return null;
+  return {question:q,options:cleanOptions(opts)};
+}
 const cleanOptions=o=>(Array.isArray(o)?o:[]).map(x=>String(x).trim().slice(0,160)).filter(Boolean).slice(0,6);
 export function parseQuestion(text){
   const m=String(text||'').match(/```question\s*([\s\S]*?)```/i);if(!m)return null;

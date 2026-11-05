@@ -3,6 +3,17 @@
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const fmt=d=>d?new Date(d).toLocaleString('vi-VN'):'—';
 const gb=b=>(b/1073741824).toFixed(1)+' GB';
+import {openFolderPicker} from './folder-picker.js';
+// Which version control holds the working folder and where its code is pushed
+export const vcsBadge=v=>!v?.kind?'<span class="vcsb none">Không VCS</span>':`<span class="vcsb ${v.kind}">${v.kind==='git'?'Git':'SVN'}</span>`;
+export const vcsText=v=>!v?.kind?'Không quản lý phiên bản (diff/hoàn tác vẫn dùng bản chụp của app)'
+  :v.kind==='git'?`Git · nhánh ${esc(v.branch||'?')}${v.rev?` @${esc(v.rev)}`:''} · ${v.remote?`đẩy lên <code>${esc(v.remote)}</code>`:'chưa có remote'}${v.dirty?` · ${v.dirty} file đang sửa`:''}`
+  :`SVN${v.cli?`${v.rev?` · r${esc(v.rev)}`:''}${v.remote?` · <code>${esc(v.remote)}</code>`:''}`:' · <em class="bad">máy chưa có lệnh svn</em>: chạy lại bộ cài TortoiseSVN → Modify → chọn "command line client tools"'}`;
+// Pick a folder and make it the working folder; returns the new status or null
+export async function pickWorkdir(start){
+  const dir=await openFolderPicker({start});if(!dir)return null;
+  return machineApi('/config',{method:'POST',body:JSON.stringify({workdir:dir})});
+}
 export async function machineApi(path,opt={}){
   const r=await fetch('/api/machine'+path,{...opt,headers:{'X-AI-Office':'1','Content-Type':'application/json'}});
   const d=await r.json().catch(()=>({}));
@@ -40,8 +51,10 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
       <p class="claude-note">Việc giao với nơi thực thi <b>Máy cá nhân</b> được chạy thật bằng Claude Code trên máy này, trong thư mục làm việc bên dưới.</p>
       ${rows([['Tên máy',esc(host.name)],['Hệ điều hành',esc(`${host.os} · ${host.arch}`)],['CPU',esc(`${host.cpu} · ${host.cores} luồng`)],['RAM',`${gb(host.ramFree)} trống / ${gb(host.ramTotal)}`],['Người dùng',esc(host.user)],['Claude Code',claude.found?esc(claude.version||'đã cài'):'<em class="bad">không tìm thấy</em>'],['Xác thực',authText],['Việc đang chạy',`${st.running} đang chạy · ${st.queued} đang chờ`]])}
       <div class="section-title">THƯ MỤC LÀM VIỆC</div>
-      <div class="claude-code"><input id="mWorkdir" value="${esc(config.workdir)}" spellcheck="false" autocomplete="off"><button class="assign" data-act="workdir">Lưu</button></div>
+      <div class="claude-code"><input id="mWorkdir" value="${esc(config.workdir)}" spellcheck="false" autocomplete="off"><button class="ghost" data-act="browse" title="Duyệt thư mục trên máy">📂 Chọn…</button><button class="assign" data-act="workdir">Lưu</button></div>
       ${workdir.writable?'':`<p class="claude-err">${esc(workdir.exists?`Không ghi được vào thư mục${workdir.error?': '+workdir.error:''}`:'Thư mục không tồn tại.')} <button class="linkbtn" data-act="create">Tạo thư mục này</button></p>`}
+      <p class="claude-note mvcs">${vcsBadge(st.vcs)} ${vcsText(st.vcs)}</p>
+      ${(st.recentDirs||[]).filter(d=>d!==config.workdir).length?`<div class="mrecent"><span>Gần đây:</span>${st.recentDirs.filter(d=>d!==config.workdir).map(d=>`<button class="linkbtn" data-act="recent" data-dir="${esc(d)}" title="${esc(d)}">📁 ${esc(d.split(/[\\/]/).filter(Boolean).pop())}</button>`).join('')}</div>`:''}
       <div class="section-title">QUYỀN THỰC THI</div>
       <div class="mmodes">${Object.entries(config.modes).map(([k,l])=>`<label><input type="radio" name="mMode" value="${k}" ${k===config.mode?'checked':''}> ${esc(l)}${k==='default'?' <em>(an toàn, khuyên dùng)</em>':''}</label>`).join('')}</div>
       <div class="section-title">BỘ CÔNG CỤ CHO ĐỘI IT</div>
@@ -66,6 +79,8 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
     try{
       if(name==='refresh')await refresh();
       else if(name==='check'){checking=true;render();const r=await machineApi('/check',{method:'POST'});st=r.status;onStatus(st);toast(r.check.ok?'✓ Máy cá nhân hoạt động tốt, sẵn sàng chạy việc':'✗ Kiểm tra máy chưa đạt, xem chi tiết trong cửa sổ')}
+      else if(name==='browse'){const s=await pickWorkdir(body.querySelector('#mWorkdir').value);if(s){st=s;onStatus(st);toast('Đã chọn thư mục làm việc')}}
+      else if(name==='recent'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({workdir:el.dataset.dir})});onStatus(st);toast('Đã chuyển thư mục làm việc')}
       else if(name==='workdir'||name==='create'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({workdir:body.querySelector('#mWorkdir').value,create:name==='create'})});onStatus(st);toast('Đã cập nhật thư mục làm việc')}
       else if(name==='mode'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({mode:el.value})});onStatus(st);toast('Quyền thực thi: '+st.config.modes[st.config.mode])}
       else if(name==='kits'){const team=el.dataset.team,list=[...body.querySelectorAll('[data-kit]')].filter(x=>x.dataset.team===team&&x.checked).map(x=>x.dataset.kit);
