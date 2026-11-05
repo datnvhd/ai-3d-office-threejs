@@ -170,3 +170,11 @@ The task then shows **Chờ bạn trả lời** (status `waiting`): the agent's 
 ## No leftover .md files
 
 Agents are told not to write .md files (reports, notes, plans) unless asked and to put that content in their answer. As a safety net the server lists the working folder's .md files before each run and deletes the new ones afterwards, unless the request asked for a markdown/README/file (`cleanMd()` in `server/machine-bridge.js`; skips node_modules, dist, hidden folders…). Files that existed before the run are never touched; what was removed is noted in the task log ("🧹 Đã xóa …").
+
+## Design images for developers
+
+Design agents (team Design, the built-in Designer, or a role about design/UI/mockups) are told to draw each screen, state or component as a standalone HTML (or SVG) file in `<workdir>/.ai-office-design/<task id>/` (`01-dang-nhap.html`, `02-dang-nhap-mobile.html`…; desktop frame 1440px, files with "mobile" in the name 390px; `<title>` names the image). When the task ends the server opens them in a headless Chrome/Edge (playwright-core) and saves a PNG of each (`shootDesigns()` in `server/machine-bridge.js`).
+
+The progress popup of the design task shows the images (click for full size) with **Dev code theo ảnh này** per image (all marked by default) and **💻 Giao dev code theo N ảnh đã chọn**, which picks a free Frontend developer and attaches the marked images to the next task. Later steps of the same workflow (review, dev, QA) get the marked images of the newest design step automatically. Their prompt lists each image with its PNG and HTML paths and asks them to open the images (Claude Code's Read tool shows images) and follow them; Codex agents also get the images attached with `-i`. Deleting a task removes its design folder.
+
+Codex on Windows: its default workspace-write sandbox still blocked every write, so tasks that needed to write files (like the Designer's screens) could not; `codexExec` now enables Codex's `experimental_windows_sandbox` on Windows whenever writes are allowed.

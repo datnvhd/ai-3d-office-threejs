@@ -72,7 +72,9 @@ export async function codexAuth(bin){
 // With `resume` (a thread id) it continues that conversation; `exec resume` has no -s/-C, so the sandbox goes in as config
 // (unquoted: the nvm codex.exe shim goes through cmd, which breaks on quotes; Codex reads a non-TOML value as a plain string).
 export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,timeout,resume}){
-  const args=resume?['exec','resume','--json','--skip-git-repo-check','-c',`sandbox_mode=${sandbox}`,...extra,resume,'-']:['exec','--json','--skip-git-repo-check','-s',sandbox,'-C',cwd,...extra,'-'];
+  // On Windows the default workspace-write sandbox still blocks every write; Codex's Windows sandbox lets it write in the workspace
+  const win=process.platform==='win32'&&sandbox==='workspace-write'?['--enable','experimental_windows_sandbox']:[];
+  const args=resume?['exec','resume','--json','--skip-git-repo-check','-c',`sandbox_mode=${sandbox}`,...win,...extra,resume,'-']:['exec','--json','--skip-git-repo-check','-s',sandbox,...win,'-C',cwd,...extra,'-'];
   const child=spawn(...cmd(bin,args),{cwd,env:envFor(bin),windowsHide:true});
   const done=new Promise(res=>{
     let buf='',stderr='',message=null,usage=null,error=null,timedOut=false;

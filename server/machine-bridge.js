@@ -14,7 +14,7 @@ import {STORE_DIR,NODE_ENV,cleanEnv,run,findClaudeBinary,killTree,getSavedClaude
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
 import {createSnapshots} from './snapshot.js';
 import {randomBytes} from 'node:crypto';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion} from '../workflow-plan.js';
 // What each level means for the agent doing the work
 const LEVEL_NOTE={leader:'Bạn là Leader của đội: chịu trách nhiệm chất lượng chung, làm và duyệt kỹ, chỉ ra rủi ro.',senior:'Bạn là Senior: xử lý được việc khó, chủ động đề xuất giải pháp tốt.',middle:'Bạn là Middle: làm chắc chắn việc thông thường, hỏi lại khi yêu cầu chưa rõ.',junior:'Bạn là Junior: làm cẩn thận từng bước, nêu rõ chỗ chưa chắc chắn để người có kinh nghiệm xem lại.'};
@@ -73,6 +73,44 @@ const osName=()=>{
   return os.version?.()||os.type();
 };
 const findBrowser=()=>BROWSERS.find(([,paths])=>paths.some(p=>existsSync(p)))?.[0]||null;
+// ---------- Design images ----------
+// Design agents draw each screen as a standalone HTML/SVG file in <workdir>/.ai-office-design/<task id>/; when the task
+// ends the server opens them in a headless Chrome/Edge (playwright-core) and saves PNGs. The user marks which images the
+// developers should follow; later steps of the workflow (or a task handed over from the design) get the marked ones.
+const isDesign=t=>/^design$/i.test(t.team||'')||t.agent==='designer'||/thiết kế|design|mockup|ui\/ux/i.test(t.role||'')&&!/phát triển|dev|lập trình/i.test(t.role||'');
+const designDir=t=>join(t.cwd,'.ai-office-design',String(t.id));
+const browserExe=()=>BROWSERS.flatMap(([,paths])=>paths).find(p=>existsSync(p)&&!/\.app$/.test(p))||null;
+const designGuide=t=>`
+ẢNH THIẾT KẾ CHO DEV: kết quả thiết kế phải là ẢNH để dev code theo. Với mỗi màn hình, trạng thái hoặc thành phần quan trọng, tạo MỘT file HTML độc lập (CSS viết ngay trong file, không cần JavaScript; tài nguyên ngoài chỉ được dùng Google Fonts) trong thư mục:
+${designDir(t)}
+Đặt tên theo thứ tự và nội dung, ví dụ 01-dang-nhap.html, 02-dang-nhap-loi.html, 03-trang-chu-mobile.html; thẻ <title> là tên ảnh (ví dụ "Đăng nhập – trạng thái lỗi"). Khung desktop rộng 1440px; file có "mobile" trong tên dùng khung 390px. Có thể tạo nhiều file (thường 2–8); icon/logo có thể là file .svg trong cùng thư mục.
+Hệ thống tự chụp mỗi file thành ảnh PNG; người dùng chọn ảnh nào gửi cho dev. Trong phần kết quả, liệt kê từng ảnh (tên file — mô tả) và ghi bảng màu, font, cỡ chữ, khoảng cách chính.
+`;
+async function shootDesigns(t,note){
+  if(!isDesign(t)||!t.cwd)return;
+  const dir=designDir(t);if(!existsSync(dir))return;
+  const files=readdirSync(dir).filter(f=>/\.(html?|svg)$/i.test(f)).sort().slice(0,20);if(!files.length)return;
+  let browser;
+  try{
+    const {chromium}=createRequire(import.meta.url)('playwright-core'),exe=browserExe();
+    browser=await chromium.launch({headless:true,...(exe?{executablePath:exe}:{channel:'chrome'})});
+    const out=[];
+    for(const f of files){
+      const mobile=/mobile/i.test(f),page=await browser.newPage({viewport:mobile?{width:390,height:844}:{width:1440,height:900}});
+      try{
+        await page.goto(pathToFileURL(join(dir,f)).href,{waitUntil:'load',timeout:15000});await page.waitForTimeout(400);
+        const h=await page.evaluate(()=>document.documentElement.scrollHeight).catch(()=>900),png=f.replace(/\.\w+$/,'.png');
+        await page.screenshot({path:join(dir,png),...(h>4200?{clip:{x:0,y:0,width:mobile?390:1440,height:4200}}:{fullPage:true}),timeout:20000});
+        const title=(await page.title().catch(()=>''))||f.replace(/\.\w+$/,'').replace(/[-_]/g,' '),prev=(t.designs||[]).find(d=>d.png===png);
+        out.push({png,src:f,title:title.trim().slice(0,120),marked:prev?prev.marked:true});
+      }catch(e){note('denied',`Không chụp được ${f}: ${String(e.message).split('\n')[0].slice(0,140)}`,false)}
+      finally{await page.close().catch(()=>{})}
+    }
+    t.designs=out;
+    if(out.length)note('out',`🎨 Đã chụp ${out.length} ảnh thiết kế: ${out.map(d=>d.title).join(', ')}`,false);
+  }catch(e){note('denied','Không chụp được ảnh thiết kế: '+String(e.message).split('\n')[0].slice(0,160),false)}
+  finally{await browser?.close().catch(()=>{})}
+}
 // Claude Code's answer when the account cannot use the requested model (retired, or not on this plan)
 const MODEL_MISSING=/not_found_error|may not exist|not have access to (it|this model)|model[^\n]{0,60}(not found|not available|unavailable|does not exist)/i;
 // `claude` flags for a task's model and reasoning effort (old records may hold a family alias, still valid for the CLI)
@@ -393,7 +431,7 @@ ${t.desc}
 Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?' Không tạo hoặc sửa file; chỉ đọc, phân tích và trả lời.':' Chỉ tạo/sửa file bên trong thư mục làm việc.'}
 ${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. Lệnh khác cần người dùng bấm cho phép và có thể bị từ chối (khi bị từ chối thì tìm cách khác hoặc giải thích, không thử lại cùng lệnh); không bao giờ push code hay svn commit/update.
 `:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
-${t.kind==='step'?stepContext(t):''}${CHECKLIST_GUIDE}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
+${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${CHECKLIST_GUIDE}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
 Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. File .md mới không được yêu cầu sẽ bị xóa khi xong việc.
 Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
@@ -554,6 +592,21 @@ Các bước đã sửa xong (xem "Kết quả các bước trước"). Kiểm t
       x.deps=(x.deps||[]).map(d=>{const y=tasks.find(z=>z.id===d);return y?newest(t.wf,originOf(y)).id:d});
   }
   // A workflow step sees the user's original request and the results of the steps it waits for
+  // Marked design images a task should follow: from the design task it was handed over from, otherwise from the newest
+  // design steps of its workflow (a redone design replaces the earlier one)
+  function designsFor(t){
+    const src=t.designFrom!=null?[tasks.find(x=>x.id===t.designFrom)].filter(Boolean)
+      :t.wf!=null?Object.values(tasks.filter(x=>x.wf===t.wf&&x.id!==t.id&&x.status==='done'&&x.designs?.length).reduce((m,x)=>{const o=x.origin??x.id;if(!m[o]||m[o].id<x.id)m[o]=x;return m},{})):[];
+    return src.flatMap(x=>x.designs.filter(d=>d.marked).map(d=>({...d,png:join(designDir(x),d.png),src:join(designDir(x),d.src),by:x.name})));
+  }
+  function designNote(t){
+    const list=designsFor(t);if(!list.length)return '';
+    return `
+ẢNH THIẾT KẾ ĐỂ LÀM THEO (do ${[...new Set(list.map(d=>d.by))].join(', ')} tạo, người dùng đã chọn): mở từng ảnh bằng công cụ Read để xem trước khi làm; file HTML gốc chứa đúng màu, font, cỡ chữ và khoảng cách.
+${list.map((d,i)=>`${i+1}. ${d.title}: ảnh ${d.png} · HTML ${d.src}`).join('\n')}
+Bám sát các ảnh này; chỗ nào làm khác ảnh thì nêu rõ lý do trong kết quả.
+`;
+  }
   function stepContext(t){
     const prev=(t.deps||[]).map(id=>tasks.find(x=>x.id===id)).filter(Boolean);
     return `
@@ -697,6 +750,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       procs.delete(t.id);dropPerms(t);
       if(web)rmSync(web.secrets,{force:true});
       cleanMd(t,mdBefore,note);
+      await shootDesigns(t,note);
       await finishSnap(t,note);
       const r=out.result,cancelled=t.status==='cancelled',ok=!cancelled&&r&&!r.is_error&&r.subtype==='success';
       if(toolQ&&!cancelled){
@@ -782,7 +836,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       '-c','mcp_servers.browser.default_tools_approval_mode=approve','-c',`mcp_servers.browser.disabled_tools=${toml(WEB_TOOLS_OFF.map(n=>n.replace('mcp__browser__','')))}`]:[];
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
-    else for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);// attach images so Codex can see them
+    else{for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);for(const d of designsFor(t).slice(0,8))if(existsSync(d.png))extra.push('-i',d.png)}// attach images so Codex can see them
     let turns=0;
     const {child,done}=codexExec(codexBin,{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'?'workspace-write':'read-only',extra,timeout:TASK_TIMEOUT,onEvent:ev=>{
       const it=ev.item||{};
@@ -805,6 +859,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       procs.delete(t.id);
       if(web)rmSync(web.secrets,{force:true});
       cleanMd(t,mdBefore,note);
+      await shootDesigns(t,note);
       await finishSnap(t,note);
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
       const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?'Quá thời gian cho phép (20 phút).':/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
@@ -821,7 +876,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(!text||text.length>8000)throw Object.assign(new Error('Nội dung nhiệm vụ trống hoặc quá dài (tối đa 8000 ký tự).'),{code:400});
     if(!/^[a-z0-9_-]{1,40}$/i.test(body.agent||''))throw Object.assign(new Error('Agent không hợp lệ.'),{code:400});
     const siteIds=Array.isArray(body.siteIds)?body.siteIds.filter(id=>sites.some(s=>s.id===id)).slice(0,10):[];
-    const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),desc:String(body.desc||'').slice(0,2000),team:short(body.agentTeam||'',40),level:LEVELS[body.level]?body.level:undefined,text,priority:short(body.priority||'Bình thường',30),
+    const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),desc:String(body.desc||'').slice(0,2000),team:short(body.agentTeam||'',40),level:LEVELS[body.level]?body.level:undefined,designFrom:Number.isInteger(body.designFrom)?body.designFrom:undefined,text,priority:short(body.priority||'Bình thường',30),
       status:'queued',created:new Date().toISOString(),cwd:config.workdir,mode:config.mode,host:os.hostname(),web:!!body.web||kitsFor(short(body.agentTeam||'',40)).includes('browser'),siteIds,engine:engineOf(body.agent)};
     // Model and effort: what the user forced, otherwise picked from the request (workflow steps get theirs from the Director)
     const forced=modelId(body.model),forcedEffort=EFFORTS[body.effort]?body.effort:null,pick=pickModel(text);
@@ -990,6 +1045,19 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             const file=join(dir,basename(shots[2]));if(!existsSync(file))return json(res,404,{error:'Không có ảnh.'});
             res.setHeader('Content-Type',/png$/i.test(file)?'image/png':'image/jpeg');res.setHeader('Cache-Control','no-store');return res.end(readFileSync(file));
           }
+          // design images of a task (only files it listed) and the user's marks
+          const dimg=req.method==='GET'&&path.match(/^\/tasks\/(\d+)\/designs\/([\w.\-]+\.png)$/i);
+          if(dimg){
+            const t=tasks.find(t=>t.id===+dimg[1]),d=t?.designs?.find(x=>x.png===dimg[2]);if(!d)return json(res,404,{error:'Không có ảnh.'});
+            const file=join(designDir(t),d.png);if(!existsSync(file))return json(res,404,{error:'Ảnh đã bị xóa.'});
+            res.setHeader('Content-Type','image/png');res.setHeader('Cache-Control','no-store');return res.end(readFileSync(file));
+          }
+          const dmark=req.method==='POST'&&path.match(/^\/tasks\/(\d+)\/designs$/);
+          if(dmark){
+            const t=tasks.find(t=>t.id===+dmark[1]);if(!t?.designs)return json(res,404,{error:'Việc này không có ảnh thiết kế.'});
+            const b=await readBody(req);for(const d of t.designs)if(b.all!==undefined||d.png===b.png)d.marked=b.all!==undefined?!!b.all:!!b.marked;
+            save();return json(res,200,{task:full(t)});
+          }
           const one=req.method==='GET'&&path.match(/^\/tasks\/(\d+)$/);
           if(one){const t=tasks.find(t=>t.id===+one[1]);return t?json(res,200,{task:full(t)}):json(res,404,{error:'Không tìm thấy nhiệm vụ.'})}
           // Upload one dropped file (raw body, name in the X-Filename header); returns an id to pass when creating a task
@@ -1007,7 +1075,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
           const drop=list=>{
             const ids=new Set(list.map(t=>t.id));
             for(const t of list){
-              rmSync(join(RUNS_DIR,String(t.id)),{recursive:true,force:true});
+              rmSync(join(RUNS_DIR,String(t.id)),{recursive:true,force:true});if(t.cwd)rmSync(designDir(t),{recursive:true,force:true});// its design images go with it
               const root=t.wf??t.id;// attachments live under the root/plan id; remove once that task goes
               if(ids.has(root)&&t.cwd)rmSync(join(t.cwd,ATTACH_SUBDIR,String(root)),{recursive:true,force:true});
             }

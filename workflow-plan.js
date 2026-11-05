@@ -97,6 +97,7 @@ Quy tắc:
 - "after" liệt kê key của các bước phải xong trước (chỉ được trỏ tới bước đứng trước). Các bước không phụ thuộc nhau có thể chạy song song.
 - Mỗi "task" là chỉ dẫn cụ thể cho agent đó, viết bằng tiếng Việt; bước sau sẽ tự nhận kết quả của bước trước.
 - Ví dụ: "Tạo trang đăng nhập" → designer thiết kế → director duyệt thiết kế → frontend dựng giao diện + backend làm API (song song) → qa kiểm thử.
+- Designer tạo ẢNH thiết kế (mockup) cho từng màn hình; các bước sau (duyệt, dev, QA) tự nhận các ảnh người dùng đã chọn, nên việc có giao diện nên có bước designer trước bước dev.
 - Ví dụ: "Sửa lỗi không đăng nhập được" → frontend/backend sửa lỗi → qa kiểm thử lại.
 - Ví dụ: "Phân tích doanh thu quý" → analyst phân tích → director tổng hợp & duyệt.
 - Bước nào cũng được TRẢ LẠI bước trước để sửa khi chưa đạt (hệ thống tự lặp: sửa → kiểm tra lại, tối đa ${MAX_REWORK} lần mỗi bước). Vì vậy với việc cần chất lượng, đặt bước qa kiểm thử hoặc director duyệt sau bước làm, và ghi rõ tiêu chí đạt trong "task" của bước kiểm tra đó.

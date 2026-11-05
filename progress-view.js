@@ -10,7 +10,7 @@ const dur=ms=>{const s=Math.max(0,Math.round(ms/1000));return s>=3600?`${Math.fl
 const TODO_ICON={completed:'✓',in_progress:'◐',pending:'○'};
 const DIFF_KIND={added:'Mới',deleted:'Xóa',modified:'Sửa'};
 
-export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS,GROUP,onCancel,onRetry,onAssign,onAsk,onAnswer,onPerm,toast=()=>{},loginBox,onLogin}){
+export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS,GROUP,onCancel,onRetry,onAssign,onAsk,onAnswer,onPerm,onDesignMark,onDesignHandoff,toast=()=>{},loginBox,onLogin}){
   const modal=document.createElement('div');modal.className='modal hidden pv';
   modal.innerHTML='<div class="pv-box"><button class="close" data-pv="close">✕</button><div class="pv-head"></div><div class="pv-main"><aside class="pv-list"></aside><section class="pv-detail"></section></div></div>';
   document.getElementById('app').appendChild(modal);
@@ -97,6 +97,7 @@ export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS
       ${j.web?`<div class="section-title">ẢNH CHỤP TRÌNH DUYỆT <span>${shots.length} ảnh</span></div>${shots.length?`<div class="pv-shots">${shots.map(s=>{const u=`/api/machine/tasks/${j.rid}/shots/${encodeURIComponent(s.name)}`;return `<a href="${u}" target="_blank" rel="noopener" title="${esc(new Date(s.at).toLocaleTimeString('vi-VN'))}"><img src="${u}" alt="Ảnh chụp" loading="lazy"><span>${esc(new Date(s.at).toLocaleTimeString('vi-VN'))}</span></a>`}).join('')}</div>`:'<p class="claude-note">Chưa có ảnh chụp nào.</p>'}`:''}
       ${j.status==='waiting'&&(t?.question||j.question)?.kind==='login'&&loginBox?`<div class="section-title">CẦN TÀI KHOẢN ĐĂNG NHẬP</div>${loginBox({...j,question:t?.question||j.question})}`:j.status==='waiting'?`<div class="section-title">CẦN BẠN TRẢ LỜI</div><div class="qbox pv-q-box"><p>${esc((t?.question||j.question)?.q||'')}</p>${((t?.question||j.question)?.options||[]).length?`<div class="qopts">${(t?.question||j.question).options.map(o=>`<button class="qopt" data-pv-answer="${esc(o)}">${esc(o)}</button>`).join('')}</div>`:''}<form class="pv-ask pv-answer"><textarea data-keep="ans-${j.key}" rows="2" maxlength="4000" placeholder="Hoặc tự nhập câu trả lời / thông tin bổ sung… (Enter gửi)"></textarea><button class="assign" type="submit">Gửi</button></form></div>`:''}
       ${(t?.clarify||j.clarify||[]).length?`<div class="section-title">ĐÃ TRAO ĐỔI <span>${(t?.clarify||j.clarify).length} câu</span></div><div class="pv-thread">${(t?.clarify||j.clarify).map(x=>`<div class="pv-a"><b>❓ ${esc(x.q)}</b></div><div class="pv-q">${esc(x.answer)}</div>`).join('')}</div>`:''}
+      ${(t?.designs||j.designs||[]).length?designBlock(j,t?.designs||j.designs):''}
       ${j.rework?`<div class="pv-rework">↩ Đã trả lại cho <b>${esc(j.rework.to.join(', '))}</b> để sửa: ${esc(j.rework.reason)}</div>`:''}
       ${j.status==='done'?`<div class="section-title">KẾT QUẢ</div><div class="jobresult pv-result"><div class="restext md">${j.remote?md(j.result):esc(j.result)}</div></div>`:''}
       ${j.remote?changeBlock(j,t,live):''}
@@ -117,6 +118,15 @@ export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS
     lastLogLen=log.length;
   }
 
+  // Design images: thumbnails (click = full size), a mark per image for the developers, and a hand-over button
+  function designBlock(j,ds){
+    const n=ds.filter(d=>d.marked).length,url=d=>`/api/machine/tasks/${j.rid}/designs/${encodeURIComponent(d.png)}`;
+    return `<div class="section-title">ẢNH THIẾT KẾ CHO DEV <span>${ds.length} ảnh · ${n} đã chọn</span></div>
+      <div class="pv-designs">${ds.map(d=>`<figure class="${d.marked?'on':''}"><a href="${url(d)}" target="_blank" rel="noopener"><img src="${url(d)}" alt="${esc(d.title)}" loading="lazy"></a>
+        <figcaption><b title="${esc(d.src)}">${esc(d.title)}</b><label><input type="checkbox" data-design="${esc(d.png)}" ${d.marked?'checked':''}> Dev code theo ảnh này</label></figcaption></figure>`).join('')}</div>
+      <div class="pv-actions pv-dacts"><button class="ghost" data-pv="dall">${n===ds.length?'Bỏ chọn tất cả':'Chọn tất cả'}</button>${j.status==='done'&&n?`<button class="assign" data-pv="dhand">💻 Giao dev code theo ${n} ảnh đã chọn</button>`:''}</div>`;
+  }
+  detail.addEventListener('change',async e=>{const c=e.target.closest('[data-design]');if(!c)return;const j=current();if(j){await onDesignMark?.(j,{png:c.dataset.design,marked:c.checked});full=null;lastDetail='';tick()}});
   // Conversation after the result: each follow-up question and its answer, then a box to ask more
   function askBlock(a,j,t){
     const th=t?.thread||[];
@@ -154,6 +164,8 @@ export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS
       try{const r=await machineApi(`/tasks/${j.rid}/undo`,{method:'POST'});toast(`↩ Đã hoàn tác ${r.restored.length} file${r.skipped.length?`, bỏ qua ${r.skipped.length} file`:''}`);full=r.task;diff={key:null};lastDetail='';render()}
       catch(err){toast(err.message)}
     }
+    else if(act==='dall'&&j){const ds=(full?.designs||j.designs||[]);await onDesignMark?.(j,{all:ds.some(d=>!d.marked)});full=null;lastDetail='';tick()}
+    else if(act==='dhand'&&j){close();onDesignHandoff?.(j)}
     else if(act==='retry'&&j){await onRetry(j);full=null;setTimeout(tick,600)}
   });
   addEventListener('keydown',e=>{if(e.key==='Escape'&&isOpen())close()});

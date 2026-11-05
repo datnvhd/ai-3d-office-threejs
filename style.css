@@ -279,3 +279,13 @@
 .loginbox .qopt{border-color:#c9bdf5;color:#5b3fc4}.loginbox .qopt.ok{background:#5b3fc4;border-color:#5b3fc4;color:#fff}.loginbox .qopt.ok:hover{background:#4a32a6}
 .lnote{display:block;margin-top:6px;color:#7a6fae;font-size:10.5px}
 .loginbox.busy{opacity:.55;pointer-events:none}
+
+/* Design images in the progress popup */
+.pv-designs{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:10px}
+.pv-designs figure{margin:0;border:2px solid #e3e6f3;border-radius:10px;overflow:hidden;background:#fff;opacity:.65;transition:.15s}
+.pv-designs figure.on{border-color:#f4966b;opacity:1;box-shadow:0 4px 14px #f4966b33}
+.pv-designs img{display:block;width:100%;height:130px;object-fit:cover;object-position:top;background:#f4f5fa}
+.pv-designs figcaption{padding:6px 8px;font-size:11.5px}.pv-designs figcaption b{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:3px}
+.pv-designs label{display:flex;align-items:center;gap:5px;color:#56607d;cursor:pointer}.pv-designs input{accent-color:#f4966b}
+.pv-dacts{margin-top:10px}
+#designChip{background:#fff1e8;border-color:#f4b38e}
