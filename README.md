@@ -231,3 +231,14 @@ Three workflows build the installers on GitHub's own machines, start the package
 | macOS installer (.dmg) | macos-15, macos-15-intel | `AI-3D-Office-<version>-macos-arm64.dmg`, `…-macos-x64.dmg` | codesign verify + self-test |
 
 All three run on a pushed tag `v*` (e.g. `git tag v1.0.1 && git push origin v1.0.1`), and from the Actions tab (**Run workflow**) once the files are on the default branch.
+
+## AI plan usage limits (Claude ↔ Codex)
+
+When a run is refused because the plan's usage limit is used up (Claude: 5-hour, daily or weekly limit; ChatGPT/Codex: 5-hour or weekly), `server/ai-limits.js` reads the CLI's message and when it resets (epoch, `resets 3pm`, `resets Nov 10, 8am`, `try again in 2 days 3 hours`, `resets_in_seconds`; unknown → retry after 1 hour, a bare HTTP 429 → 10 minutes). The task runner then:
+
+- remembers the limit in `machine.json` (kept across restarts) and uses that engine again once the reset time has passed;
+- puts the task back in the queue on the **other** engine: Claude used up → Codex, Codex used up → Claude Code. Follow-ups and answers carry on there with the exchange recapped; the log says why (`Claude hết hạn mức đến 23:00: việc này chạy bằng Codex.`);
+- sends new tasks of that engine straight to the other one while the limit lasts; the Director plans with Codex when Claude is used up;
+- when **both** are used up, stops the task (and the Director's planning) with one message giving both reset times, turns the **Máy cá nhân** chip red ("hết hạn mức AI") and shows a toast once.
+
+**HẠN MỨC GÓI AI** in the Máy cá nhân window shows each plan's state, **Dùng lại ngay** (after upgrading the plan or an early reset) and **Tự chuyển sang AI còn hạn mức** (on by default; off: the task stops with the limit message instead). The health check lists it too. Switching needs the other CLI installed and signed in.

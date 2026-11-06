@@ -14,6 +14,7 @@ import {STORE_DIR,NODE_ENV,cleanEnv,run,findClaudeBinary,killTree,reapGroup,getS
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
 import {createSnapshots} from './snapshot.js';
 import {rnProject,mobileEnv,mobileEnvCached,mobileSummary,MOBILE_KIT,mobilePrompt,mobilePlanNote} from './mobile.js';
+import {detectLimit,ENGINE_NAME} from './ai-limits.js';
 import {createRemoteServer,isRemoteReq,newRemoteKey,lanAddresses,DEFAULT_REMOTE_PORT} from './remote-access.js';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
@@ -351,7 +352,7 @@ export function machineBridge(){
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
   const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel})=>({name,kind,rel}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
-  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,lastCheck});
+  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,lastCheck});
 
   // ---------- saved web logins (passwords stay in this file and are never sent to the page or to Claude) ----------
   let sites=readJson(SITES_FILE,[]);
@@ -379,6 +380,33 @@ export function machineBridge(){
     codexAuthCache={kind,at:Date.now()};return kind;
   }
   const usesCodex=()=>Object.values(config.agentEngines).includes('codex');
+
+  // ---------- AI plan usage limits (server/ai-limits.js) ----------
+  // A plan that hit its usage limit (5-hour, daily, weekly) is not used until it resets (kept in machine.json across
+  // restarts); its tasks go to the other engine. Both used up: the task stops with a message saying when each resets.
+  const limitOf=e=>{const l=config.aiLimits?.[e];return l&&l.until>Date.now()?l:null};
+  const setLimit=(e,l)=>{(config.aiLimits??={})[e]={until:l.until,message:l.message,known:!!l.known,at:Date.now()};saveConfig()};
+  const engineReady=e=>e==='claude'?!!(bin&&getSavedClaudeToken()):!!(codexBin&&codexAuthCache?.kind);
+  const atTime=ms=>new Date(ms).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
+  const limitText=e=>{const l=limitOf(e);return l?`${ENGINE_NAME[e]} hết hạn mức đến ${l.known?'':'khoảng '}${atTime(l.until)}`:''};
+  const bothLimited=()=>!!(limitOf('claude')&&limitOf('codex'));
+  const BOTH_MSG=()=>`Đã hết hạn mức sử dụng của cả hai gói AI: ${limitText('claude')}; ${limitText('codex')}. Hãy thử lại sau giờ mở lại, hoặc nâng cấp gói.`;
+  // Engine for a run that would use `pref`: {engine, note} or {error}
+  function routeEngine(pref){
+    if(!limitOf(pref))return {engine:pref};
+    const other=pref==='claude'?'codex':'claude';
+    if(limitOf(other))return {error:BOTH_MSG()};
+    if(config.autoSwitch===false)return {error:`${limitText(pref)}. Bật "Tự chuyển sang AI còn hạn mức" trong cửa sổ Máy cá nhân để chạy bằng ${ENGINE_NAME[other]}.`};
+    if(!engineReady(other))return {error:`${limitText(pref)}; ${ENGINE_NAME[other]} chưa cài hoặc chưa đăng nhập nên không chuyển được.`};
+    return {engine:other,note:`${limitText(pref)}: việc này chạy bằng ${ENGINE_NAME[other]}.`};
+  }
+  // A failed run: if the plan's limit was the cause, remember it and put the task back in the queue (start() reroutes)
+  function limitRetry(t,engine,{text,status},note){
+    const l=detectLimit(engine,{text,status});if(!l)return false;
+    setLimit(engine,l);
+    note('denied',`⛔ ${ENGINE_NAME[engine]} hết hạn mức sử dụng của gói (${short(l.message,160)}). Mở lại ${l.known?'lúc':'khoảng'} ${atTime(l.until)}.`,false);
+    t.status='queued';t.activity=null;save();pump();return true;
+  }
   const authEnv=()=>{const token=getSavedClaudeToken();return cleanEnv(token?{CLAUDE_CODE_OAUTH_TOKEN:token}:{})};
 
   function workdirState(dir=config.workdir){
@@ -439,6 +467,8 @@ export function machineBridge(){
     }
     const me=await mobileEnv(true),rn=rnProject(config.workdir);
     steps.push({name:'Kiểm thử app mobile',ok:true,detail:`${rn?`App React Native${rn.expo?' (Expo)':''} trong ${rn.rel==='.'?'thư mục làm việc':rn.rel}`:'Thư mục làm việc không phải app React Native'} · ${mobileSummary(me).join(' · ')}`});
+    const lim=['claude','codex'].map(e=>limitOf(e)?limitText(e):`${ENGINE_NAME[e]} còn hạn mức`).join(' · ');
+    steps.push({name:'Hạn mức gói AI',ok:!bothLimited(),detail:bothLimited()?BOTH_MSG():`${lim}${config.autoSwitch===false?' · không tự chuyển':' · tự chuyển sang AI còn hạn mức'}`});
     lastCheck={ok:steps.every(s=>s.ok),at:new Date().toISOString(),ms:Date.now()-t0,steps};saveConfig();
     return lastCheck;
   }
@@ -750,6 +780,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(!t.asking)t.engine=engineOf(t.agent);// a follow-up stays with the engine that holds the conversation
     // Codex not signed in: keep the workflow moving with Claude Code and say so in the log
     if(t.engine==='codex'&&codexAuthCache&&!codexAuthCache.kind&&bin){t.engine='claude';t.fallback='Codex chưa đăng nhập nên bước này chạy bằng Claude Code.'}
+    // the plan of the chosen engine hit its usage limit: the other one takes the run, or the task stops if both did
+    const rt=routeEngine(t.engine);t.routeNote=rt.note||null;
+    if(rt.error){fail(t,rt.error);pump();return}
+    t.engine=rt.engine;
     if(t.engine==='codex')return startCodex(t);
     const wd=workdirState(t.cwd);
     if(!bin||!getSavedClaudeToken()||!wd.writable)return fail(t,!bin?'Không tìm thấy Claude Code CLI trên máy.':!getSavedClaudeToken()?'Chưa đăng nhập tài khoản Claude trong ứng dụng.':`Thư mục làm việc không dùng được: ${t.cwd}`);
@@ -767,6 +801,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // Step log for the progress popup: init, tool calls, their (shortened) output and Claude's own messages
     const note=(kind,text,isActivity=true)=>{text=redact(text);t.log.push({at:Date.now(),kind,text});if(t.log.length>200)t.log.shift();if(isActivity)t.activity=short(text,120)};
     if(t.fallback&&!ask)note('denied',t.fallback,false);
+    if(t.routeNote)note('denied',t.routeNote,false);
     if(t.modeSwitched)note('init',`Chế độ quyền: ${MODES[t.mode]} (trước đó: ${MODES[t.modeSwitched]})`,false);
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
@@ -806,6 +841,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
           durationMs:Date.now()-Date.parse(t.started),costUsd:r?.total_cost_usd??t.costUsd??null});
         save();pump();return;
       }
+      // The Claude plan's usage limit: back in the queue, to run on Codex (or stop if Codex is used up too)
+      if(!ok&&!cancelled&&!toolQ&&limitRetry(t,'claude',{text:`${r?.result||''}\n${out.stderr}`,status:r?.api_error_status??null},note))return;
       // A pinned older version the account cannot use: run again once on the newest model of the same family
       const id=modelId(t.model),latest=LATEST[MODELS[id]?.family];
       if(!ok&&!cancelled&&latest&&latest!==id&&MODEL_MISSING.test(`${r?.result||''} ${out.stderr}`)){
@@ -830,21 +867,36 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   // Director turns the request into workflow steps with one short Claude call (no tools);
   // if Claude is unavailable or its plan is unusable, the keyword planner takes over
   function startPlan(t){
+    // both plans used up: say so now instead of making steps that would all stop on it
+    if(bothLimited()){fail(t,BOTH_MSG());pump();return}
     Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Director đang lập kế hoạch…',log:[]});
     const note=(kind,text)=>{t.log.push({at:Date.now(),kind,text:redact(text)});t.activity=short(text,120)};
     note('init','Director bắt đầu phân tích yêu cầu và chia việc cho các agent liên quan');
     let child=null;
-    const run=bin&&getSavedClaudeToken()?claude(['--max-turns','1','--tools','',...modelArgs(t)],{cwd:t.cwd,input:planPrompt(t.text,t.owner,t.team)+mobilePlanNote(rnProject(t.cwd),mobileEnvCached())+attachPrompt(t),timeout:180000}):null;
+    // Planning runs on Claude; on Codex when Claude's plan is used up (or not signed in); keyword planner otherwise
+    const input=planPrompt(t.text,t.owner,t.team)+mobilePlanNote(rnProject(t.cwd),mobileEnvCached())+attachPrompt(t);
+    const claudeOk=engineReady('claude')&&!limitOf('claude'),codexOk=!claudeOk&&config.autoSwitch!==false&&engineReady('codex')&&!limitOf('codex');
+    const planner=claudeOk?'claude':codexOk?'codex':null;
+    if(planner==='codex')note('denied',`${limitOf('claude')?limitText('claude'):'Claude Code chưa sẵn sàng'}: Director lập kế hoạch bằng Codex.`);
+    let run=null;
+    if(planner==='claude')run=claude(['--max-turns','1','--tools','',...modelArgs(t)],{cwd:t.cwd,input,timeout:180000});
+    else if(planner==='codex'){
+      const c=codexExec(codexBin,{cwd:t.cwd,input,extra:['--ephemeral'],timeout:180000});
+      // same shape as a Claude result for the code below; out.limitText lets a used-up Codex plan be noticed
+      run={child:c.child,done:c.done.then(o=>({result:o.message&&!o.error?{is_error:false,subtype:'success',result:o.message,num_turns:1,total_cost_usd:null}:null,stderr:o.stderr,limitText:`${o.error||''}\n${o.stderr}`}))};
+    }
     if(run){child=run.child;procs.set(t.id,child)}
     save();
     (run?run.done:Promise.resolve(null)).then(out=>{
       procs.delete(t.id);
       if(t.status==='cancelled'){Object.assign(t,{error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString(),activity:null});save();pump();return}
+      // the planner's plan hit its usage limit: plan again on the other engine (or with keywords if both are used up)
+      if(planner&&!(out?.result&&!out.result.is_error)&&limitRetry(t,planner,{text:out?.limitText??`${out?.result?.result||''}\n${out?.stderr||''}`,status:out?.result?.api_error_status??null},note))return;
       const pq=out?.result&&!out.result.is_error&&(t.clarifies||0)<MAX_CLARIFY?parsePlanQuestion(out.result.result):null;
       if(pq){note('text',`❓ ${pq.question}`);Object.assign(t,{status:'waiting',question:{q:pq.question,options:pq.options,at:new Date().toISOString()},activity:'Chờ bạn trả lời câu hỏi',
         turns:out.result.num_turns??null,costUsd:out.result.total_cost_usd??null});save();pump();return}
       const ai=out?.result&&!out.result.is_error?parsePlan(out.result.result,t.team):null;
-      if(!ai)note('denied',out?'Không đọc được kế hoạch từ Claude, dùng bộ chia việc theo từ khóa.':'Claude Code chưa sẵn sàng, dùng bộ chia việc theo từ khóa.');
+      if(!ai)note('denied',out?`Không đọc được kế hoạch từ ${ENGINE_NAME[planner]||'AI'}, dùng bộ chia việc theo từ khóa.`:limitOf('claude')?`${limitText('claude')} và Codex chưa sẵn sàng: dùng bộ chia việc theo từ khóa.`:'Claude Code chưa sẵn sàng, dùng bộ chia việc theo từ khóa.');
       const plan=ai||{title:'',steps:ruleSteps(t.text,t.owner,t.team)};
       t.wfTitle=plan.title||short(t.text,60);
       const ids={},who=id=>t.team.find(a=>a.id===id);
@@ -875,6 +927,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     else if(reply)Object.assign(t,{status:'running',activity:'Đang tiếp tục với câu trả lời của bạn…',log:t.log||[]});
     else Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Codex…',log:[]});
     const note=(kind,text,isActivity=true)=>{text=redact(text);t.log.push({at:Date.now(),kind,text});if(t.log.length>200)t.log.shift();if(isActivity)t.activity=short(text,120)};
+    if(t.routeNote)note('denied',t.routeNote,false);
     const toml=v=>JSON.stringify(v);// JSON strings/arrays are valid TOML values
     // `codex exec` never asks, so MCP calls need pre-approval; the same risky browser tools as for Claude are switched off
     const extra=web?['-c',`mcp_servers.browser.command=${toml(process.execPath)}`,'-c',`mcp_servers.browser.args=${toml(web.mcpArgs)}`,
@@ -910,6 +963,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       await shootDesigns(t,note);
       await finishSnap(t,note);
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
+      // The ChatGPT plan's usage limit: back in the queue, to run on Claude Code (or stop if Claude is used up too)
+      if(!ok&&!cancelled&&!out.timedOut&&limitRetry(t,'codex',{text:`${out.error||''}\n${out.stderr}`},note))return;
       const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?`Quá thời gian cho phép (${Math.round(taskTimeout(t)/60000)} phút).`:/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
       if(ask)return endAsk(t,ask,{answer:ok&&out.message,error:err,turns});
       t.reply=null;
@@ -983,6 +1038,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       browser:{mcp:!!MCP_CLI,channel:findBrowser(),sites:sites.filter(s=>!s.temp).map(siteView)},
       mobile:await mobileEnv().then(e=>({...e,summary:mobileSummary(e),project:rnProject(config.workdir)})).catch(()=>null),
       remote:remoteInfo(viewer),
+      limits:{autoSwitch:config.autoSwitch!==false,both:bothLimited(),claude:limitOf('claude'),codex:limitOf('codex')},
       workdir:wd,lastCheck,vcs:wd.exists?await vcsInfo(config.workdir):{kind:null},recentDirs:(config.recentDirs||[]).filter(d=>existsSync(d)),
       running:tasks.filter(t=>t.status==='running').length,queued:tasks.filter(t=>t.status==='queued').length,
       ready:!!(b&&a&&wd.writable)
@@ -1037,6 +1093,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             }
             if(b.mode!==undefined){if(!MODES[b.mode])return json(res,400,{error:'Chế độ quyền không hợp lệ.'});config.mode=b.mode}
             if(b.browserVisible!==undefined)config.browserVisible=!!b.browserVisible;
+            if(b.autoSwitch!==undefined)config.autoSwitch=!!b.autoSwitch;
+            // the user knows the plan is usable again (upgraded, reset early): try it on the next task
+            if(b.clearLimit==='claude'||b.clearLimit==='codex')delete config.aiLimits?.[b.clearLimit];
             if(b.teamKits&&typeof b.teamKits==='object')for(const [team,list] of Object.entries(b.teamKits).slice(0,40))
               if(team.length<=40&&Array.isArray(list))(config.teamKits??={})[team]=list.filter(k=>TOOLKITS[k]);
             if(b.agent!==undefined){if(!/^[a-z0-9_-]{1,40}$/i.test(b.agent)||!ENGINES[b.engine])return json(res,400,{error:'Agent hoặc công cụ không hợp lệ.'});config.agentEngines[b.agent]=b.engine}

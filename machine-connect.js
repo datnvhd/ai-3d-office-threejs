@@ -38,8 +38,23 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
     const dot=chip.querySelector('.cdot'),txt=chip.querySelector('.mtext');
     const s=checking||!st?'checking':st.ready&&st.lastCheck?.ok!==false?'ok':'off';
     dot.className='cdot '+s;
-    txt.textContent=checking?'Đang kiểm tra máy…':!st?'Máy cá nhân…':`Máy: ${st.host.name}`+(st.running?` · ${st.running} việc đang chạy`:st.ready?'':' (chưa sẵn sàng)');
+    txt.textContent=checking?'Đang kiểm tra máy…':!st?'Máy cá nhân…':`Máy: ${st.host.name}`+(st.limits?.both?' · hết hạn mức AI':st.running?` · ${st.running} việc đang chạy`:st.ready?'':' (chưa sẵn sàng)');
+    if(st?.limits?.both)dot.className='cdot off';
+    // say it once when both plans become used up (and again if it happens later)
+    const both=!!st?.limits?.both;if(both&&!lastBoth)toast('⛔ Đã hết hạn mức của cả gói Claude và Codex: việc mới sẽ dừng cho tới giờ mở lại (xem cửa sổ Máy cá nhân).');lastBoth=both;
   }
+  let lastBoth=false;
+  const fmtLimit=l=>new Date(l.until).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
+  // Usage limits of the AI plans: which one is used up until when, and whether work moves to the other one
+  const limitsHtml=L=>{
+    if(!L)return '';
+    const row=(e,name,ready)=>{const l=L[e];return [name,l?`<em class="bad">hết hạn mức đến ${l.known?'':'khoảng '}${esc(fmtLimit(l))}</em> <button class="linkbtn" data-act="clearLimit" data-engine="${e}" title="${esc(l.message||'')}">Dùng lại ngay</button>`:ready?'Còn dùng được':'<em>chưa sẵn sàng</em>']};
+    return `<div class="section-title">HẠN MỨC GÓI AI</div>
+      ${rows([row('claude','Claude (gói Claude)',st.claude.found&&st.claude.auth),row('codex','Codex (gói ChatGPT)',st.codex.ready)])}
+      ${L.both?'<p class="claude-err">Đã hết hạn mức của cả hai gói AI. Việc mới sẽ dừng và báo lại cho tới giờ mở lại, hoặc khi bạn nâng cấp gói (bấm "Dùng lại ngay").</p>':''}
+      <label class="mcheck"><input type="checkbox" id="mAutoSwitch" ${L.autoSwitch?'checked':''}> Tự chuyển sang AI còn hạn mức: Claude hết thì làm bằng Codex, Codex hết thì làm bằng Claude</label>
+      <p class="claude-note">Hạn mức theo 5 giờ, ngày hoặc tuần của gói. App đọc giờ mở lại trong thông báo của Claude/Codex (không đọc được thì thử lại sau 1 giờ) và tự dùng lại khi tới giờ.</p>`;
+  };
   const rows=list=>`<div class="claude-rows">${list.map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`;
   // React Native: the app found in the working folder and what this machine can run it on (server/mobile.js)
   const mobileHtml=m=>{
@@ -91,6 +106,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
       <div class="msite-form" data-id="${esc(editing?.id||'')}"><div class="msite-grid"><input id="sLabel" placeholder="Tên (ví dụ Jira Trí Nam)" value="${esc(editing?.label||'')}"><input id="sUrl" placeholder="Link (ví dụ http://pm.trinam.vn)" value="${esc(editing?.url||'')}"><input id="sUser" placeholder="Tên đăng nhập" autocomplete="off" value="${esc(editing?.username||'')}"><input id="sPass" type="password" placeholder="${editing?'Mật khẩu (để trống = giữ nguyên)':'Mật khẩu'}" autocomplete="new-password"></div>
         <div class="claude-actions"><button class="assign" data-act="saveSite">${editing?'Lưu thay đổi':'＋ Lưu tài khoản'}</button>${editing?'<button class="ghost" data-act="cancelSite">Hủy</button>':''}</div></div>
       <p class="claude-note">Mật khẩu chỉ lưu trên máy này (<code>~/.ai-3d-office/sites.json</code>), không gửi xuống trình duyệt và không gửi cho Claude: agent gõ tên biến bí mật, Playwright tự thay bằng mật khẩu thật và che mật khẩu trong mọi nội dung trả về.</p>
+      ${limitsHtml(st.limits)}
       ${mobileHtml(st.mobile)}
       ${remoteHtml(st.remote)}
       <div class="section-title">KIỂM TRA KẾT NỐI</div>
@@ -116,6 +132,8 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
         await machineApi('/sites',{method:'POST',body:JSON.stringify({id:editing?.id,label:v('sLabel'),url:v('sUrl'),username:v('sUser'),password:v('sPass')})});
         toast(editing?'Đã cập nhật tài khoản':'Đã lưu tài khoản web');editing=null;await refresh();
       }
+      else if(name==='autoSwitch'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({autoSwitch:el.checked})});onStatus(st);toast(el.checked?'Sẽ tự chuyển sang AI còn hạn mức':'Không tự chuyển: việc sẽ dừng khi gói AI hết hạn mức')}
+      else if(name==='clearLimit'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({clearLimit:el.dataset.engine})});onStatus(st);toast(`Việc tiếp theo sẽ thử lại ${el.dataset.engine==='claude'?'Claude':'Codex'}`)}
       else if(name==='remote'){const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({on:el.checked})});st={...st,remote:r};toast(r.on?'Đã bật truy cập từ xa: gửi link cho máy cần mở':r.error||'Đã tắt truy cập từ xa')}
       else if(name==='remoteKey'){if(!confirm('Đổi mã truy cập? Các máy đang mở bằng link cũ sẽ phải nhập mã mới.'))return;const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({newKey:true})});st={...st,remote:r};toast('Đã đổi mã truy cập')}
       else if(name==='copy'){
@@ -129,7 +147,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
     finally{busy=false;checking=false;render()}
   }
   body.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b)});
-  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mRemote')act('remote',e.target)});
+  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target)});
   body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir')});
 
   refresh();

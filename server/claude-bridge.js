@@ -221,4 +221,5 @@ export function claudeBridge(){
 }
 
 // Used by the task runner (machine-bridge.js): the saved token is passed as CLAUDE_CODE_OAUTH_TOKEN to `claude -p`
-export function getSavedClaudeToken(){const s=loadStore();return s?.token&&!s.lastError?s.token:null}
+// (none when it was marked bad or is past its expiry date)
+export function getSavedClaudeToken(){const s=loadStore();return s?.token&&!s.lastError&&!(s.expiresAt&&Date.parse(s.expiresAt)<Date.now())?s.token:null}
