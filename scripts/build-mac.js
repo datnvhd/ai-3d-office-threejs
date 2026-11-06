@@ -8,7 +8,9 @@
 // Notarization runs when APPLE_ID + APPLE_APP_SPECIFIC_PASSWORD + APPLE_TEAM_ID (or APPLE_API_KEY + APPLE_API_KEY_ID +
 // APPLE_API_ISSUER) are set.
 import {spawnSync} from 'node:child_process';
-import {readFileSync} from 'node:fs';
+import {readFileSync,mkdtempSync,rmSync,mkdirSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 
 const args=process.argv.slice(2);
 const run=(cmd,a,opt={})=>{const r=spawnSync(cmd,a,{stdio:'inherit',shell:process.platform==='win32',...opt});if(r.error)console.error(r.error.message);return r.status??1};
@@ -40,8 +42,17 @@ if(arch!==process.arch){
   const lock=JSON.parse(readFileSync(new URL('../package-lock.json',import.meta.url),'utf8')).packages||{};
   const pkgs=Object.entries(lock).filter(([k])=>k.endsWith(`-darwin-${arch}`)).map(([k,v])=>`${k.replace(/^.*node_modules\//,'')}@${v.version}`);
   console.log(`Build ${arch} trên máy ${process.arch}: cài thêm module native của ${arch}: ${pkgs.join(', ')}`);
-  const s=run('npm',['install','--no-save','--force','--no-audit','--no-fund',...pkgs]);
-  if(s!==0){console.error('Không cài được module native của chip đích.');process.exit(s)}
+  // `npm install` may nest them (esbuild's ended up under esbuild/node_modules): unpack each tarball at the top level
+  const tmp=mkdtempSync(join(tmpdir(),'ai-office-mac-'));
+  for(const spec of pkgs){
+    const name=spec.slice(0,spec.lastIndexOf('@'));
+    const r=spawnSync('npm',['pack',spec,'--pack-destination',tmp,'--silent'],{encoding:'utf8'});
+    const tgz=(r.stdout||'').trim().split('\n').pop();
+    if(r.status!==0||!tgz){console.error(`Không tải được ${spec}: ${r.stderr}`);process.exit(1)}
+    const dest=join('node_modules',...name.split('/'));rmSync(dest,{recursive:true,force:true});mkdirSync(dest,{recursive:true});
+    if(run('tar',['-xzf',join(tmp,tgz),'-C',dest,'--strip-components=1'])!==0){console.error(`Không giải nén được ${spec}`);process.exit(1)}
+    console.log(`  ${spec} → ${dest}`);
+  }
 }
 
 const hasIdentity=!!env.CSC_LINK||/Developer ID Application/.test(spawnSync('security',['find-identity','-v','-p','codesigning'],{encoding:'utf8'}).stdout||'');
