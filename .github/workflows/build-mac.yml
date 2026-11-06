@@ -34,31 +34,40 @@ jobs:
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
       - name: Check the packaged app
         env: {ARCH: '${{ matrix.arch }}'}
+        # Results are also written as annotations (::notice:: / ::error::), which show on the run page and in the API
         run: |
-          APP=$(ls -d release/mac*/*.app | head -1)
-          echo "App: $APP"
-          codesign --verify --deep --strict "$APP" && echo "codesign OK"
+          fail(){ echo "::error title=macOS $ARCH::$1"; exit 1; }
+          note(){ echo "$1"; echo "::notice title=macOS $ARCH::$1"; }
+          LIPO=$([ "$ARCH" = x64 ] && echo x86_64 || echo arm64)   # lipo calls the Intel architecture x86_64
+          APP=$(ls -d release/mac*/*.app 2>/dev/null | head -1 || true); [ -n "$APP" ] || fail "no .app in release/: $(ls release)"
+          note "App: $APP"
+          codesign --verify --deep --strict "$APP" 2>cs.txt || fail "codesign: $(tr '\n' ' ' < cs.txt)"
           MAIN="$APP/Contents/MacOS/AI 3D Office"
-          echo "main executable: $(lipo -archs "$MAIN")"
-          lipo -archs "$MAIN" | grep -qw "$ARCH"
+          a=$(lipo -archs "$MAIN") || fail "lipo failed on the main executable"
+          echo "$a" | grep -qw "$LIPO" || fail "main executable is $a, expected $LIPO"
           RES="$APP/Contents/Resources/app/node_modules"
           # the native modules the app loads on this chip must be there and built for it
           # (the app path has spaces: read find's output NUL-separated, not word-split)
+          found=""
           for m in "@lydell/node-pty-darwin-$ARCH" "@rollup/rollup-darwin-$ARCH" "@esbuild/darwin-$ARCH"; do
-            test -d "$RES/$m" || { echo "missing $m"; ls "$RES/$(dirname "$m")" || true; exit 1; }
+            [ -d "$RES/$m" ] || fail "missing $m (have: $(ls "$RES/$(dirname "$m")" 2>/dev/null | tr '\n' ' '))"
             n=0
             while IFS= read -r -d '' f; do
-              a=$(lipo -archs "$f"); echo "$m/${f##*/}: $a"; n=$((n+1))
-              echo "$a" | grep -qw "$ARCH" || { echo "wrong chip: $f"; exit 1; }
+              a=$(lipo -archs "$f") || fail "lipo failed on $m/${f##*/}"
+              echo "$a" | grep -qw "$LIPO" || fail "$m/${f##*/} is $a, expected $LIPO"
+              found="$found ${f##*/}:$a"; n=$((n+1))
             done < <(find "$RES/$m" -type f \( -name '*.node' -o -name 'esbuild' -o -name 'spawn-helper' \) -print0)
-            [ "$n" -gt 0 ] || { echo "no binary found in $m"; exit 1; }
+            [ "$n" -gt 0 ] || fail "no binary found in $m"
           done
-          echo "Electron framework: $(lipo -archs "$APP/Contents/Frameworks/Electron Framework.framework/Electron Framework")"
-          lipo -archs "$APP/Contents/Frameworks/Electron Framework.framework/Electron Framework" | grep -qw "$ARCH"
+          fw="$APP/Contents/Frameworks/Electron Framework.framework/Electron Framework"
+          a=$(lipo -archs "$fw") || fail "lipo failed on the Electron framework"
+          echo "$a" | grep -qw "$LIPO" || fail "Electron framework is $a, expected $LIPO"
+          note "all $LIPO: main executable, Electron framework,$found"
           # an Intel runner can start only the Intel app
           if [ "$ARCH" = x64 ]; then
-            AI_OFFICE_SELFTEST=1 "$MAIN" | tee selftest.txt
-            grep -q '"page":200' selftest.txt
+            AI_OFFICE_SELFTEST=1 "$MAIN" > selftest.txt 2>selftest.err || true
+            grep -q '"page":200' selftest.txt || fail "self-test: $(head -c 300 selftest.txt) $(tail -c 300 selftest.err)"
+            note "self-test: $(head -c 200 selftest.txt)"
           fi
       - uses: actions/upload-artifact@v4
         with:
