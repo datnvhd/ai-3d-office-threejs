@@ -228,6 +228,6 @@ Three workflows build the installers on GitHub's own machines, start the package
 |---|---|---|---|
 | Windows installer (.exe) | windows-latest | `AI-3D-Office-<version>-windows-x64-setup.exe` | unpacked app self-test (waits for the app only, not daemons such as adb) |
 | Ubuntu installer (.deb) | ubuntu-22.04 | `ai-3d-office_<version>_ubuntu_amd64.deb` | installed with apt on a clean Ubuntu 24.04 runner, then self-test under Xvfb |
-| macOS installer (.dmg) | macos-15, macos-15-intel | `AI-3D-Office-<version>-macos-<arm64|x64>.dmg` |\|x64>.dmg` | codesign verify + self-test |
+| macOS installer (.dmg) | macos-15, macos-15-intel | `AI-3D-Office-<version>-macos-arm64.dmg`, `…-macos-x64.dmg` | codesign verify + self-test |
 
 All three run on a pushed tag `v*` (e.g. `git tag v1.0.1 && git push origin v1.0.1`), and from the Actions tab (**Run workflow**) once the files are on the default branch.
