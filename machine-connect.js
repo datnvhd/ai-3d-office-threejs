@@ -49,9 +49,12 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
   const asked=new Set(),prevUpd={};let updPoll=null;
   function watchUpdates(U){
     if(!U)return;
-    for(const [e,u] of Object.entries(U.engines)){
+    for(const [e,u] of Object.entries({node:U.node,...U.engines})){
       const was=prevUpd[e];prevUpd[e]=u.state;
       if(was&&was!==u.state&&u.message&&(u.state==='done'||u.state==='error'))toast((u.state==='done'?'✓ ':'⚠ ')+u.message);
+      // first install of a missing tool (started by the server on its own): say so once
+      if(u.state==='running'&&was!=='running'&&U.missing?.includes(e))toast(`⬇ Máy chưa có ${u.name}: app đang tự cài ngầm (không cần quyền admin)…`);
+      if(e==='node')continue;
       const key=e+u.latest;
       if(U.mode==='ask'&&u.available&&!u.skipped&&u.canUpdate&&u.state==='idle'&&!asked.has(key)&&!st.remote?.viewer){
         asked.add(key);
@@ -64,22 +67,23 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
     }
     // follow an install that is running or waiting
     clearTimeout(updPoll);
-    if(Object.values(U.engines).some(u=>u.state==='running'||u.state==='waiting'))updPoll=setTimeout(()=>machineApi('/status').then(s=>{st=s;onStatus(s);modal.classList.contains('hidden')?setChip():render()}).catch(()=>{}),3000);
+    if([U.node,...Object.values(U.engines)].some(u=>u.state==='running'||u.state==='waiting'))updPoll=setTimeout(()=>machineApi('/status').then(s=>{st=s;onStatus(s);modal.classList.contains('hidden')?setChip():render()}).catch(()=>{}),3000);
   }
   const updateAct=async b=>{st=await machineApi('/update',{method:'POST',body:JSON.stringify(b)});onStatus(st);render()};
   const updatesHtml=U=>{
     if(!U)return '';
     const viewer=!!st.remote?.viewer;
     const row=u=>{const e=u===U.engines.claude?'claude':'codex';
-      const v=u.current?esc(u.current):'<em>chưa cài</em>';
+      const v=u.current?esc(u.current)+(u.appCopy?' <em>(app tự cài)</em>':''):'<em>chưa cài</em>';
       const s=u.state==='running'||u.state==='waiting'?`<em><span class="spinner"></span> ${esc(u.message)}</em>`
         :u.available?`→ <b>${esc(u.latest)}</b> ${u.canUpdate&&!viewer?`<button class="linkbtn" data-act="update" data-engine="${e}">Cập nhật ngầm</button>${u.skipped?'':` <button class="linkbtn" data-act="skipUpdate" data-engine="${e}">Bỏ qua bản này</button>`}`:`<em>${esc(u.manual||'')}</em>`}`
         :u.latest?'· mới nhất':'';
       return [esc(u.name),`${v} ${s}${u.state==='error'&&u.message?`<br><em class="bad">${esc(u.message)}</em>`:''}`]};
-    return `<div class="section-title">CẬP NHẬT CLAUDE CODE & CODEX</div>
-      ${rows([row(U.engines.claude),row(U.engines.codex)])}
+    const n=U.node,nodeRow=[esc(n.name),n.state==='running'?`<em><span class="spinner"></span> ${esc(n.message)}</em>`:n.path?`có sẵn <em>${esc(n.path)}</em>`:n.state==='error'?`<em class="bad">${esc(n.message)}</em>`:'<em>chưa cài</em>'];
+    return `<div class="section-title">CÀI ĐẶT & CẬP NHẬT NODE.JS, CLAUDE CODE, CODEX</div>
+      ${rows([nodeRow,row(U.engines.claude),row(U.engines.codex)])}
       <div class="mmodes">${Object.entries(U.modes).map(([k,l])=>`<label><input type="radio" name="mUpdate" value="${k}" ${k===U.mode?'checked':''} ${viewer?'disabled':''}> ${esc(l)}${k==='ask'?' <em>(khuyên dùng)</em>':''}</label>`).join('')}</div>
-      <p class="claude-note">App tắt chế độ tự cập nhật của Claude Code và Codex (chế độ này bật cửa sổ cmd giữa lúc chạy việc). App tự kiểm tra bản mới trên npm mỗi 6 giờ, cài với cửa sổ ẩn khi không có việc nào đang chạy bằng công cụ đó, và việc tiếp theo dùng bản mới mà không cần mở lại app.${U.checkedAt?` Kiểm tra lần cuối: ${fmt(U.checkedAt)}.`:''} <button class="linkbtn" data-act="checkUpdate" ${viewer?'disabled':''}>Kiểm tra ngay</button></p>`;
+      <p class="claude-note">Máy chưa có Node.js, Claude Code hoặc Codex thì app tự cài bản chính thức vào <code>~/.ai-3d-office/tools</code> khi mở (không cần quyền admin, không mở cửa sổ cmd); máy đã có thì dùng bản của máy. App tắt chế độ tự cập nhật của Claude Code và Codex (chế độ này bật cửa sổ cmd giữa lúc chạy việc). App tự kiểm tra bản mới trên npm mỗi 6 giờ, cài với cửa sổ ẩn khi không có việc nào đang chạy bằng công cụ đó, và việc tiếp theo dùng bản mới mà không cần mở lại app.${U.checkedAt?` Kiểm tra lần cuối: ${fmt(U.checkedAt)}.`:''} <button class="linkbtn" data-act="checkUpdate" ${viewer?'disabled':''}>Kiểm tra ngay</button></p>`;
   };
   const fmtLimit=l=>new Date(l.until).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
   // Per-agent auto-approval: by default every command outside the kits asks; the user can let chosen agents run them

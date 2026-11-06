@@ -8,6 +8,7 @@ import {join,dirname} from 'node:path';
 import {killTree,reapGroup,NODE_ENV} from './claude-bridge.js';
 import {isRemoteReq} from './remote-access.js';
 import {cliGen} from './ai-updates.js';
+import {toolBin} from './ai-tools.js';
 
 const isWin=process.platform==='win32';
 const LOGIN_TIMEOUT=10*60*1000;
@@ -47,6 +48,8 @@ function findCodexEntry(){
   }
   const local=join(homedir(),'.local','bin',isWin?'codex.exe':'codex');
   if(existsSync(local))return local;
+  // the copy the app installed itself (server/ai-tools.js) when the machine had none
+  const own=toolBin('codex');if(own)return own;
   // Binary bundled with the ChatGPT/Codex VS Code / Cursor extension, newest version first
   const exe=isWin?'codex.exe':'codex',found=[];
   for(const root of ['.vscode','.vscode-insiders','.cursor'].map(d=>join(homedir(),d,'extensions'))){

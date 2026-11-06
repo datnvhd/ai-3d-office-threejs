@@ -8,6 +8,7 @@ import {join} from 'node:path';
 import pty from '@lydell/node-pty';
 import {isRemoteReq} from './remote-access.js';
 import {cliGen} from './ai-updates.js';
+import {toolBin} from './ai-tools.js';
 
 export const STORE_DIR=join(homedir(),'.ai-3d-office');
 const STORE_FILE=join(STORE_DIR,'claude-auth.json');
@@ -46,6 +47,8 @@ export function findClaudeBinary(){
   }
   const local=join(homedir(),'.local','bin',exe);
   if(existsSync(local))return local;
+  // the copy the app installed itself (server/ai-tools.js) when the machine had none
+  const own=toolBin('claude');if(own)return own;
   // Native binary bundled with the VS Code / Cursor extension, newest version first
   const found=[];
   for(const root of ['.vscode','.vscode-insiders','.cursor'].map(d=>join(homedir(),d,'extensions'))){

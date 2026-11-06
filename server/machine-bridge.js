@@ -1135,6 +1135,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   const plugin={
     name:'machine-bridge',
     configureServer(server){
+      // what the machine lacks (Node.js, Claude Code, Codex CLI) is installed in the background once the server runs (not during vite build)
+      if(!process.env.CI&&!process.env.AI_OFFICE_SELFTEST)setTimeout(()=>{(async()=>{await ensureBin();await ensureCodex();await updater.setup()})().catch(()=>{})},3000).unref?.();
       server.httpServer?.on('listening',()=>{const a=server.httpServer.address();if(a?.port)port=a.port;if(remoteCfg().on)applyRemote()});
       server.httpServer?.once('close',()=>{remote?.close().catch(()=>{});remote=null});
       if(!existsSync(config.workdir)&&config.workdir===DEFAULT_WORKDIR)try{mkdirSync(DEFAULT_WORKDIR,{recursive:true})}catch{}
