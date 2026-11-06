@@ -531,8 +531,8 @@ function openAgentForm(a){
     else{const id='a'+Date.now().toString(36);list=[...agents.map(agentRecord),{id,...vals,...look,slot:freeSlot()}]}
     btn.disabled=true;
     try{await saveAgents(list)}catch(err){toast(err.message);btn.disabled=false;return}
-    if(reload){try{localStorage.setItem('office-select',a?.id||list.at(-1).id)}catch{}location.reload();return}
-    Object.assign(a,vals);normalizeLeaders(agents);a.el.innerHTML=tagHTML(a);renderAvatars();selectAgent(selected.id);agentForm.classList.add('hidden');toast('Đã lưu '+a.name);
+    if(reload){try{localStorage.setItem('office-select',a?.id||list.at(-1).id);if(!a)localStorage.setItem('office-new',list.at(-1).id)}catch{}location.reload();return}
+    Object.assign(a,vals);normalizeLeaders(agents);wander.refreshTeams();a.el.innerHTML=tagHTML(a);renderAvatars();selectAgent(selected.id);agentForm.classList.add('hidden');toast('Đã lưu '+a.name);
   };
 }
 agentForm.addEventListener('click',e=>{if(e.target===agentForm||e.target.closest('[data-close]'))agentForm.classList.add('hidden')});
@@ -543,5 +543,7 @@ $('agentDel').onclick=async()=>{
   try{await saveAgents(agents.filter(x=>x!==a).map(agentRecord));location.reload()}catch(err){toast(err.message)}
 };
 try{const k=localStorage.getItem('office-select');if(k){localStorage.removeItem('office-select');if(agents.some(a=>a.id===k))selectAgent(k)}}catch{}
+// the agent just added gets up for a first walk right away
+try{const n=localStorage.getItem('office-new');if(n){localStorage.removeItem('office-new');wander.nudge(n)}}catch{}
 // Tools for in-browser AI agents (WebMCP); no-op where unsupported
 initWebMCP({agents,allJobs,submitTask,cancelJob,retryJob,askJob,machineApi,scenes:room.scenes,applyScene,MODELS,EFFORTS,STATUS,GROUP});

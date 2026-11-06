@@ -76,12 +76,16 @@ export function createWander(agents,{isBusy=()=>false,onEvent=()=>{},maxOut=Math
   const byId=Object.fromEntries(S.map(s=>[s.a.id,s]));
   const teamKey=a=>a.team||a.id,boss=a=>teamKey(a)==='Ban điều hành';
   // Leaders with people to look after: their own team, or every team's Leader (and a few others) for the Director
-  for(const s of S)s.lead=s.a.level==='leader'&&!!s.a.door&&(boss(s.a)||S.some(o=>o!==s&&o.a.door&&teamKey(o.a)===teamKey(s.a)));
+  // (again after an agent's team or level is edited in place)
+  const setLeads=()=>{for(const s of S)s.lead=s.a.level==='leader'&&!!s.a.door&&(boss(s.a)||S.some(o=>o!==s&&o.a.door&&teamKey(o.a)===teamKey(s.a)))};
+  setLeads();
   const crew=s=>S.filter(o=>o!==s&&o.a.door&&o.a.sit&&(boss(s.a)?o.a.level==='leader'||o.a.id.length%5===0:teamKey(o.a)===teamKey(s.a)));
-  const idleWait=s=>s.lead?10+Math.random()*18:120+Math.random()*180;
-  for(const s of S)s.wait=s.lead?3+Math.random()*12:25+Math.random()*150;
+  // Staff get up every 1–2.5 minutes (the first time within the first minute, so a newly added agent is seen walking)
+  const idleWait=s=>s.lead?10+Math.random()*18:60+Math.random()*90;
+  for(const s of S)s.wait=s.lead?3+Math.random()*12:8+Math.random()*50;
   function patrol(s){
-    const pool=crew(s).filter(o=>o.state==='sitting'&&!o.visitor&&!o.meet);if(!pool.length)return;
+    // nobody of the team at their desk to look in on: take a stroll instead of standing by
+    const pool=crew(s).filter(o=>o.state==='sitting'&&!o.visitor&&!o.meet);if(!pool.length)return leave(s);
     const busy=pool.filter(o=>isBusy(o.a.id)),list=busy.length&&Math.random()<.75?busy:pool,o=list[Math.random()*list.length|0];
     const drinks=DRINKS.filter(k=>!taken.has(k)),drink=Math.random()<.3&&drinks.length?drinks[Math.random()*drinks.length|0]:null;
     if(drink){s.errand={to:o,spot:drink};s.spot=drink;taken.add(drink);go(s,drink,'go')}
@@ -118,7 +122,8 @@ export function createWander(agents,{isBusy=()=>false,onEvent=()=>{},maxOut=Math
     meeting=next;
   }
   function update(dt){
-    const out=S.filter(s=>s.state==='go'||s.state==='stay'||s.state==='back').length;
+    // Leaders on their rounds do not use up the staff's turns to leave the desk (they used to take all of them)
+    const out=S.filter(s=>!s.patrol&&!s.errand&&(s.state==='go'||s.state==='stay'||s.state==='back')).length;
     for(const s of S){
       const g=s.a.group,busy=isBusy(s.a.id),seat=meeting.get(s.a.id);
       if(seat!=null&&s.meet!=='seat'+seat){release(s);if(s.visitor){const v=s.visitor;s.visitor=null;goHome(v)}s.meet='seat'+seat;go(s,s.meet,'meet')}
@@ -127,7 +132,8 @@ export function createWander(agents,{isBusy=()=>false,onEvent=()=>{},maxOut=Math
       const work=busy&&!s.meet&&s.a.sit;
       if(s.state==='meeting'){s.face=SEATS[+s.meet.slice(4)][2]}
       // at the desk an agent sits facing the screen (working or not); idle ones get up now and then for a stroll
-      else if(s.state==='sitting'){if(!busy&&!s.visitor&&s.a.door&&(s.wait-=dt)<=0){if(out<maxOut)(s.lead?patrol:leave)(s);if(s.state==='sitting')s.wait=s.lead?4+Math.random()*6:idleWait(s)}}
+      // (a full aisle only delays a stroll by a few seconds; it used to cost the whole 2–5 minute wait again)
+      else if(s.state==='sitting'){if(!busy&&!s.visitor&&s.a.door&&(s.wait-=dt)<=0){const room=out<maxOut;if(room||s.lead)(s.lead?patrol:leave)(s);if(s.state==='sitting')s.wait=s.lead?4+Math.random()*6:room?idleWait(s):4+Math.random()*8}}
       else if(s.state==='tosit'||s.state==='unsit'){
         // short straight step between the standing spot and the chair
         const [tx,tz]=s.state==='tosit'?s.a.sit:[s.a.x,s.a.z],dx=tx-g.position.x,dz=tz-g.position.z,d=Math.hypot(dx,dz),step=SPEED*.7*dt;
@@ -167,5 +173,8 @@ export function createWander(agents,{isBusy=()=>false,onEvent=()=>{},maxOut=Math
       s.yaw+=wrap(s.face-s.yaw)*Math.min(1,dt*8);g.rotation.y=s.yaw;
     }
   }
-  return {update,setMeeting,canWalk:id=>!!byId[id]?.a.door,isOut:id=>!!byId[id]&&byId[id].state!=='home'};
+  return {update,setMeeting,canWalk:id=>!!byId[id]?.a.door,isOut:id=>!!byId[id]&&byId[id].state!=='home',
+    refreshTeams:setLeads,
+    // a newly added agent takes a first stroll a couple of seconds after the office loads, so it is seen walking
+    nudge:id=>{const s=byId[id];if(s&&s.a.door)s.wait=Math.min(s.wait,1.5+Math.random()*2)}};
 }
