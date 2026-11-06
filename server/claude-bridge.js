@@ -6,6 +6,7 @@ import {existsSync,readdirSync,readFileSync,writeFileSync,mkdirSync,rmSync} from
 import {homedir,tmpdir} from 'node:os';
 import {join} from 'node:path';
 import pty from '@lydell/node-pty';
+import {isRemoteReq} from './remote-access.js';
 
 export const STORE_DIR=join(homedir(),'.ai-3d-office');
 const STORE_FILE=join(STORE_DIR,'claude-auth.json');
@@ -84,10 +85,21 @@ async function verifyToken(bin,token){
   }catch{return {ok:false,error:err?.killed?'Hết thời gian chờ Claude Code phản hồi.':'Không đọc được phản hồi từ Claude Code.'}}
 }
 
+// After a task run ends on macOS/Linux: stop what it left running in its process group (a dev server started in the
+// background, a simulator log stream…). Windows has no groups; there taskkill /T on stop is what cleans up.
+export function reapGroup(p){
+  if(isWin||!p?.pid)return;
+  try{process.kill(-p.pid,'SIGTERM')}catch{}
+}
 export function killTree(p){
   if(!p)return;
   if(isWin)execFile('taskkill',['/PID',String(p.pid),'/T','/F'],{windowsHide:true},()=>{});
-  else try{p.kill()}catch{}
+  else{
+    // Task runs are started in their own process group (detached), so a negative pid also stops what they started
+    // (Metro, a simulator build, Playwright's Chrome); anything else is a plain child. SIGKILL if still there after 5s.
+    const sig=s=>{try{process.kill(-p.pid,s)}catch{try{p.kill(s)}catch{}}};
+    sig('SIGTERM');setTimeout(()=>{if(p.exitCode==null&&p.signalCode==null)sig('SIGKILL')},5000).unref?.();
+  }
 }
 
 export function claudeBridge(){
@@ -170,6 +182,8 @@ export function claudeBridge(){
         // The dev server listens on 0.0.0.0: only this machine may touch credentials
         if(!isLocal(req.socket.remoteAddress))return json(res,403,{error:'Chỉ truy cập được từ chính máy đang chạy server.'});
         if(req.method!=='GET'&&req.headers['x-ai-office']!=='1')return json(res,403,{error:'Thiếu header bảo vệ CSRF.'});
+        // remote viewers (server/remote-access.js) may only read the status: signing in stays on this machine
+        if(isRemoteReq(req)&&!(req.method==='GET'&&(req.url||'').split('?')[0]==='/status'))return json(res,403,{error:'Đăng nhập chỉ làm được trên chính máy chạy app.'});
         const path=(req.url||'/').split('?')[0];
         try{
           if(req.method==='GET'&&path==='/status')return json(res,200,await status());

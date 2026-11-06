@@ -4,15 +4,17 @@
 // WebSearch and WebFetch are pre-approved (read-only lookups); in -p mode there is nobody to approve them otherwise.
 // Web tasks also get a real Chrome through Playwright MCP; saved site passwords reach the browser as Playwright
 // "secrets" (the agent types the secret's name), so Claude never sees them.
-import {spawn} from 'node:child_process';
+import {spawn,execFileSync} from 'node:child_process';
 import {existsSync,statSync,mkdirSync,readFileSync,writeFileSync,rmSync,readdirSync,copyFileSync} from 'node:fs';
 import {inflateRawSync} from 'node:zlib';
 import {createRequire} from 'node:module';
 import os from 'node:os';
 import {join,resolve,isAbsolute,dirname,basename,relative,extname} from 'node:path';
-import {STORE_DIR,NODE_ENV,cleanEnv,run,findClaudeBinary,killTree,getSavedClaudeToken} from './claude-bridge.js';
+import {STORE_DIR,NODE_ENV,cleanEnv,run,findClaudeBinary,killTree,reapGroup,getSavedClaudeToken} from './claude-bridge.js';
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
 import {createSnapshots} from './snapshot.js';
+import {rnProject,mobileEnv,mobileEnvCached,mobileSummary,MOBILE_KIT,mobilePrompt,mobilePlanNote} from './mobile.js';
+import {createRemoteServer,isRemoteReq,newRemoteKey,lanAddresses,DEFAULT_REMOTE_PORT} from './remote-access.js';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion} from '../workflow-plan.js';
@@ -21,7 +23,7 @@ const LEVEL_NOTE={leader:'Bạn là Leader của đội: chịu trách nhiệm c
 
 const AGENTS_FILE=join(STORE_DIR,'agents.json');// the office's agent list (src.js); null = the 7 built-in agents
 const CONFIG_FILE=join(STORE_DIR,'machine.json'),TASKS_FILE=join(STORE_DIR,'tasks.json'),SITES_FILE=join(STORE_DIR,'sites.json'),RUNS_DIR=join(STORE_DIR,'runs'),UPLOADS_DIR=join(STORE_DIR,'uploads');
-const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,KEEP=200,URGENT_EXTRA=2,MAX_AGENTS=36;
+const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,MOBILE_TIMEOUT=45*60*1000,KEEP=200,URGENT_EXTRA=2,MAX_AGENTS=36;
 // Files droppable on the task box: images and PDF are read by the agent from disk; text/Word are extracted and inlined
 const FILE_KINDS={pdf:'pdf',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',docx:'text',txt:'text',md:'text',csv:'text'};
 const MAX_FILE=25*1024*1024,MAX_FILES=6,ATTACH_SUBDIR='.ai-office-files';
@@ -65,12 +67,18 @@ export function attachPrompt(t){
 // MCP server Claude Code asks for permission through (--permission-prompt-tool); the user answers in the page
 const PERM_MCP=join(dirname(fileURLToPath(import.meta.url)),'permission-mcp.js');
 const MCP_CLI=(()=>{try{return join(dirname(createRequire(import.meta.url).resolve('@playwright/mcp/package.json')),'cli.js')}catch{return null}})();
-const BROWSERS=[['chrome',['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',join(os.homedir(),'AppData/Local/Google/Chrome/Application/chrome.exe'),'/Applications/Google Chrome.app','/opt/google/chrome/chrome']],
-  ['msedge',['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Microsoft/Edge/Application/msedge.exe','/Applications/Microsoft Edge.app','/opt/microsoft/msedge/msedge']]];
-// os.version() on Linux is the kernel build string ("#1 SMP …"): use the distribution's name instead
+// macOS: the executable inside the .app bundle (system-wide or in ~/Applications), so it can also be launched directly
+const macApp=(app,exe)=>['/Applications',join(os.homedir(),'Applications')].map(d=>`${d}/${app}.app/Contents/MacOS/${exe}`);
+const BROWSERS=[['chrome',['C:/Program Files/Google/Chrome/Application/chrome.exe','C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',join(os.homedir(),'AppData/Local/Google/Chrome/Application/chrome.exe'),...macApp('Google Chrome','Google Chrome'),'/opt/google/chrome/chrome']],
+  ['msedge',['C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe','C:/Program Files/Microsoft/Edge/Application/msedge.exe',...macApp('Microsoft Edge','Microsoft Edge'),'/opt/microsoft/msedge/msedge']]];
+// os.version() on Linux is the kernel build string ("#1 SMP …") and on macOS "Darwin Kernel Version …": use the product name
+const macVolumes=()=>{try{return readdirSync('/Volumes').map(v=>join('/Volumes',v)).filter(v=>{try{return statSync(v).isDirectory()}catch{return false}})}catch{return []}};
+let osNameCache=null;
 const osName=()=>{
-  if(process.platform==='linux')try{const m=readFileSync('/etc/os-release','utf8').match(/^PRETTY_NAME="?([^"\n]+)/m);if(m)return m[1]}catch{}
-  return os.version?.()||os.type();
+  if(osNameCache)return osNameCache;
+  if(process.platform==='linux')try{const m=readFileSync('/etc/os-release','utf8').match(/^PRETTY_NAME="?([^"\n]+)/m);if(m)return osNameCache=m[1]}catch{}
+  if(process.platform==='darwin')try{return osNameCache=`macOS ${execFileSync('sw_vers',['-productVersion'],{encoding:'utf8',timeout:5000}).trim()}`}catch{}
+  return osNameCache=os.version?.()||os.type();
 };
 const findBrowser=()=>BROWSERS.find(([,paths])=>paths.some(p=>existsSync(p)))?.[0]||null;
 // ---------- Design images ----------
@@ -79,6 +87,12 @@ const findBrowser=()=>BROWSERS.find(([,paths])=>paths.some(p=>existsSync(p)))?.[
 // developers should follow; later steps of the workflow (or a task handed over from the design) get the marked ones.
 const isDesign=t=>/^design$/i.test(t.team||'')||t.agent==='designer'||/thiết kế|design|mockup|ui\/ux/i.test(t.role||'')&&!/phát triển|dev|lập trình/i.test(t.role||'');
 const designDir=t=>join(t.cwd,'.ai-office-design',String(t.id));
+// The design folder belongs to the app, not to the project: a design task may write its mockups there even in
+// read-only mode (Claude: an Edit rule for that folder only; Codex: workspace-write with that folder as workspace)
+const designOnly=t=>isDesign(t)&&!!t.cwd&&t.mode!=='acceptEdits';
+const designRel=t=>`.ai-office-design/${t.id}/**`;
+// Building and running a mobile app in a simulator takes longer than a web task
+const taskTimeout=t=>rnProject(t.cwd)&&t.mode==='acceptEdits'?MOBILE_TIMEOUT:TASK_TIMEOUT;
 const browserExe=()=>BROWSERS.flatMap(([,paths])=>paths).find(p=>existsSync(p)&&!/\.app$/.test(p))||null;
 const designGuide=t=>`
 ẢNH THIẾT KẾ CHO DEV: kết quả thiết kế phải là ẢNH để dev code theo. Với mỗi màn hình, trạng thái hoặc thành phần quan trọng, tạo MỘT file HTML độc lập (CSS viết ngay trong file, không cần JavaScript; tài nguyên ngoài chỉ được dùng Google Fonts) trong thư mục:
@@ -130,9 +144,10 @@ const TOOLKITS={
   test:{short:'Chạy test',label:'Chạy test tự động: npm test, vitest, jest, playwright test, pytest',write:true,cmds:['npm test','npm run test','npx vitest','npx jest','npx playwright test','pytest']},
   gh:{short:'GitHub CLI',label:'GitHub CLI: xem issue, PR, CI (bình luận/tạo issue khi được sửa file)',cmds:['gh issue view','gh issue list','gh pr view','gh pr list','gh pr diff','gh pr checks','gh run list','gh run view'],writeCmds:['gh issue create','gh issue comment','gh pr comment']},
   docs:{short:'Tài liệu & sơ đồ',label:'Tài liệu & sơ đồ: Mermaid CLI (mmdc), pandoc',write:true,cmds:['npx -y @mermaid-js/mermaid-cli','mmdc','pandoc']},
+  mobile:MOBILE_KIT,// its commands are only given when the working folder is a React Native app (mobile.js)
   browser:{short:'Trình duyệt',label:'Trình duyệt tự động (Playwright) bật sẵn cho mọi việc của đội',web:true}
 };
-const DEFAULT_TEAM_KITS={Frontend:['files','git','node','test','gh'],Backend:['files','git','node','python','test','gh'],QA:['files','git','test','browser'],BA:['files','docs'],
+const DEFAULT_TEAM_KITS={Frontend:['files','git','node','test','gh','mobile'],Backend:['files','git','node','python','test','gh'],QA:['files','git','test','browser','mobile'],BA:['files','docs'],
   Design:['files','browser'],Data:['files','python'],Research:['files'],'Ban điều hành':['files','git'],'*':['files']};
 // never allowed, whatever the kits say
 const DENY_CMDS=['git push','git reset --hard','git clean','rm -rf','npm publish','gh repo delete','gh release create',
@@ -206,15 +221,19 @@ export function machineBridge(){
   let bin=null,binChecked=false,version=null;
   let port=5173;// the dev server's real port, set once it listens; web tasks open their files through it
   let config={workdir:DEFAULT_WORKDIR,mode:'default',browserVisible:true,...readJson(CONFIG_FILE,{})};
+  // kit lists saved before the Mobile kit existed: give it to the teams that build or test code (it only acts in RN apps)
+  if(config.teamKits&&!config.kitsMobile)for(const list of Object.values(config.teamKits))if(Array.isArray(list)&&(list.includes('node')||list.includes('test'))&&!list.includes('mobile'))list.push('mobile');
+  config.kitsMobile=true;
   config.agentEngines={...DEFAULT_AGENT_ENGINES,...config.agentEngines};
   const engineOf=agent=>config.agentEngines[agent]==='codex'?'codex':'claude';
   const kitsFor=team=>(config.teamKits||{})[team]??DEFAULT_TEAM_KITS[team]??DEFAULT_TEAM_KITS['*'];
   // Bash rules for a task from its team's kits; read-only mode keeps only the commands that just look
   function kitRules(t){
     const write=t.mode==='acceptEdits',cmds=[];
-    for(const k of kitsFor(t.team||'')){const kit=TOOLKITS[k];if(!kit||kit.web||kit.write&&!write)continue;cmds.push(...kit.cmds,...(write?kit.writeCmds||[]:[]))}
+    const rn=rnProject(t.cwd);
+    for(const k of kitsFor(t.team||'')){const kit=TOOLKITS[k];if(!kit||kit.web||kit.write&&!write||k==='mobile'&&!rn)continue;cmds.push(...kit.cmds,...(write?kit.writeCmds||[]:[]))}
     const list=[...new Set(cmds)];
-    return {cmds:list,allow:list.map(c=>`Bash(${c}:*)`),deny:DENY_CMDS.map(c=>`Bash(${c}:*)`)};
+    return {cmds:list,allow:[...list.map(c=>`Bash(${c}:*)`),...(designOnly(t)?[`Edit(${designRel(t)})`]:[])],deny:DENY_CMDS.map(c=>`Bash(${c}:*)`)};
   }
   let codexBin=null,codexChecked=false,codexVersion=null,codexAuthCache=null;
   let lastCheck=readJson(CONFIG_FILE,{}).lastCheck||null;
@@ -274,8 +293,9 @@ export function machineBridge(){
   // ---------- folder picker: list sub-folders of a path (drives / home when none) ----------
   function listDirs(p){
     if(!p){
-      const roots=process.platform==='win32'?'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l=>`${l}:\\`).filter(d=>{try{return existsSync(d)}catch{return false}}):['/'];
-      const home=os.homedir(),quick=[home,join(home,'Desktop'),join(home,'Documents'),join(home,'source','repos')].filter(d=>existsSync(d));
+      const roots=process.platform==='win32'?'CDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map(l=>`${l}:\\`).filter(d=>{try{return existsSync(d)}catch{return false}})
+        :process.platform==='darwin'?['/',...macVolumes()]:['/'];// macOS: other disks are mounted under /Volumes
+      const home=os.homedir(),quick=[home,join(home,'Desktop'),join(home,'Documents'),join(home,'source','repos'),join(home,'Developer'),join(home,'Projects'),join(home,'projects')].filter(d=>existsSync(d));
       return {path:'',parent:null,dirs:[],roots,quick,recent:(config.recentDirs||[]).filter(d=>existsSync(d))};
     }
     const full=resolve(p);
@@ -331,7 +351,7 @@ export function machineBridge(){
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
   const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel})=>({name,kind,rel}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
-  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,teamKits:config.teamKits,lastCheck});
+  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,lastCheck});
 
   // ---------- saved web logins (passwords stay in this file and are never sent to the page or to Claude) ----------
   let sites=readJson(SITES_FILE,[]);
@@ -369,7 +389,7 @@ export function machineBridge(){
 
   // Spawns `claude -p` with the prompt on stdin and streams JSON events; returns the child and a completion promise
   function claude(args,{cwd,input,onEvent,timeout,env}){
-    const child=spawn(bin,['-p','--output-format','stream-json','--verbose',...args],{cwd,env:{...authEnv(),...env},windowsHide:true,shell:/\.(cmd|bat)$/i.test(bin)});
+    const child=spawn(bin,['-p','--output-format','stream-json','--verbose',...args],{cwd,env:{...authEnv(),...env},windowsHide:true,detached:process.platform!=='win32',shell:/\.(cmd|bat)$/i.test(bin)});
     // time spent waiting for the user (permission prompts) is added back with extend()
     let deadline=Date.now()+timeout;
     const done=new Promise(res=>{
@@ -378,14 +398,14 @@ export function machineBridge(){
       child.stdout.on('data',d=>{buf+=d;let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i).trim();buf=buf.slice(i+1);if(!line)continue;let ev;try{ev=JSON.parse(line)}catch{continue}if(ev.type==='result')result=ev;onEvent?.(ev)}});
       child.stderr.on('data',d=>{stderr=(stderr+d).slice(-4000)});
       child.on('error',e=>{stderr+=e.message});
-      child.on('close',code=>{clearInterval(timer);res({code,result,stderr:stderr.trim(),timedOut})});
+      child.on('close',code=>{clearInterval(timer);reapGroup(child);res({code,result,stderr:stderr.trim(),timedOut})});
     });
     child.stdin.on('error',()=>{});child.stdin.end(input);
     return {child,done,extend:ms=>{deadline+=ms}};
   }
-  function resultError(r,{stderr,timedOut},cancelled){
+  function resultError(r,{stderr,timedOut},cancelled,timeoutMs){
     if(cancelled)return 'Đã dừng theo yêu cầu.';
-    if(timedOut)return 'Quá thời gian cho phép (20 phút).';
+    if(timedOut)return `Quá thời gian cho phép (${Math.round((timeoutMs||TASK_TIMEOUT)/60000)} phút).`;
     if(r?.subtype==='error_max_turns')return `Đã dùng hết ${MAX_TURNS} bước mà chưa hoàn thành. Hãy chia nhỏ yêu cầu.`;
     if(r?.api_error_status===401)return 'Xác thực Claude Code thất bại (401): token không hợp lệ hoặc đã bị thu hồi.';
     if(r?.is_error)return short(r.result||'Claude Code báo lỗi khi xử lý.',600);
@@ -417,6 +437,8 @@ export function machineBridge(){
         steps.push({name:'Chạy thử Codex',ok,detail:ok?`Codex phản hồi sau ${((Date.now()-s)/1000).toFixed(1)}s: "${short(out.message,40)}"`:short(out.error||out.stderr||'Codex không phản hồi.',300)});
       }else steps.push({name:'Chạy thử Codex',ok:false,detail:'Bỏ qua vì bước trước chưa đạt'});
     }
+    const me=await mobileEnv(true),rn=rnProject(config.workdir);
+    steps.push({name:'Kiểm thử app mobile',ok:true,detail:`${rn?`App React Native${rn.expo?' (Expo)':''} trong ${rn.rel==='.'?'thư mục làm việc':rn.rel}`:'Thư mục làm việc không phải app React Native'} · ${mobileSummary(me).join(' · ')}`});
     lastCheck={ok:steps.every(s=>s.ok),at:new Date().toISOString(),ms:Date.now()-t0,steps};saveConfig();
     return lastCheck;
   }
@@ -428,10 +450,10 @@ ${t.team?`Đội: ${t.team} · cấp bậc: ${LEVELS[levelOf(t)]}. ${LEVEL_NOTE[
 `:''}${t.desc?`Mô tả công việc và cách làm việc người dùng đặt cho bạn (luôn tuân theo):
 ${t.desc}
 `:''}Bạn đang chạy trực tiếp trên máy cá nhân của người dùng, trong thư mục làm việc hiện tại (${t.cwd}).
-Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?' Không tạo hoặc sửa file; chỉ đọc, phân tích và trả lời.':' Chỉ tạo/sửa file bên trong thư mục làm việc.'}
+Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?(designOnly(t)?` Không tạo hoặc sửa file của dự án. Ngoại lệ duy nhất: được tạo/sửa file thiết kế (HTML/SVG) trong ${designDir(t)}, hãy làm việc đó.`:' Không tạo hoặc sửa file; chỉ đọc, phân tích và trả lời.'):' Chỉ tạo/sửa file bên trong thư mục làm việc.'}${modeNote(t)}
 ${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. Lệnh khác cần người dùng bấm cho phép và có thể bị từ chối (khi bị từ chối thì tìm cách khác hoặc giải thích, không thử lại cùng lệnh); không bao giờ push code hay svn commit/update.
 `:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
-${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${CHECKLIST_GUIDE}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
+${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${CHECKLIST_GUIDE}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
 Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. File .md mới không được yêu cầu sẽ bị xóa khi xong việc.
 Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
@@ -453,12 +475,16 @@ ${t.text}`;
     if(gone.length){t.cleaned=[...(t.cleaned||[]),...gone];note('out',`🧹 Đã xóa ${gone.length} file .md tạm không được yêu cầu: ${gone.join(', ')}`,false)}
   }
   // Follow-up question on a finished task. A resumed session already has the context; without one, recap it.
+  // A resumed conversation still remembers the old mode from its first prompt: say what changed
+  const modeNote=t=>t.modeSwitched?`\nLƯU Ý: chế độ quyền vừa được đổi từ "${MODES[t.modeSwitched]}" sang "${MODES[t.mode]}". Chế độ mới thay cho mọi điều nói trước đó về quyền.${t.mode==='acceptEdits'?' Bạn đã có công cụ Write/Edit: tự tạo/sửa file trong thư mục làm việc, không bảo người dùng copy thủ công.':' Từ giờ không tạo hoặc sửa file.'}`:'';
   function askPrompt(t,ask,resumed){
     const q=`Người dùng hỏi thêm về nhiệm vụ này. Trả lời dựa trên ngữ cảnh đã có; chỉ làm thêm việc khi câu hỏi cần, không làm lại từ đầu. Giữ nguyên vai trò, chế độ quyền và trả lời bằng tiếng Việt.
-${QUESTION_GUIDE}
+${QUESTION_GUIDE}${t.kind==='step'&&t.wf!=null&&backTo(t)?`
+Nếu người dùng bảo kiểm tra lại: kiểm tra thật trên trạng thái HIỆN TẠI của thư mục làm việc (đọc file, chạy lệnh được phép), không dựa vào kết quả cũ. Còn lỗi phải sửa thì trả lại bước liên quan bằng khối rework như hướng dẫn${resumed?' dưới đây':' ở trên'}; hệ thống sẽ cho agent đó sửa rồi giao lại cho bạn kiểm tra.${resumed?backTo(t):''}`:''}
 Câu hỏi thêm:
 ${ask.q}`;
-    if(resumed)return q;
+    // design images made after this session began (e.g. the designer was asked again) are listed again
+    if(resumed)return q+modeNote(t)+(isDesign(t)?'':designNote(t));
     const prev=t.thread.slice(0,-1).filter(x=>x.answer);
     return `${prompt(t)}
 
@@ -475,7 +501,7 @@ ${q}`;
   function replyPrompt(t,resumed){
     const c=t.clarify.at(-1),more=(t.clarifies||0)<MAX_CLARIFY?'':' Không hỏi thêm nữa; nếu vẫn còn thiếu thì tự giả định hợp lý và ghi rõ giả định.';
     if(resumed)return `Người dùng trả lời câu hỏi "${c.q}" của bạn: ${c.answer}
-Tiếp tục làm nhiệm vụ với thông tin này.${more}${t.web?`\n${accountsText(t)}`:''}`;
+Tiếp tục làm nhiệm vụ với thông tin này.${more}${t.web?`\n${accountsText(t)}`:''}${modeNote(t)}`;
     return `${prompt(t)}
 
 TRAO ĐỔI TRƯỚC ĐÓ VỚI NGƯỜI DÙNG:
@@ -522,9 +548,12 @@ Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
   function endAsk(t,ask,{answer,error,cost,turns,question}){
     // the answer may end with a question for the user: kept apart so the page shows it with its choices
     let qn=question||null;
+    // a workflow step asked to check again may send earlier steps back (QA → dev): taken out before the answer is cut
+    const rw=answer&&t.kind==='step'&&t.wf!=null?parseRework(answer):null;if(rw)answer=rw.clean;
     if(answer&&!qn){const p=parseQuestion(answer)||parseLooseQuestion(answer);if(p){qn={q:p.question,options:p.options};if(p.clean!=null)answer=p.clean||p.question}}
     Object.assign(ask,{question:qn,answer:answer?redact(String(answer).slice(0,20000)):null,error:answer?null:redact(error),finished:new Date().toISOString(),costUsd:cost??null});
     Object.assign(t,{status:'done',asking:false,activity:null,costUsd:cost!=null?(t.costUsd||0)+cost:t.costUsd,turns:turns?(t.turns||0)+turns:t.turns});
+    if(rw)checkRework(t,ask,rw);
     save();pump();
   }
   // ---------- send back for rework ----------
@@ -540,7 +569,8 @@ Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
     const walk=id=>{const x=plan.find(p=>p.id===id);for(const d of x?planDepsOf(x):[])if(!seen.has(d)){seen.add(d);walk(d)}};
     walk(o);return seen;
   }
-  const sentBack=(wf,o)=>tasks.filter(x=>x.wf===wf&&x.rework&&originOf(x)===o).length;
+  // a step can send back more than once (its first run, then follow-ups): `reworks` counts them
+  const sentBack=(wf,o)=>tasks.filter(x=>x.wf===wf&&x.rework&&originOf(x)===o).reduce((n,x)=>n+(x.reworks||1),0);
   function backTo(t){
     if(t.wf==null)return '';
     const plan=planSteps(t.wf),anc=ancestors(t.wf,originOf(t)),prev=plan.filter(p=>anc.has(p.id));
@@ -548,14 +578,19 @@ Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
   }
   // A finished step that sent work back: fix steps for the targets and the steps between them and this one,
   // then this step again; later steps wait for the newest versions. Over the limit, the workflow stops here.
-  function checkRework(t){
-    const rw=parseRework(t.result);if(!rw)return;
-    t.result=rw.clean;
+  // With `ask`, the send-back came from a follow-up on a finished step ("check again, send it back to dev if wrong"):
+  // the block was already taken out of the answer (rw), notes go on that answer, and the step itself stays done.
+  function checkRework(t,ask=null,rw=null){
+    if(!rw){rw=parseRework(t.result);if(!rw)return;t.result=rw.clean}
+    const addNote=s=>{if(ask)ask.answer=(ask.answer||'')+s;else t.result+=s};
     const o=originOf(t),plan=planSteps(t.wf),anc=ancestors(t.wf,o),no=id=>plan.findIndex(p=>p.id===id)+1;
     const targets=rw.to.map(n=>plan[n-1]?.id).filter(id=>id!=null&&anc.has(id));
-    if(!targets.length){t.result+='\n\n_(Yêu cầu trả lại bị bỏ qua vì không trỏ tới bước trước hợp lệ.)_';return}
+    if(!targets.length){addNote('\n\n_(Yêu cầu trả lại bị bỏ qua vì không trỏ tới bước trước hợp lệ.)_');return}
     const used=sentBack(t.wf,o);
+    if(ask&&used>=MAX_REWORK){addNote(`\n\n_(Không trả lại được: bước này đã dùng hết ${MAX_REWORK} lần trả lại sửa. Hãy thử lại bước cần sửa bằng tay.)_`);return}
+    if(t.rework)t.reworks=(t.reworks||1)+1;
     t.rework={to:targets.map(id=>`#${no(id)} ${plan[no(id)-1].name}`),reason:rw.reason};
+    if(ask)addNote(`\n\n↩ Đã trả lại cho ${t.rework.to.join(', ')} để sửa; sửa xong sẽ kiểm tra lại.`);
     if(used>=MAX_REWORK){Object.assign(t,{status:'error',error:`Vẫn chưa đạt sau ${MAX_REWORK} lần trả lại sửa: ${rw.reason}`});return}
     const redo=plan.filter(p=>anc.has(p.id)&&(targets.includes(p.id)||[...ancestors(t.wf,p.id)].some(a=>targets.includes(a))));
     const made={},now=new Date().toISOString();
@@ -567,7 +602,9 @@ Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
       const prev=newest(t.wf,p.id),target=targets.includes(p.id),deps=[t.id,...depsFor(p)];
       const why=target?`Bước #${no(o)} ${t.name} · ${t.stepTitle} đã TRẢ LẠI phần việc của bạn để sửa.
 Lý do: ${rw.reason}
-(Đánh giá đầy đủ nằm trong "Kết quả các bước trước".) Hãy sửa cho đạt và nêu rõ đã sửa những gì.`
+${ask?`Người dùng yêu cầu ${t.name} kiểm tra lại: "${short(ask.q,500)}"
+Đánh giá lần kiểm tra lại này:
+${String(ask.answer||'').slice(0,3500)}`:'(Đánh giá đầy đủ nằm trong "Kết quả các bước trước".)'} Hãy sửa cho đạt và nêu rõ đã sửa những gì.`
         :`Các bước trước phần việc của bạn đã được sửa lại theo yêu cầu của ${t.name}: ${rw.reason}
 Cập nhật phần việc của bạn cho khớp với kết quả mới và nêu rõ đã thay đổi gì.`;
       const t2=copy(prev,{urgent:true,origin:p.id,stepTitle:`${p.stepTitle} · sửa lại`,deps,engine:prev.engine,resumeSession:prev.session||null,resumeThread:prev.codexThread||null,
@@ -584,7 +621,8 @@ ${String(prev.result||'').slice(0,3000)}`}`});
       text:`${base.text}
 
 ĐÂY LÀ LẦN KIỂM TRA LẠI (vòng ${round}): lần trước bạn đã trả lại để sửa vì: ${rw.reason}
-Các bước đã sửa xong (xem "Kết quả các bước trước"). Kiểm tra lại toàn bộ, đặc biệt các điểm đã báo.`});
+Các bước đã sửa xong (xem "Kết quả các bước trước"). Kiểm tra lại toàn bộ, đặc biệt các điểm đã báo.${ask?`
+Yêu cầu kiểm tra lại của người dùng: ${short(ask.q,500)}`:''}`});
     tasks.unshift(again);
     // steps already waiting (e.g. a deploy after QA) now wait for the newest version of each step they depend on
     const fresh=new Set([...Object.values(made),again.id]);
@@ -655,11 +693,11 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // Token savers: no page snapshot or generated Playwright code after each action, console errors only,
     // screenshots saved to the run folder for the user but not sent back to the model
     const args=[MCP_CLI,'--browser',browser,'--isolated','--secrets',secrets,'--output-dir',dir,'--viewport-size','1366x860',
-      '--snapshot-mode','none','--codegen','none','--image-responses','omit','--console-level','error','--no-webmcp',...(config.browserVisible?[]:['--headless'])];
+      '--snapshot-mode','none','--codegen','none','--image-responses','omit','--console-level','error','--no-webmcp',...(rnProject(t.cwd)?['--device','iPhone 15']:[]),...(config.browserVisible?[]:['--headless'])];
     const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args,env:NODE_ENV},...extraServers}}));
     t.siteLabels=list.map(s=>s.label);t.browser=browser;
     // Only the built-in tools a web task needs, and none of the browser tools it never uses (their schemas cost tokens every turn)
-    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'?['Write','Edit']:[]),...(kit.allow.length?['Bash']:[])];
+    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'||designOnly(t)?['Write','Edit']:[]),...(kit.allow.length?['Bash']:[])];
     return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','WebSearch',...kit.allow,'--disallowedTools',...WEB_TOOLS_OFF,...kit.deny]};
   }
   // Workflow steps wait for their dependencies; if one fails or is stopped, the steps after it stop too
@@ -687,9 +725,12 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   }
   // Takes a picture of the working folder first (for the diff and undo), then runs the task
   async function launch(t){
-    if(t.kind==='plan')return start(t);
+    const rn=rnProject(t.cwd||config.workdir);
+    if(t.kind==='plan'){if(rn)mobileEnv().catch(()=>{});return start(t)}// the plan uses what is already known
     booting.add(t.id);
     Object.assign(t,{status:'running',activity:'Đang ghi lại trạng thái thư mục trước khi chạy…'});save();
+    // an RN app: look at the simulators/emulators now, so the prompt says what this machine can test
+    if(rn){t.activity='Đang kiểm tra máy ảo iOS/Android trên máy…';await mobileEnv().catch(()=>{});try{mkdirSync(join(RUNS_DIR,String(t.id)),{recursive:true})}catch{}}
     try{if(t.cwd&&existsSync(t.cwd))snapOf.set(t.id,await snaps.scan(t.cwd,(i,n)=>{t.activity=`Đang ghi lại trạng thái thư mục trước khi chạy… ${i}/${n} file`}))}
     catch(e){(t.log||=[]).push({at:Date.now(),kind:'denied',text:`Không ghi lại được trạng thái thư mục (${short(e.message,120)}); việc này sẽ không có diff/hoàn tác.`})}
     booting.delete(t.id);
@@ -702,6 +743,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     t.status='queued';start(t);
   }
   function start(t){
+    // The permission mode chosen in the Máy cá nhân window applies whenever a task runs or carries on (answer, follow-up,
+    // retry, later workflow steps), not only the mode it was created with. modeSwitched tells the agent in its prompt.
+    t.modeSwitched=t.mode!==config.mode?t.mode:null;t.mode=config.mode;
     if(t.kind==='plan')return startPlan(t);
     if(!t.asking)t.engine=engineOf(t.agent);// a follow-up stays with the engine that holds the conversation
     // Codex not signed in: keep the workflow moving with Claude Code and say so in the log
@@ -723,6 +767,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // Step log for the progress popup: init, tool calls, their (shortened) output and Claude's own messages
     const note=(kind,text,isActivity=true)=>{text=redact(text);t.log.push({at:Date.now(),kind,text});if(t.log.length>200)t.log.shift();if(isActivity)t.activity=short(text,120)};
     if(t.fallback&&!ask)note('denied',t.fallback,false);
+    if(t.modeSwitched)note('init',`Chế độ quyền: ${MODES[t.mode]} (trước đó: ${MODES[t.modeSwitched]})`,false);
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
     const outText=c=>Array.isArray(c)?c.map(x=>x.type==='text'?x.text:x.type==='image'?'[hình ảnh]':'').join(' '):String(c??'');
@@ -731,7 +776,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // Stop the run there instead and let the task wait for the user's answer, like the question block does.
     let toolQ=null;const said=[];const canAsk=ask||(t.clarifies||0)<MAX_CLARIFY;
     // Browser tools loaded up front: saves the opening ToolSearch turn
-    const {child,done,extend}=claude([...(resume||replyResume?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...permArgs,...(web?.args||['--allowedTools','WebSearch','WebFetch',...kit.allow,'--disallowedTools',...kit.deny])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),timeout:TASK_TIMEOUT,env:{MCP_TOOL_TIMEOUT:'86400000',...(web?{ENABLE_TOOL_SEARCH:'false'}:{})},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
+    const {child,done,extend}=claude([...(resume||replyResume?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...permArgs,...(web?.args||['--allowedTools','WebSearch','WebFetch',...kit.allow,'--disallowedTools',...kit.deny])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),timeout:taskTimeout(t),env:{MCP_TOOL_TIMEOUT:'86400000',...(web?{ENABLE_TOOL_SEARCH:'false'}:{})},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
       if(ev.type==='system'&&ev.subtype==='init'&&web){const b=(ev.mcp_servers||[]).find(s=>s.name==='browser');if(b&&b.status!=='connected')note('denied',`Trình duyệt chưa sẵn sàng (${b.status})`,false)}
       if(ev.type==='system'&&ev.subtype==='init')note('init',`Đã khởi động Claude Code · model ${ev.model||'?'}${t.effort?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`);
       if(ev.type==='assistant')for(const c of ev.message?.content||[]){
@@ -770,13 +815,13 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       if(ask){
         // the saved session is gone (e.g. Claude data cleared): ask again once with a recap instead
         if(!ok&&!cancelled&&resume&&/no conversation found|session/i.test(`${r?.result||''} ${out.stderr}`)){t.session=null;t.status='queued';note('denied','Không mở lại được phiên cũ, hỏi lại kèm tóm tắt ngữ cảnh.',false);save();pump();return}
-        return endAsk(t,ask,{answer:ok&&r.result,error:resultError(r,out,cancelled),cost:r?.total_cost_usd,turns:r?.num_turns});
+        return endAsk(t,ask,{answer:ok&&r.result,error:resultError(r,out,cancelled,taskTimeout(t)),cost:r?.total_cost_usd,turns:r?.num_turns});
       }
       if(!ok&&!cancelled&&t.resumeSession&&/no conversation found/i.test(`${r?.result||''} ${out.stderr}`)){t.resumeSession=null;t.status='queued';save();pump();return}
       // the saved session cannot be continued (gone, or cut off at a question): carry on once with the exchange recapped
       if(!ok&&!cancelled&&!out.timedOut&&replyResume&&r?.subtype!=='error_max_turns'&&r?.api_error_status!==401){note('denied','Không mở lại được phiên cũ, tiếp tục kèm tóm tắt trao đổi.',false);t.session=null;t.status='queued';save();pump();return}
       t.reply=null;
-      Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(r.result||'').slice(0,20000)):null,error:ok?null:redact(resultError(r,out,cancelled)),
+      Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(r.result||'').slice(0,20000)):null,error:ok?null:redact(resultError(r,out,cancelled,taskTimeout(t))),
         durationMs:r?.duration_ms??(Date.now()-Date.parse(t.started)),turns:r?.num_turns??null,costUsd:r?.total_cost_usd??null,activity:null});
       if(ok&&!checkQuestion(t)&&t.kind==='step')checkRework(t);
       save();pump();
@@ -789,7 +834,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const note=(kind,text)=>{t.log.push({at:Date.now(),kind,text:redact(text)});t.activity=short(text,120)};
     note('init','Director bắt đầu phân tích yêu cầu và chia việc cho các agent liên quan');
     let child=null;
-    const run=bin&&getSavedClaudeToken()?claude(['--max-turns','1','--tools','',...modelArgs(t)],{cwd:t.cwd,input:planPrompt(t.text,t.owner,t.team)+attachPrompt(t),timeout:180000}):null;
+    const run=bin&&getSavedClaudeToken()?claude(['--max-turns','1','--tools','',...modelArgs(t)],{cwd:t.cwd,input:planPrompt(t.text,t.owner,t.team)+mobilePlanNote(rnProject(t.cwd),mobileEnvCached())+attachPrompt(t),timeout:180000}):null;
     if(run){child=run.child;procs.set(t.id,child)}
     save();
     (run?run.done:Promise.resolve(null)).then(out=>{
@@ -834,11 +879,14 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // `codex exec` never asks, so MCP calls need pre-approval; the same risky browser tools as for Claude are switched off
     const extra=web?['-c',`mcp_servers.browser.command=${toml(process.execPath)}`,'-c',`mcp_servers.browser.args=${toml(web.mcpArgs)}`,
       '-c','mcp_servers.browser.default_tools_approval_mode=approve','-c',`mcp_servers.browser.disabled_tools=${toml(WEB_TOOLS_OFF.map(n=>n.replace('mcp__browser__','')))}`]:[];
+    if(t.modeSwitched)note('init',`Chế độ quyền: ${MODES[t.mode]} (trước đó: ${MODES[t.modeSwitched]})`,false);
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
     else{for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);for(const d of designsFor(t).slice(0,8))if(existsSync(d.png))extra.push('-i',d.png)}// attach images so Codex can see them
     let turns=0;
-    const {child,done}=codexExec(codexBin,{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'?'workspace-write':'read-only',extra,timeout:TASK_TIMEOUT,onEvent:ev=>{
+    // read-only design task: its design folder is the (only writable) workspace; the project is read by its full path
+    const dOnly=designOnly(t);if(dOnly)mkdirSync(designDir(t),{recursive:true});
+    const {child,done}=codexExec(codexBin,{cwd:dOnly?designDir(t):t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'||dOnly?'workspace-write':'read-only',extra,timeout:taskTimeout(t),onEvent:ev=>{
       const it=ev.item||{};
       if(it.type==='todo_list'&&Array.isArray(it.items))t.todos=it.items.slice(0,60).map(x=>({text:short(x.text,200),status:x.completed?'completed':'pending'}));
       if(ev.type==='thread.started'){if(ev.thread_id)t.codexThread=ev.thread_id;note('init','Đã khởi động Codex (ChatGPT)')}
@@ -862,7 +910,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       await shootDesigns(t,note);
       await finishSnap(t,note);
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
-      const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?'Quá thời gian cho phép (20 phút).':/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
+      const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?`Quá thời gian cho phép (${Math.round(taskTimeout(t)/60000)} phút).`:/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
       if(ask)return endAsk(t,ask,{answer:ok&&out.message,error:err,turns});
       t.reply=null;
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(out.message).slice(0,20000)):null,error:ok?null:redact(err),
@@ -897,7 +945,31 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     tasks.unshift(t);if(tasks.length>KEEP)tasks.length=KEEP;save();pump();return t;
   }
 
-  async function status(){
+  // ---------- remote access (server/remote-access.js): other computers open this office with a key ----------
+  let remote=null,remoteError=null,remoteBusy=null;
+  const remoteCfg=()=>config.remote||(config.remote={on:false,key:null,port:DEFAULT_REMOTE_PORT});
+  // the key is shown only on this machine; a remote viewer just learns that it is connected from afar
+  function remoteInfo(viewer=false){
+    const c=remoteCfg();
+    return {on:!!remote,wanted:!!c.on,port:remote?.port||c.port||DEFAULT_REMOTE_PORT,error:remoteError,viewer,
+      ...(viewer?{}:{key:c.key,addresses:lanAddresses().map(a=>({...a,url:`http://${a.address}:${remote?.port||c.port||DEFAULT_REMOTE_PORT}/?key=${encodeURIComponent(c.key||'')}`}))})};
+  }
+  async function applyRemote(){
+    const c=remoteCfg();
+    if(remoteBusy)await remoteBusy;
+    remoteBusy=(async()=>{
+      if(remote&&(!c.on||remote.port!==c.port&&c.portChanged)){await remote.close().catch(()=>{});remote=null}
+      if(c.on&&!remote){
+        if(!c.key){c.key=newRemoteKey();saveConfig()}
+        try{remote=await createRemoteServer({targetPort:()=>port,key:()=>remoteCfg().key,port:c.port||DEFAULT_REMOTE_PORT});remoteError=null}
+        catch(e){remote=null;remoteError=`Không mở được cổng ${c.port}: ${e.message}`}
+      }
+    })();
+    await remoteBusy;remoteBusy=null;
+  }
+
+  async function status(req=null){
+    const viewer=!!req&&isRemoteReq(req);
     const b=await ensureBin(),a=b?await auth():null,wd=workdirState(),cpus=os.cpus();
     const cb=await ensureCodex(),ca=cb?await codexAuthKind():null;
     return {
@@ -909,6 +981,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       config:{workdir:config.workdir,mode:config.mode,modes:MODES,defaultWorkdir:DEFAULT_WORKDIR,browserVisible:config.browserVisible,
         toolkits:Object.fromEntries(Object.entries(TOOLKITS).map(([k,v])=>[k,{short:v.short,label:v.label,write:!!v.write}])),teamKits:config.teamKits||{},defaultKits:DEFAULT_TEAM_KITS},
       browser:{mcp:!!MCP_CLI,channel:findBrowser(),sites:sites.filter(s=>!s.temp).map(siteView)},
+      mobile:await mobileEnv().then(e=>({...e,summary:mobileSummary(e),project:rnProject(config.workdir)})).catch(()=>null),
+      remote:remoteInfo(viewer),
       workdir:wd,lastCheck,vcs:wd.exists?await vcsInfo(config.workdir):{kind:null},recentDirs:(config.recentDirs||[]).filter(d=>existsSync(d)),
       running:tasks.filter(t=>t.status==='running').length,queued:tasks.filter(t=>t.status==='queued').length,
       ready:!!(b&&a&&wd.writable)
@@ -927,16 +1001,31 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   const plugin={
     name:'machine-bridge',
     configureServer(server){
-      server.httpServer?.on('listening',()=>{const a=server.httpServer.address();if(a?.port)port=a.port});
+      server.httpServer?.on('listening',()=>{const a=server.httpServer.address();if(a?.port)port=a.port;if(remoteCfg().on)applyRemote()});
+      server.httpServer?.once('close',()=>{remote?.close().catch(()=>{});remote=null});
       if(!existsSync(config.workdir)&&config.workdir===DEFAULT_WORKDIR)try{mkdirSync(DEFAULT_WORKDIR,{recursive:true})}catch{}
       server.middlewares.use('/api/machine',async(req,res)=>{
         // Runs programs on this computer: only this computer may call it, and writes need the CSRF header
         if(!isLocal(req.socket.remoteAddress))return json(res,403,{error:'Chỉ truy cập được từ chính máy đang chạy server.'});
         if(req.method!=='GET'&&req.headers['x-ai-office']!=='1')return json(res,403,{error:'Thiếu header bảo vệ CSRF.'});
         const path=(req.url||'/').split('?')[0],m=path.match(/^\/tasks\/(\d+)\/(cancel|retry)$/);
+        // through remote access (also blocked in remote-access.js): no remote settings, saved passwords or login forms
+        if(isRemoteReq(req)&&(path.startsWith('/remote')||path.startsWith('/sites')&&req.method!=='GET'||/^\/tasks\/\d+\/login$/.test(path)))
+          return json(res,403,{error:'Việc này chỉ làm được trên chính máy chạy app.'});
         try{
-          if(req.method==='GET'&&path==='/status')return json(res,200,await status());
-          if(req.method==='POST'&&path==='/check'){await ensureBin();return json(res,200,{check:await check(),status:await status()})}
+          if(path==='/remote'){
+            if(req.method==='GET')return json(res,200,remoteInfo());
+            if(req.method==='POST'){
+              const b=await readBody(req),c=remoteCfg();
+              if(b.port!==undefined){const p=+b.port;if(!Number.isInteger(p)||p<1024||p>65535)return json(res,400,{error:'Cổng phải từ 1024 đến 65535.'});if(p!==c.port){c.port=p;c.portChanged=true}}
+              if(b.newKey){c.key=newRemoteKey();if(remote){await remote.close().catch(()=>{});remote=null}}// old links and cookies stop working
+              if(b.on!==undefined)c.on=!!b.on;
+              await applyRemote();delete c.portChanged;saveConfig();
+              return json(res,200,remoteInfo());
+            }
+          }
+          if(req.method==='GET'&&path==='/status')return json(res,200,await status(req));
+          if(req.method==='POST'&&path==='/check'){await ensureBin();return json(res,200,{check:await check(),status:await status(req)})}
           if(req.method==='POST'&&path==='/config'){
             const b=await readBody(req);
             if(b.workdir!==undefined){
@@ -951,7 +1040,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             if(b.teamKits&&typeof b.teamKits==='object')for(const [team,list] of Object.entries(b.teamKits).slice(0,40))
               if(team.length<=40&&Array.isArray(list))(config.teamKits??={})[team]=list.filter(k=>TOOLKITS[k]);
             if(b.agent!==undefined){if(!/^[a-z0-9_-]{1,40}$/i.test(b.agent)||!ENGINES[b.engine])return json(res,400,{error:'Agent hoặc công cụ không hợp lệ.'});config.agentEngines[b.agent]=b.engine}
-            saveConfig();return json(res,200,await status());
+            saveConfig();return json(res,200,await status(req));
           }
           if(req.method==='GET'&&path==='/tasks')return json(res,200,{tasks:tasks.map(view)});
           // folder picker: sub-folders of ?path= (drives, home and recent folders when empty)

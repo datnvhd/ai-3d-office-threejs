@@ -41,6 +41,29 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
     txt.textContent=checking?'Đang kiểm tra máy…':!st?'Máy cá nhân…':`Máy: ${st.host.name}`+(st.running?` · ${st.running} việc đang chạy`:st.ready?'':' (chưa sẵn sàng)');
   }
   const rows=list=>`<div class="claude-rows">${list.map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`;
+  // React Native: the app found in the working folder and what this machine can run it on (server/mobile.js)
+  const mobileHtml=m=>{
+    if(!m)return '';
+    const p=m.project;
+    const proj=p?`React Native${p.expo?` · Expo ${esc(p.expoVersion||'')}`:` ${esc(p.rnVersion||'')}`}${p.rel!=='.'?` · <code>${esc(p.rel)}</code>`:''}${p.web?' · có Expo web':''}`:'<em>thư mục làm việc không phải app React Native</em>';
+    const ios=m.os!=='darwin'?'<em>chỉ có trên macOS</em>':m.xcode?`${esc(m.xcode)} · ${m.simulators.length} máy ảo${m.booted.length?` · đang chạy ${esc(m.booted.join(', '))}`:''}`:'<em class="bad">chưa cài Xcode</em>';
+    const android=m.android?`${m.avds.length} máy ảo${m.devices.length?` · đang kết nối ${esc(m.devices.join(', '))}`:''}`:'<em class="bad">chưa có Android SDK (adb)</em>';
+    return `<div class="section-title">KIỂM THỬ APP MOBILE</div>
+      ${rows([['Dự án',proj],['iOS Simulator',ios],['Android',android],['Maestro',m.maestro?esc(m.maestro):'<em>chưa cài</em> · <code>curl -fsSL "https://get.maestro.mobile.dev" | bash</code>']])}
+      <p class="claude-note">Với app React Native, QA kiểm theo 3 mức: kiểm tra tĩnh (tsc, eslint, jest), Expo web trên trình duyệt khung iPhone, và máy ảo iOS/Android (Maestro, ảnh chụp app). Bộ <b>Mobile (RN)</b> tự bật cho đội có Node.js hoặc Chạy test; build và chạy máy ảo cần chế độ được sửa file.</p>`;
+  };
+  // Remote access: other computers on the LAN/VPN open this office with a key (server/remote-access.js)
+  const remoteHtml=r=>{
+    if(!r)return '';
+    if(r.viewer)return `<div class="section-title">TRUY CẬP TỪ XA</div><p class="claude-note">Bạn đang mở văn phòng từ máy khác. Việc vẫn chạy trên máy <b>${esc(st.host.name)}</b>. Đăng nhập Claude/Codex, mật khẩu web và cài đặt truy cập từ xa chỉ đổi được trên máy đó.</p>`;
+    const links=(r.addresses||[]).map(a=>`<div class="claude-code"><input readonly value="${esc(a.url)}" title="${esc(a.name)}"><button class="ghost" data-act="copy" data-text="${esc(a.url)}">Sao chép</button></div>`).join('')||'<p class="claude-note">Máy chưa có địa chỉ mạng LAN.</p>';
+    return `<div class="section-title">TRUY CẬP TỪ XA</div>
+      <label class="mcheck"><input type="checkbox" id="mRemote" ${r.wanted?'checked':''}> Cho máy khác trong mạng (LAN hoặc VPN như Tailscale) mở văn phòng này bằng mã truy cập</label>
+      ${r.error?`<p class="claude-err">${esc(r.error)}</p>`:''}
+      ${r.on?`${links}
+      <p class="claude-note">Mở link trên máy kia (mã nằm sau <code>?key=</code>, cổng ${r.port}). Ai có link đều điều khiển được agent trên máy này: chỉ gửi cho người tin cậy. Kết nối là HTTP thường, chỉ dùng trong mạng nội bộ hoặc VPN, không mở ra Internet. Lần đầu macOS có thể hỏi cho phép kết nối đến.</p>
+      <div class="claude-actions"><button class="ghost" data-act="remoteKey">↻ Đổi mã (link cũ hết hiệu lực)</button></div>`:''}`;
+  };
 
   function render(){
     setChip();
@@ -68,6 +91,8 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
       <div class="msite-form" data-id="${esc(editing?.id||'')}"><div class="msite-grid"><input id="sLabel" placeholder="Tên (ví dụ Jira Trí Nam)" value="${esc(editing?.label||'')}"><input id="sUrl" placeholder="Link (ví dụ http://pm.trinam.vn)" value="${esc(editing?.url||'')}"><input id="sUser" placeholder="Tên đăng nhập" autocomplete="off" value="${esc(editing?.username||'')}"><input id="sPass" type="password" placeholder="${editing?'Mật khẩu (để trống = giữ nguyên)':'Mật khẩu'}" autocomplete="new-password"></div>
         <div class="claude-actions"><button class="assign" data-act="saveSite">${editing?'Lưu thay đổi':'＋ Lưu tài khoản'}</button>${editing?'<button class="ghost" data-act="cancelSite">Hủy</button>':''}</div></div>
       <p class="claude-note">Mật khẩu chỉ lưu trên máy này (<code>~/.ai-3d-office/sites.json</code>), không gửi xuống trình duyệt và không gửi cho Claude: agent gõ tên biến bí mật, Playwright tự thay bằng mật khẩu thật và che mật khẩu trong mọi nội dung trả về.</p>
+      ${mobileHtml(st.mobile)}
+      ${remoteHtml(st.remote)}
       <div class="section-title">KIỂM TRA KẾT NỐI</div>
       ${checking?'<p class="claude-note"><span class="spinner"></span> Đang chạy kiểm tra trên máy (có thể mất 10–30 giây)…</p>':lastCheck?`<ul class="check-list">${lastCheck.steps.map(s=>`<li class="${s.ok?'ok':'bad'}"><b>${s.ok?'✓':'✗'} ${esc(s.name)}</b><span>${esc(s.detail)}</span></li>`).join('')}</ul><p class="claude-note">Kiểm tra lúc ${fmt(lastCheck.at)} · ${(lastCheck.ms/1000).toFixed(1)}s</p>`:'<p class="claude-note">Chưa kiểm tra lần nào.</p>'}
       <div class="claude-actions"><button class="assign" data-act="check" ${checking?'disabled':''}>▶ Chạy kiểm tra trên máy</button><button class="ghost" data-act="refresh">⟲ Làm mới</button></div>`;
@@ -91,6 +116,12 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
         await machineApi('/sites',{method:'POST',body:JSON.stringify({id:editing?.id,label:v('sLabel'),url:v('sUrl'),username:v('sUser'),password:v('sPass')})});
         toast(editing?'Đã cập nhật tài khoản':'Đã lưu tài khoản web');editing=null;await refresh();
       }
+      else if(name==='remote'){const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({on:el.checked})});st={...st,remote:r};toast(r.on?'Đã bật truy cập từ xa: gửi link cho máy cần mở':r.error||'Đã tắt truy cập từ xa')}
+      else if(name==='remoteKey'){if(!confirm('Đổi mã truy cập? Các máy đang mở bằng link cũ sẽ phải nhập mã mới.'))return;const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({newKey:true})});st={...st,remote:r};toast('Đã đổi mã truy cập')}
+      else if(name==='copy'){
+        const done=navigator.clipboard?await navigator.clipboard.writeText(el.dataset.text).then(()=>true,()=>false):false;
+        if(done)toast('Đã sao chép link');else{el.previousElementSibling?.select();toast('Đã chọn sẵn link: bấm Ctrl/Cmd+C để sao chép')}
+      }
       else if(name==='editSite'){editing=st.browser.sites.find(s=>s.id===el.dataset.id)||null}
       else if(name==='cancelSite'){editing=null}
       else if(name==='delSite'){const s=st.browser.sites.find(s=>s.id===el.dataset.id);if(!confirm(`Xóa tài khoản "${s?.label}" khỏi máy?`))return;await machineApi(`/sites/${el.dataset.id}`,{method:'DELETE'});toast('Đã xóa tài khoản');await refresh()}
@@ -98,7 +129,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
     finally{busy=false;checking=false;render()}
   }
   body.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b)});
-  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target)});
+  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mRemote')act('remote',e.target)});
   body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir')});
 
   refresh();

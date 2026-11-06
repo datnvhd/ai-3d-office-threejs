@@ -5,7 +5,8 @@ import {spawn,execFile} from 'node:child_process';
 import {existsSync,readdirSync} from 'node:fs';
 import {homedir,tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
-import {killTree,NODE_ENV} from './claude-bridge.js';
+import {killTree,reapGroup,NODE_ENV} from './claude-bridge.js';
+import {isRemoteReq} from './remote-access.js';
 
 const isWin=process.platform==='win32';
 const LOGIN_TIMEOUT=10*60*1000;
@@ -75,7 +76,7 @@ export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,ti
   // On Windows the default workspace-write sandbox still blocks every write; Codex's Windows sandbox lets it write in the workspace
   const win=process.platform==='win32'&&sandbox==='workspace-write'?['--enable','experimental_windows_sandbox']:[];
   const args=resume?['exec','resume','--json','--skip-git-repo-check','-c',`sandbox_mode=${sandbox}`,...win,...extra,resume,'-']:['exec','--json','--skip-git-repo-check','-s',sandbox,...win,'-C',cwd,...extra,'-'];
-  const child=spawn(...cmd(bin,args),{cwd,env:envFor(bin),windowsHide:true});
+  const child=spawn(...cmd(bin,args),{cwd,env:envFor(bin),windowsHide:true,detached:!isWin});// own process group: see killTree
   const done=new Promise(res=>{
     let buf='',stderr='',message=null,usage=null,error=null,timedOut=false;
     const timer=setTimeout(()=>{timedOut=true;killTree(child)},timeout);
@@ -87,7 +88,7 @@ export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,ti
       onEvent?.(ev)}});
     child.stderr.on('data',d=>{stderr=(stderr+d).slice(-4000)});
     child.on('error',e=>{stderr+=e.message});
-    child.on('close',code=>{clearTimeout(timer);res({code,message,usage,error,stderr:stripAnsi(stderr).trim(),timedOut})});
+    child.on('close',code=>{clearTimeout(timer);reapGroup(child);res({code,message,usage,error,stderr:stripAnsi(stderr).trim(),timedOut})});
   });
   child.stdin.on('error',()=>{});child.stdin.end(input);
   return {child,done};
@@ -146,6 +147,8 @@ export function codexBridge(){
       server.middlewares.use('/api/codex',async(req,res)=>{
         if(!isLocal(req.socket.remoteAddress))return json(res,403,{error:'Chỉ truy cập được từ chính máy đang chạy server.'});
         if(req.method!=='GET'&&req.headers['x-ai-office']!=='1')return json(res,403,{error:'Thiếu header bảo vệ CSRF.'});
+        // remote viewers (server/remote-access.js) may only read the status: signing in stays on this machine
+        if(isRemoteReq(req)&&!(req.method==='GET'&&(req.url||'').split('?')[0]==='/status'))return json(res,403,{error:'Đăng nhập chỉ làm được trên chính máy chạy app.'});
         const path=(req.url||'/').split('?')[0];
         try{
           if(req.method==='GET'&&path==='/status')return json(res,200,await status());

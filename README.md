@@ -11,7 +11,7 @@ npm run dev
 
 Open the local Vite address shown in your terminal.
 
-## Desktop app (Windows installer)
+## Desktop app (Windows, Ubuntu, macOS)
 
 ```bash
 npm run app    # build, then open the office in an Electron window
@@ -36,6 +36,19 @@ ai-3d-office                                       # or "AI 3D Office" in the ap
 ```
 
 Tested on clean Ubuntu 22.04 and 24.04 containers. The package declares `libgbm1` and `libasound2t64 | libasound2` besides electron-builder's default list (24.04 renamed the ALSA library; in the other order apt picks an OSS stand-in). On 24.04 the package installs an AppArmor profile so Chromium's sandbox works. Web tasks need **Google Chrome or Microsoft Edge** from their `.deb` (`/opt/google/chrome`, `/opt/microsoft/msedge`); snap Chromium is not supported by Playwright. Started from the app menu, the app takes `PATH` from the user's interactive login shell so `claude`/`codex` installed through nvm or `npm -g` are found.
+
+### macOS (12 Monterey and later, Apple Silicon and Intel)
+
+```bash
+npm run dist:mac            # on a Mac: release/AI 3D Office-<version>-mac-<arm64|x64>.dmg for this Mac's chip
+npm run dist:mac -- --ci    # from any OS: GitHub Actions builds both chips (needs gh signed in, branch pushed)
+```
+
+A `.dmg` can only be built on macOS, and `npm ci` installs the native modules (node-pty, esbuild, rollup) of the Mac's own chip, so each chip is built on its own machine. `.github/workflows/build-mac.yml` does that on `macos-15` (arm64) and `macos-15-intel` (x64), then starts the packaged app with `AI_OFFICE_SELFTEST=1` (serves the page and the machine API, prints them, quits) before keeping the dmg as the run's artifact (`gh run download --name ai-3d-office-mac-arm64`). It also runs on tags `v*`.
+
+Signing (`scripts/build-mac.js`): with a **Developer ID Application** certificate (in the keychain, or `CSC_LINK`/`CSC_KEY_PASSWORD`; in CI the secrets `MAC_CERT_P12_BASE64`/`MAC_CERT_PASSWORD`) the app is signed with the hardened runtime (`electron/entitlements.mac.plist`: JIT, unsigned native modules and child CLIs), and notarized when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are set. Without a certificate it is signed ad-hoc: it runs, but Gatekeeper blocks the first open of a downloaded copy. Right-click the app → **Open** (macOS 15: System Settings → Privacy & Security → **Open Anyway**), or `xattr -dr com.apple.quarantine "/Applications/AI 3D Office.app"`.
+
+On the Mac: open the dmg, drag **AI 3D Office** to Applications. It needs the same CLIs as elsewhere (Claude Code, optionally Codex) and Chrome or Edge (in `/Applications` or `~/Applications`). The app takes `PATH` from the login shell (zsh) and also looks in `/opt/homebrew/bin`, `/usr/local/bin`, `~/.local/bin`, `~/.maestro/bin` and the Android SDK (`~/Library/Android/sdk`). Other disks show under `/Volumes` in the folder picker. Task processes run in their own process group, so stopping a task (or the task ending) also stops what it started: Metro, a simulator build, the browser. For iOS checks install **Xcode** (with a simulator runtime); see [React Native apps](#react-native-apps).
 
 ## Claude Code connection
 
@@ -104,6 +117,8 @@ Any workflow step can send earlier steps back to be fixed: QA → dev when a tes
 
 Fix steps and re-check rounds jump the queue and may use 2 slots beyond the normal limit of 2 parallel tasks, so a sent-back agent starts right away instead of waiting for unrelated work.
 
+A finished step can also send back from a follow-up: ask the QA step **Hỏi thêm** "check again, send it back to dev if it still fails", and it re-checks the folder as it is now. If it ends with a `rework` block, the same fix steps and a new re-check round are queued (the fix steps get the user's request and that re-check's findings); the step's own result stays and its answer says where the work went. Follow-up send-backs count toward the same limit.
+
 Each step can send back at most `MAX_REWORK` (3) times; if it still does not pass, that step ends with an error and the workflow stops for the user to decide (retry it, or ask it a follow-up). In simulation, QA or the Director sends back once 40% of the time.
 
 ## Adding, editing and deleting agents
@@ -151,7 +166,10 @@ The **Máy cá nhân** window has **BỘ CÔNG CỤ CHO ĐỘI IT**: per team, w
 | Chạy test ✎ | npm test, vitest, jest, playwright test, pytest | Frontend, Backend, QA |
 | GitHub CLI | gh issue/pr/run view & list; create/comment when edits are allowed | Frontend, Backend |
 | Tài liệu & sơ đồ ✎ | Mermaid CLI, pandoc | BA |
+| Mobile (RN) | xcrun simctl, xcodebuild, adb, emulator, maestro (looking, tests, screenshots); expo, react-native, pod install, gradlew when edits are allowed. Only given when the working folder is a React Native app | Frontend, QA (added to saved lists that have Node.js or Chạy test) |
 | Trình duyệt | web tools (Playwright) on for every task of the team | QA, Design |
+
+The permission mode (read-only or file edits) is the one set in the **Máy cá nhân** window when a task runs, and again each time it carries on: answering its question, asking more, retrying, and later workflow steps. Switching to edits after an agent said it could not write takes effect on the next answer or retry; the agent is told the mode changed and the log shows it.
 
 ✎ kits only apply when the permission mode allows edits; in read-only mode only the looking commands are allowed. `git push`, `git reset --hard`, `git clean`, `rm -rf`, `npm publish` and deleting repos/releases are always blocked. Each agent's prompt lists the commands it may use; anything else asks for approval and is therefore refused. (Claude Code itself still lets a few harmless read-only commands through, such as `whoami` or `--version`.) Codex agents use their own sandbox instead.
 
@@ -173,8 +191,31 @@ Agents are told not to write .md files (reports, notes, plans) unless asked and 
 
 ## Design images for developers
 
-Design agents (team Design, the built-in Designer, or a role about design/UI/mockups) are told to draw each screen, state or component as a standalone HTML (or SVG) file in `<workdir>/.ai-office-design/<task id>/` (`01-dang-nhap.html`, `02-dang-nhap-mobile.html`…; desktop frame 1440px, files with "mobile" in the name 390px; `<title>` names the image). When the task ends the server opens them in a headless Chrome/Edge (playwright-core) and saves a PNG of each (`shootDesigns()` in `server/machine-bridge.js`).
+Design agents (team Design, the built-in Designer, or a role about design/UI/mockups) are told to draw each screen, state or component as a standalone HTML (or SVG) file in `<workdir>/.ai-office-design/<task id>/` (`01-dang-nhap.html`, `02-dang-nhap-mobile.html`…; desktop frame 1440px, files with "mobile" in the name 390px; `<title>` names the image). When the task ends the server opens them in a headless Chrome/Edge (playwright-core) and saves a PNG of each (`shootDesigns()` in `server/machine-bridge.js`). That folder belongs to the app, so a design task writes there even in read-only mode: Claude Code gets an `Edit(.ai-office-design/<task id>/**)` rule only, Codex runs `workspace-write` with that folder as its workspace (the project is read by its full path). Other project files stay read-only.
 
 The progress popup of the design task shows the images (click for full size) with **Dev code theo ảnh này** per image (all marked by default) and **💻 Giao dev code theo N ảnh đã chọn**, which picks a free Frontend developer and attaches the marked images to the next task. Later steps of the same workflow (review, dev, QA) get the marked images of the newest design step automatically. Their prompt lists each image with its PNG and HTML paths and asks them to open the images (Claude Code's Read tool shows images) and follow them; Codex agents also get the images attached with `-i`. Deleting a task removes its design folder.
 
 Codex on Windows: its default workspace-write sandbox still blocked every write, so tasks that needed to write files (like the Designer's screens) could not; `codexExec` now enables Codex's `experimental_windows_sandbox` on Windows whenever writes are allowed.
+
+## React Native apps
+
+When the working folder is a React Native app (`react-native` or `expo` in `package.json`, in the folder itself, one level down such as `mobile/`, or in a monorepo's `apps/*`/`packages/*`), `server/mobile.js` tells every agent so and what this machine can run it on (Xcode and its iOS simulators on macOS, Android SDK with its emulators and connected devices, Maestro). The **Máy cá nhân** window shows the same under **KIỂM THỬ APP MOBILE**, and the health check lists it (it never fails the check).
+
+- **Designer**: phone frames only (file names with `mobile`, 390px), iOS/Android conventions.
+- **Developers**: React Native components rather than HTML/CSS, `npx expo install` for native libraries, static checks before finishing.
+- **QA**: three levels, each when possible, and says which ran and which were skipped and why:
+  1. static: `tsc --noEmit`, `eslint`, `jest` (any OS);
+  2. Expo web: `npx expo start --web` in the background, then the browser (opened as an iPhone 15 with touch for RN projects) to use the app and take screenshots (any OS; close to but not the same as native);
+  3. native: `npx expo run:ios` / `react-native run-ios` on the iOS Simulator (**macOS only**), `run:android` on an emulator or device, Maestro flows in `.maestro/`. Screenshots (`xcrun simctl io booted screenshot`, `adb exec-out screencap`) go to the task's run folder and show under **Ảnh chụp** in the progress popup, next to the designer's images to compare.
+- The Director's plan is told the project is a mobile app and what the machine can test.
+
+Building and running in a simulator needs the edit permission mode (it creates `ios/`/`android/`, installs Pods); such tasks get 45 minutes instead of 20. iOS can only be checked on a Mac: on Windows/Linux QA does levels 1–2 and Android. `Pods`, `DerivedData`, `.expo` and `.cxx` are skipped by the before/after snapshot. Mobile checks are written for Claude Code agents; Codex's sandbox may block simulators and the network.
+
+## Remote access (another computer opens this office)
+
+For a team that keeps one machine running the agents (for example a Mac mini that builds and tests iOS apps), **TRUY CẬP TỪ XA** in the **Máy cá nhân** window lets other computers on the LAN or a VPN (e.g. Tailscale) open the same office in a browser. Off by default.
+
+- `server/remote-access.js` listens on `0.0.0.0:47821` (next free port if taken) and forwards to the local server; the agents, files and accounts stay on this machine. The window lists one link per network address: `http://<ip>:47821/?key=<access key>`.
+- The 128-bit key is checked once in the link and then kept in an HttpOnly, SameSite=Strict cookie; 20 wrong keys from one address in 10 minutes are refused. **Đổi mã** makes old links and cookies stop working; turning it off closes the port.
+- Forwarded requests carry a per-process secret header (`isRemoteReq()`), so the bridges know them from this machine's own window. A remote viewer can give and follow tasks, answer, review diffs and change the working folder or permission mode, but cannot sign in to Claude/Codex, add or change saved web passwords, fill a task's login form, or change remote access itself (blocked both in the forwarder and in the bridges); the access key is never sent to it.
+- It is plain HTTP: use it inside the office network or a VPN, not on the open internet. macOS may ask once to allow incoming connections.
