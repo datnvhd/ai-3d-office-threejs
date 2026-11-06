@@ -13,11 +13,17 @@ import {toolBin} from './ai-tools.js';
 export const STORE_DIR=join(homedir(),'.ai-3d-office');
 const STORE_FILE=join(STORE_DIR,'claude-auth.json');
 const TOKEN_RE=/sk-ant-oat01-[A-Za-z0-9_-]{20,}/;
+// The token arrives in pieces (on Windows ConPTY sends small chunks): take it only once something else follows it,
+// otherwise a cut-off token is saved and rejected with 401
+const TOKEN_DONE_RE=/sk-ant-oat01-[A-Za-z0-9_-]{20,}(?=[^A-Za-z0-9_-])/;
 const URL_RE_G=/https:\/\/claude\.(?:com|ai)\/\S*oauth\/authorize\?\S+/g;
 const LOGIN_TIMEOUT=10*60*1000;
 const isWin=process.platform==='win32';
 
 const stripAnsi=s=>s.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g,'').replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g,'');
+// What the screen shows: Windows ConPTY moves the cursor to the next line instead of printing a line break, so cursor
+// moves become line breaks (forward moves become spaces); otherwise the next line sticks to the token or sign-in link
+const screenText=s=>stripAnsi(s.replace(/\x1b\[[0-9;]*[HfABEFd]/g,'\n').replace(/\x1b\[[0-9]*C/g,' '));
 const mask=t=>t?`${t.slice(0,13)}…${t.slice(-4)}`:null;
 
 // Child env without this process's own Claude Code session or API-key overrides
@@ -167,8 +173,8 @@ export function claudeBridge(){
     proc=pty.spawn(bin,['setup-token'],{name:'xterm-256color',cols:1000,rows:60,cwd:tmpdir(),env:cleanEnv({BROWSER:noopBrowser()})});
     proc.onData(d=>{
       buffer=(buffer+d).slice(-40000);
-      const text=stripAnsi(buffer),low=text.toLowerCase();
-      const token=text.match(TOKEN_RE);
+      const text=screenText(buffer),low=text.toLowerCase();
+      const token=text.match(TOKEN_DONE_RE);
       if(token&&proc){finishWithToken(token[0]);return}
       // The newest sign-in link: after a rejected code Claude Code starts a new sign-in with a new link (new state),
       // and only a code from that new page is accepted, so the page is opened again
@@ -193,7 +199,10 @@ export function claudeBridge(){
       }
       if(promptAt>retryAt)retrying=false;
     });
-    proc.onExit(()=>{proc=null;clearTimeout(timer);if(login.state==='starting'||login.state==='waiting')login={state:'error',message:login.message||'Tiến trình đăng nhập đã kết thúc mà chưa nhận được token.'}});
+    proc.onExit(()=>{
+      // the token was the last thing printed: it is complete once the process has ended
+      const last=proc&&screenText(buffer).match(TOKEN_RE);if(last&&(login.state==='starting'||login.state==='waiting')){proc=null;finishWithToken(last[0]);return}
+      proc=null;clearTimeout(timer);if(login.state==='starting'||login.state==='waiting')login={state:'error',message:login.message||'Tiến trình đăng nhập đã kết thúc mà chưa nhận được token.'}});
     timer=setTimeout(()=>{if(proc){stopLogin();login={state:'error',message:'Hết thời gian chờ đăng nhập (10 phút).'}}},LOGIN_TIMEOUT);
   }
 
