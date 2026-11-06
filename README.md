@@ -4,6 +4,8 @@ Interactive isometric AI office with clickable agents, task assignment form, sim
 
 ## Run
 
+Needs **Node.js 22.12 or later** (Vite 7); developed and built (CI) on **Node.js 26 LTS**. With nvm: `nvm install 26` then `nvm use 26`.
+
 ```bash
 npm install
 npm run dev
@@ -28,7 +30,7 @@ The installer bundles Electron (and its Node), so the other machine does not nee
 npm run dist:linux   # needs Docker; writes release/ai-3d-office_<version>_ubuntu_amd64.deb (or GitHub Actions)
 ```
 
-`scripts/build-linux.js` copies the sources into a `node:22-bookworm` container and installs the dependencies there, so the native modules (node-pty, esbuild, rollup) are the Linux ones; it works from Windows too. On the Ubuntu machine:
+`scripts/build-linux.js` copies the sources into a `node:26-bookworm` container and installs the dependencies there, so the native modules (node-pty, esbuild, rollup) are the Linux ones; it works from Windows too. On the Ubuntu machine:
 
 ```bash
 sudo apt install ./ai-3d-office_1.0.0_ubuntu_amd64.deb   # pulls in the libraries it needs

@@ -3,7 +3,7 @@
 // ones. The package lands in release/. Electron and builder downloads are cached in a Docker volume between builds.
 import {spawnSync} from 'node:child_process';
 
-const IMAGE='node:22-bookworm';
+const IMAGE='node:26-bookworm';
 const steps=[
   'mkdir /build',
   'tar -C /project --exclude=./node_modules --exclude=./release --exclude=./dist --exclude=./.git -cf - . | tar -xf - -C /build',
