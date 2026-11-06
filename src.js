@@ -10,7 +10,7 @@ import {createOutdoor} from './outdoor.js';
 import {initMachineConnect,machineApi,pickWorkdir,vcsBadge} from './machine-connect.js';
 import {createProgressView} from './progress-view.js';
 import {setHTML} from './dom-keep.js';
-import {ruleSteps,MODELS,EFFORTS,modelId,LEVELS,BUILTIN_TEAM,teamOf,levelOf,normalizeLeaders} from './workflow-plan.js';
+import {ruleSteps,MODELS,EFFORTS,modelId,sameTier,ENGINE_NAMES,enginesOf,LEVELS,BUILTIN_TEAM,teamOf,levelOf,normalizeLeaders} from './workflow-plan.js';
 import {initWebMCP} from './webmcp.js';
 const app=document.querySelector('#app');
 // Left column: assign work · right column: what the agents did with it (running, done with result, failed with error)
@@ -97,13 +97,16 @@ let selected=agents[0],sim=[],remote=[],simId=0,filter='all',machine=null,lastSi
 let runOn='machine',useWeb=false,useWf=true,model='auto',effort='auto';try{runOn=localStorage.getItem('office-run-on')||'machine';useWeb=localStorage.getItem('office-use-web')==='1';useWf=localStorage.getItem('office-use-wf')!=='0';model=modelId(localStorage.getItem('office-model'))||'auto';effort=localStorage.getItem('office-effort')||'auto'}catch{}
 // A workflow only when the job is given to the Director; a task given to another agent runs with that agent alone
 const wfOn=()=>useWf&&selected.id==='director';
-// Model label for a task card: which Claude model and effort ran it, and why they were picked
-const modelTag=j=>{const m=MODELS[modelId(j.model)];return j.engine==='codex'||!m?'':`<span class="modeltag m-${m.family}" title="${escapeHTML(j.modelWhy||'')}">${m.label}${EFFORTS[j.effort]?` · ${EFFORTS[j.effort].toLowerCase()}`:''}</span>`};
-// Model picker: auto, the recommended models, then older versions; each with its price per million tokens
-const modelOption=([id,m])=>`<option value="${id}">${m.label} · $${m.price[0]}/$${m.price[1]}</option>`;
-const modelOptions=`<option value="auto">✨ Tự chọn</option><optgroup label="Khuyên dùng">${Object.entries(MODELS).filter(([,m])=>m.auto).map(modelOption).join('')}</optgroup><optgroup label="Phiên bản khác">${Object.entries(MODELS).filter(([,m])=>!m.auto).map(modelOption).join('')}</optgroup>`;
+// Model label for a task card: which model (Claude or Codex) and effort ran it, and why they were picked
+const modelTag=j=>{const id=j.model&&j.engine?sameTier(j.model,j.engine):modelId(j.model),m=MODELS[id];return !m?'':`<span class="modeltag m-${m.family}" title="${escapeHTML(j.modelWhy||'')}">${m.label}${EFFORTS[j.effort]?` · ${EFFORTS[j.effort].toLowerCase()}`:''}</span>`};
+// Model picker: auto, then per engine the recommended models and older versions; Claude ones with their price per million tokens
+const modelOption=([id,m])=>`<option value="${id}">${m.label}${m.price?` · $${m.price[0]}/$${m.price[1]}`:''}</option>`;
+const modelsOf=(engine,auto)=>Object.entries(MODELS).filter(([,m])=>m.engine===engine&&!!m.auto===auto);
+const modelOptions=`<option value="auto">✨ Tự chọn</option>${['claude','codex'].map(e=>`<optgroup label="${e==='claude'?'Claude':'Codex'} · khuyên dùng">${modelsOf(e,true).map(modelOption).join('')}</optgroup><optgroup label="${e==='claude'?'Claude':'Codex'} · bản cũ">${modelsOf(e,false).map(modelOption).join('')}</optgroup>`).join('')}`;
 const effortOptions=`<option value="auto">✨ Tự chọn</option>${Object.entries(EFFORTS).map(([k,v])=>`<option value="${k}">${v}</option>`).join('')}`;
-const team=()=>agents.map(a=>({id:a.id,name:a.name,role:a.role,desc:a.desc,team:teamOf(a),level:levelOf(a)}));
+// What each agent may use (machine config): {engine, models, maxEffort}
+const aiOf=id=>({engine:engineOf(id),...machine?.agentAI?.[id]});
+const team=()=>agents.map(a=>({id:a.id,name:a.name,role:a.role,desc:a.desc,team:teamOf(a),level:levelOf(a),ai:aiOf(a.id)}));
 const taskEl=document.getElementById('task'),$=id=>document.getElementById(id);
 const hex=c=>'#'+c.toString(16).padStart(6,'0'),clock=d=>d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'});
 const agentOf=id=>agents.find(a=>a.id===id)||{id,name:id,role:'',color:0x9aa3b5};
@@ -131,9 +134,10 @@ function md(src){
 const fromServer=t=>({key:'m'+t.id,rid:t.id,remote:true,agent:t.agent,text:t.text,priority:t.priority,status:t.status,steps:t.steps||0,activity:t.activity,started:t.started?new Date(t.started):null,result:t.result,error:t.error,created:new Date(t.created),finished:t.finished?new Date(t.finished):null,durationMs:t.durationMs,turns:t.turns,costUsd:t.costUsd,cwd:t.cwd,mode:t.mode,host:t.host,engine:t.engine||'claude',web:!!t.web,siteLabels:t.siteLabels||[],fileNames:t.fileNames||[],kind:t.kind,wf:t.wf!=null?'m'+t.wf:null,wfTitle:t.wfTitle,stepTitle:t.stepTitle,model:t.model,effort:t.effort,modelWhy:t.modelWhy,asks:t.asks||0,perms:t.perms||[],todos:t.todos||[],changesN:t.changesN??t.changes?.length??0,undone:t.undone||null,vcs:t.vcs||null,asking:!!t.asking,deps:(t.deps||[]).map(id=>'m'+id),question:t.question||null,clarify:t.clarify||[],designs:t.designs||[],designFrom:t.designFrom,rework:t.rework||null,origin:t.origin??null,progress:t.status==='done'?100:Math.min(92,8+(t.steps||0)*9)});
 function selectAgent(id){selected=agentOf(id);$('profile-name').textContent=selected.name;$('profile-role').textContent=[selected.role,`${LEVELS[levelOf(selected)]} · đội ${teamOf(selected)}`].filter(Boolean).join(' · ');$('profile-desc').textContent=selected.desc||'';$('profile-desc').title=selected.desc||'';$('agentDel').classList.toggle('hidden',selected.id==='director');$('profile-icon').style.background=hex(selected.color);$('profile-icon').textContent=selected.name[0];agents.forEach(a=>a.ring.material.opacity=a.id===id?.95:0);document.querySelectorAll('.tag').forEach((e,i)=>e.classList.toggle('selected',agents[i].id===id));document.querySelectorAll('#avatars [data-agent]').forEach(e=>e.classList.toggle('on',e.dataset.agent===id));renderProfile();renderRunNote()}
 // Which CLI the server runs this agent's tasks with (set in the machine config, Designer → Codex by default)
-const engineOf=id=>machine?.agentEngines?.[id]==='codex'?'codex':'claude';
-const engineName=id=>engineOf(id)==='codex'?'Codex (ChatGPT)':'Claude Code';
-const engineReady=id=>engineOf(id)==='codex'?!!machine?.codex?.ready:!!machine?.ready;
+const engineOf=id=>ENGINE_NAMES[machine?.agentEngines?.[id]]?machine.agentEngines[id]:'claude';
+const engineName=id=>ENGINE_NAMES[engineOf(id)];
+// 'both' is ready when either engine is (the server picks the one that can run)
+const engineReady=id=>{const e=engineOf(id);return e==='codex'?!!machine?.codex?.ready:e==='both'?!!(machine?.ready||machine?.codex?.ready):!!machine?.ready};
 function renderProfile(){const mine=allJobs().filter(j=>j.agent===selected.id),n=g=>mine.filter(j=>GROUP[j.status]===g).length;$('profile-status').innerHTML=(n('running')?'<span class="pulse"></span> Đang thực hiện nhiệm vụ':'<span class="pulse idle"></span> Sẵn sàng nhận việc')+(mine.length?`<em>${n('running')} đang xử lý · ${n('done')} xong · ${n('error')} lỗi</em>`:'')}
 function renderRunNote(){
   $('runOn').value=runOn;const m=machine,el=$('runNote'),pick=$('webSite'),keep=pick.value;
@@ -538,6 +542,26 @@ initCodexConnect({toast,onChange:()=>machineUI.refresh()});
 function freeSlot(){const used=new Set(agents.map(a=>a.slot));return SLOT_ORDER.find(i=>!used.has(i))??-1}
 const agentRecord=a=>({...(a.builtin?{id:a.id,builtin:true}:{id:a.id,color:a.color,preset:a.preset,slot:a.slot}),name:a.name,role:a.role,desc:a.desc,team:teamOf(a),level:levelOf(a)});
 const saveAgents=list=>machineApi('/agents',{method:'POST',body:JSON.stringify({agents:normalizeLeaders(list)})});
+// AI part of the agent form: Claude / Codex / both, the models it may use and its highest reasoning effort
+function aiFields(a){
+  const ai=a?aiOf(a.id):{engine:'claude'},picked=new Set(enginesOf({engine:'both'}).flatMap(e=>ai.models?.length?ai.models.filter(m=>MODELS[m]?.engine===e):modelsOf(e,true).map(([id])=>id)));
+  const box=([id,m])=>`<label class="ai-model"><input type="checkbox" name="model" value="${id}" ${picked.has(id)?'checked':''}>${m.label}${m.auto?'':' <small>(bản cũ)</small>'}</label>`;
+  return `<fieldset class="ai-pick"><legend>AI sử dụng</legend>
+    <div class="ai-engines">${Object.entries(ENGINE_NAMES).map(([k,v])=>`<label><input type="radio" name="engine" value="${k}" ${ai.engine===k?'checked':''}>${v}</label>`).join('')}</div>
+    ${['claude','codex'].map(e=>`<div class="ai-models" data-ai-engine="${e}"><b>Model ${e==='claude'?'Claude':'Codex'} được dùng</b>${[...modelsOf(e,true),...modelsOf(e,false)].map(box).join('')}</div>`).join('')}
+    <label>Mức suy luận tối đa<select name="maxEffort"><option value="">Không giới hạn</option>${Object.entries(EFFORTS).map(([k,v])=>`<option value="${k}" ${ai.maxEffort===k?'selected':''}>${v}</option>`).join('')}</select></label>
+    <p class="agent-note">Director chỉ giao cho agent này các model đã chọn, theo độ khó của việc (dễ → model nhẹ, khó → model mạnh), và không vượt mức suy luận tối đa. Chọn "Claude + Codex" để Director dùng cả hai.</p></fieldset>`;
+}
+// Saves the AI part on the machine; the recommended set is stored as "no list" so it follows future recommended models
+async function saveAI(id,form){
+  if(!machine)return;
+  const engine=form.engine.value,es=enginesOf({engine});
+  const models=[...form.querySelectorAll('[name=model]:checked')].map(i=>i.value).filter(m=>es.includes(MODELS[m]?.engine));
+  if(!es.some(e=>models.some(m=>MODELS[m].engine===e)))throw new Error('Chọn ít nhất một model cho công cụ AI của agent.');
+  const rec=es.flatMap(e=>modelsOf(e,true).map(([m])=>m));
+  const same=models.length===rec.length&&rec.every(m=>models.includes(m));
+  machine=await machineApi('/config',{method:'POST',body:JSON.stringify({agent:id,engine,models:same?[]:models,maxEffort:form.maxEffort.value})});renderRunNote();
+}
 const agentForm=document.createElement('div');agentForm.className='modal hidden';document.getElementById('app').appendChild(agentForm);
 function openAgentForm(a){
   if(!a&&freeSlot()<0){toast(`Văn phòng đã đủ ${SLOTS.length} chỗ ngồi: xóa bớt agent để thêm mới`);return}
@@ -548,11 +572,15 @@ function openAgentForm(a){
     <div class="agent-look"><label>Đội<input name="team" maxlength="40" list="teamList" value="${escapeHTML(a?teamOf(a):'')}" placeholder="Ví dụ: Frontend"><datalist id="teamList">${[...new Set(agents.map(teamOf))].map(t=>`<option value="${escapeHTML(t)}">`).join('')}</datalist></label>
       <label>Cấp bậc<select name="level">${Object.entries(LEVELS).map(([k,v])=>`<option value="${k}" ${(a?levelOf(a):'middle')===k?'selected':''}>${v}</option>`).join('')}</select></label></div>
     <label>Mô tả & cách làm việc<textarea name="desc" maxlength="2000" rows="6" placeholder="Agent này làm gì, làm theo cách nào, tiêu chuẩn đầu ra, điều cần tránh… Mô tả được gửi kèm mỗi việc giao cho agent và Director dùng nó để phân việc.">${escapeHTML(a?.desc||'')}</textarea></label>
+    ${aiFields(a)}
     ${a?.builtin?'':`<div class="agent-look"><label>Ngoại hình<select name="preset">${looks}</select></label><label>Màu<input type="color" name="color" value="${hex(a?.color??(0x1000000*Math.random()|0)|0x303030)}"></label></div>`}
     <p class="agent-note">${a?'Đổi ngoại hình sẽ tải lại trang.':'Agent mới được xếp vào bàn trống tiếp theo và trang sẽ tải lại.'}${runOn==='sim'&&sim.some(j=>GROUP[j.status]==='running')&&(!a||!a.builtin)?' Việc mô phỏng đang chạy sẽ mất khi tải lại.':''}</p>
     <div class="pv-actions"><button class="assign" type="submit">${a?'Lưu':'＋ Thêm agent'}</button><button type="button" class="ghost" data-close>Hủy</button></div></form>`;
   agentForm.classList.remove('hidden');agentForm.querySelector('[name=name]').focus();
   const form=agentForm.querySelector('form');
+  // only the chosen engine's models are shown
+  const showModels=()=>{const es=enginesOf({engine:form.engine.value});form.querySelectorAll('[data-ai-engine]').forEach(g=>g.hidden=!es.includes(g.dataset.aiEngine))};
+  form.querySelectorAll('[name=engine]').forEach(r=>r.onchange=showModels);showModels();
   form.onsubmit=async e=>{
     e.preventDefault();const f=Object.fromEntries(new FormData(form)),btn=form.querySelector('[type=submit]');
     const vals={name:f.name.trim(),role:f.role.trim(),desc:f.desc.trim(),team:f.team.trim()||f.role.trim()||'Khác',level:f.level};if(!vals.name)return;
@@ -563,7 +591,7 @@ function openAgentForm(a){
     if(a){reload=!a.builtin&&(look.preset!==a.preset||look.color!==a.color);list=agents.map(x=>agentRecord(x===a?{...x,...vals,...look}:x))}
     else{const id='a'+Date.now().toString(36);list=[...agents.map(agentRecord),{id,...vals,...look,slot:freeSlot()}]}
     btn.disabled=true;
-    try{await saveAgents(list)}catch(err){toast(err.message);btn.disabled=false;return}
+    try{await saveAgents(list);await saveAI(a?.id||list.at(-1).id,form)}catch(err){toast(err.message);btn.disabled=false;return}
     if(reload){try{localStorage.setItem('office-select',a?.id||list.at(-1).id);if(!a)localStorage.setItem('office-new',list.at(-1).id)}catch{}location.reload();return}
     Object.assign(a,vals);normalizeLeaders(agents);wander.refreshTeams();a.el.innerHTML=tagHTML(a);renderAvatars();selectAgent(selected.id);agentForm.classList.add('hidden');toast('Đã lưu '+a.name);
   };

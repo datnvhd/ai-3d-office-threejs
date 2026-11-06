@@ -41,9 +41,46 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
     txt.textContent=checking?'Đang kiểm tra máy…':!st?'Máy cá nhân…':`Máy: ${st.host.name}`+(st.limits?.both?' · hết hạn mức AI':st.running?` · ${st.running} việc đang chạy`:st.ready?'':' (chưa sẵn sàng)');
     if(st?.limits?.both)dot.className='cdot off';
     // say it once when both plans become used up (and again if it happens later)
+    watchUpdates(st?.updates);
     const both=!!st?.limits?.both;if(both&&!lastBoth)toast('⛔ Đã hết hạn mức của cả gói Claude và Codex: việc mới sẽ dừng cho tới giờ mở lại (xem cửa sổ Máy cá nhân).');lastBoth=both;
   }
   let lastBoth=false;
+  // Claude Code / Codex updates (server/ai-updates.js): ask once per new version per app start, show progress and the result
+  const asked=new Set(),prevUpd={};let updPoll=null;
+  function watchUpdates(U){
+    if(!U)return;
+    for(const [e,u] of Object.entries(U.engines)){
+      const was=prevUpd[e];prevUpd[e]=u.state;
+      if(was&&was!==u.state&&u.message&&(u.state==='done'||u.state==='error'))toast((u.state==='done'?'✓ ':'⚠ ')+u.message);
+      const key=e+u.latest;
+      if(U.mode==='ask'&&u.available&&!u.skipped&&u.canUpdate&&u.state==='idle'&&!asked.has(key)&&!st.remote?.viewer){
+        asked.add(key);
+        // after the current call stack, so the dialog does not block rendering
+        setTimeout(()=>{
+          if(confirm(`Có bản mới của ${u.name}: ${u.current} → ${u.latest}.\n\nCài ngay? App cài ngầm (không mở cửa sổ cmd), chờ các việc đang chạy bằng ${u.name} xong rồi mới cài, và việc tiếp theo tự dùng bản mới.\n\nOK: cập nhật ngay · Cancel: để sau (cập nhật được trong cửa sổ Máy cá nhân)`))
+            updateAct({engine:e}).then(()=>toast(`Đang cập nhật ${u.name} ở chế độ chạy ngầm…`));
+        },0);
+      }
+    }
+    // follow an install that is running or waiting
+    clearTimeout(updPoll);
+    if(Object.values(U.engines).some(u=>u.state==='running'||u.state==='waiting'))updPoll=setTimeout(()=>machineApi('/status').then(s=>{st=s;onStatus(s);modal.classList.contains('hidden')?setChip():render()}).catch(()=>{}),3000);
+  }
+  const updateAct=async b=>{st=await machineApi('/update',{method:'POST',body:JSON.stringify(b)});onStatus(st);render()};
+  const updatesHtml=U=>{
+    if(!U)return '';
+    const viewer=!!st.remote?.viewer;
+    const row=u=>{const e=u===U.engines.claude?'claude':'codex';
+      const v=u.current?esc(u.current):'<em>chưa cài</em>';
+      const s=u.state==='running'||u.state==='waiting'?`<em><span class="spinner"></span> ${esc(u.message)}</em>`
+        :u.available?`→ <b>${esc(u.latest)}</b> ${u.canUpdate&&!viewer?`<button class="linkbtn" data-act="update" data-engine="${e}">Cập nhật ngầm</button>${u.skipped?'':` <button class="linkbtn" data-act="skipUpdate" data-engine="${e}">Bỏ qua bản này</button>`}`:`<em>${esc(u.manual||'')}</em>`}`
+        :u.latest?'· mới nhất':'';
+      return [esc(u.name),`${v} ${s}${u.state==='error'&&u.message?`<br><em class="bad">${esc(u.message)}</em>`:''}`]};
+    return `<div class="section-title">CẬP NHẬT CLAUDE CODE & CODEX</div>
+      ${rows([row(U.engines.claude),row(U.engines.codex)])}
+      <div class="mmodes">${Object.entries(U.modes).map(([k,l])=>`<label><input type="radio" name="mUpdate" value="${k}" ${k===U.mode?'checked':''} ${viewer?'disabled':''}> ${esc(l)}${k==='ask'?' <em>(khuyên dùng)</em>':''}</label>`).join('')}</div>
+      <p class="claude-note">App tắt chế độ tự cập nhật của Claude Code và Codex (chế độ này bật cửa sổ cmd giữa lúc chạy việc). App tự kiểm tra bản mới trên npm mỗi 6 giờ, cài với cửa sổ ẩn khi không có việc nào đang chạy bằng công cụ đó, và việc tiếp theo dùng bản mới mà không cần mở lại app.${U.checkedAt?` Kiểm tra lần cuối: ${fmt(U.checkedAt)}.`:''} <button class="linkbtn" data-act="checkUpdate" ${viewer?'disabled':''}>Kiểm tra ngay</button></p>`;
+  };
   const fmtLimit=l=>new Date(l.until).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
   // Per-agent auto-approval: by default every command outside the kits asks; the user can let chosen agents run them
   const autoHtml=A=>{
@@ -117,6 +154,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
       <p class="claude-note">Mật khẩu chỉ lưu trên máy này (<code>~/.ai-3d-office/sites.json</code>), không gửi xuống trình duyệt và không gửi cho Claude: agent gõ tên biến bí mật, Playwright tự thay bằng mật khẩu thật và che mật khẩu trong mọi nội dung trả về.</p>
       ${autoHtml(st.auto)}
       ${limitsHtml(st.limits)}
+      ${updatesHtml(st.updates)}
       ${mobileHtml(st.mobile)}
       ${remoteHtml(st.remote)}
       <div class="section-title">KIỂM TRA KẾT NỐI</div>
@@ -147,6 +185,10 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
         if(lvl!=='ask'&&!confirm(`Cho phép ${who} ${lvl==='all'?'tự chạy lệnh và tự sửa file trong thư mục làm việc':'tự chạy lệnh'} mà không hỏi bạn?\nLệnh nguy hiểm vẫn sẽ hỏi.`)){el.value=st.auto.agents[el.dataset.auto]||'ask';return}
         st=await machineApi('/config',{method:'POST',body:JSON.stringify({agentAuto:{[el.dataset.auto]:lvl}})});onStatus(st);toast(`${who}: ${st.auto.levels[lvl]}`)}
       else if(name==='autoSwitch'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({autoSwitch:el.checked})});onStatus(st);toast(el.checked?'Sẽ tự chuyển sang AI còn hạn mức':'Không tự chuyển: việc sẽ dừng khi gói AI hết hạn mức')}
+      else if(name==='update'){await updateAct({engine:el.dataset.engine});toast('Đang cập nhật ở chế độ chạy ngầm…')}
+      else if(name==='skipUpdate'){await updateAct({skip:el.dataset.engine});toast('Sẽ không hỏi lại bản này')}
+      else if(name==='checkUpdate'){await updateAct({check:true});toast('Đã kiểm tra bản mới')}
+      else if(name==='updateMode'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({aiUpdate:el.value})});onStatus(st);toast('Cập nhật AI: '+st.updates.modes[st.updates.mode])}
       else if(name==='clearLimit'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({clearLimit:el.dataset.engine})});onStatus(st);toast(`Việc tiếp theo sẽ thử lại ${el.dataset.engine==='claude'?'Claude':'Codex'}`)}
       else if(name==='remote'){const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({on:el.checked})});st={...st,remote:r};toast(r.on?'Đã bật truy cập từ xa: gửi link cho máy cần mở':r.error||'Đã tắt truy cập từ xa')}
       else if(name==='remoteKey'){if(!confirm('Đổi mã truy cập? Các máy đang mở bằng link cũ sẽ phải nhập mã mới.'))return;const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({newKey:true})});st={...st,remote:r};toast('Đã đổi mã truy cập')}
@@ -161,7 +203,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
     finally{busy=false;checking=false;render()}
   }
   body.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b)});
-  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
+  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.name==='mUpdate')act('updateMode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
   body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir')});
 
   refresh();

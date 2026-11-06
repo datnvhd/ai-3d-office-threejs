@@ -9,16 +9,17 @@ import {existsSync,statSync,mkdirSync,readFileSync,writeFileSync,rmSync,readdirS
 import {inflateRawSync} from 'node:zlib';
 import {createRequire} from 'node:module';
 import os from 'node:os';
-import {join,resolve,isAbsolute,dirname,basename,relative,extname} from 'node:path';
+import {join,resolve,isAbsolute,dirname,basename,relative,extname,sep} from 'node:path';
 import {STORE_DIR,NODE_ENV,cleanEnv,run,findClaudeBinary,killTree,reapGroup,getSavedClaudeToken} from './claude-bridge.js';
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
+import {createUpdater,cliGen,UPDATE_MODES} from './ai-updates.js';
 import {createSnapshots} from './snapshot.js';
 import {rnProject,mobileEnv,mobileEnvCached,mobileSummary,MOBILE_KIT,mobilePrompt,mobilePlanNote} from './mobile.js';
 import {detectLimit,ENGINE_NAME} from './ai-limits.js';
 import {createRemoteServer,isRemoteReq,newRemoteKey,lanAddresses,DEFAULT_REMOTE_PORT} from './remote-access.js';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion} from '../workflow-plan.js';
+import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion,fitModel,TIER,sameTier,engineOfModel,enginesOf,ENGINE_NAMES} from '../workflow-plan.js';
 // What each level means for the agent doing the work
 const LEVEL_NOTE={leader:'Bạn là Leader của đội: chịu trách nhiệm chất lượng chung, làm và duyệt kỹ, chỉ ra rủi ro.',senior:'Bạn là Senior: xử lý được việc khó, chủ động đề xuất giải pháp tốt.',middle:'Bạn là Middle: làm chắc chắn việc thông thường, hỏi lại khi yêu cầu chưa rõ.',junior:'Bạn là Junior: làm cẩn thận từng bước, nêu rõ chỗ chưa chắc chắn để người có kinh nghiệm xem lại.'};
 
@@ -129,7 +130,9 @@ async function shootDesigns(t,note){
 // Claude Code's answer when the account cannot use the requested model (retired, or not on this plan)
 const MODEL_MISSING=/not_found_error|may not exist|not have access to (it|this model)|model[^\n]{0,60}(not found|not available|unavailable|does not exist)/i;
 // `claude` flags for a task's model and reasoning effort (old records may hold a family alias, still valid for the CLI)
-const modelArgs=t=>[...(t.model?['--model',modelId(t.model)||t.model]:[]),...(EFFORTS[t.effort]?['--effort',t.effort]:[])];
+const modelArgs=t=>[...(t.model?['--model',engineOfModel(t.model)?sameTier(t.model,'claude'):t.model]:[]),...(EFFORTS[t.effort]?['--effort',t.effort]:[])];
+// `codex exec` flags for the same (a Claude model maps to the Codex model of the same difficulty)
+const codexModelArgs=t=>[...(t.model?['-c',`model=${sameTier(t.model,'codex')}`]:[]),...(EFFORTS[t.effort]?['-c',`model_reasoning_effort=${t.effort}`]:[])];
 // Browser tools web tasks never need; run_code_unsafe would also run arbitrary code next to the secrets file
 const WEB_TOOLS_OFF=['run_code_unsafe','network_requests','network_request','emulate_media','drag','drop','resize','console_messages'].map(n=>`mcp__browser__browser_${n}`);
 const PREVIEW_TYPES={'.html':'text/html; charset=utf-8','.htm':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.svg':'image/svg+xml','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.gif':'image/gif','.webp':'image/webp','.ico':'image/x-icon','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.txt':'text/plain; charset=utf-8','.md':'text/plain; charset=utf-8','.pdf':'application/pdf','.mp4':'video/mp4','.webm':'video/webm'};
@@ -155,8 +158,8 @@ const DENY_CMDS=['git push','git reset --hard','git clean','rm -rf','npm publish
   'svn commit','svn ci','svn update','svn up','svn switch','svn revert','svn delete','svn rm','svn import','svn merge','svn lock','svn unlock'];
 const MODES={default:'Chỉ đọc & phân tích',acceptEdits:'Cho phép tạo/sửa file trong thư mục làm việc'};
 const DEFAULT_WORKDIR=join(os.homedir(),'AI-Office-Workspace');
-// Which CLI runs each agent's tasks; agents not listed use Claude Code
-const ENGINES={claude:'Claude Code',codex:'Codex (ChatGPT)'};
+// Which CLI runs each agent's tasks ('both': the Director or the model picked decides per task); agents not listed use Claude Code
+const ENGINES=ENGINE_NAMES;
 const DEFAULT_AGENT_ENGINES={designer:'codex'};
 
 const readJson=(f,fallback)=>{try{return JSON.parse(readFileSync(f,'utf8'))}catch{return fallback}};
@@ -219,14 +222,18 @@ function trackTodoResult(t,c,text){
 }
 
 export function machineBridge(){
-  let bin=null,binChecked=false,version=null;
+  let bin=null,binChecked=false,version=null,binGen=-1;
   let port=5173;// the dev server's real port, set once it listens; web tasks open their files through it
   let config={workdir:DEFAULT_WORKDIR,mode:'default',browserVisible:true,...readJson(CONFIG_FILE,{})};
   // kit lists saved before the Mobile kit existed: give it to the teams that build or test code (it only acts in RN apps)
   if(config.teamKits&&!config.kitsMobile)for(const list of Object.values(config.teamKits))if(Array.isArray(list)&&(list.includes('node')||list.includes('test'))&&!list.includes('mobile'))list.push('mobile');
   config.kitsMobile=true;
   config.agentEngines={...DEFAULT_AGENT_ENGINES,...config.agentEngines};
-  const engineOf=agent=>config.agentEngines[agent]==='codex'?'codex':'claude';
+  // What an agent may use: {engine, models, maxEffort} (see fitModel in workflow-plan.js)
+  const aiOf=agent=>({engine:ENGINES[config.agentEngines[agent]]?config.agentEngines[agent]:'claude',...(config.agentAI||{})[agent]});
+  // Engine to try first for an agent that may use both: the one that is signed in and not used up, Claude first
+  const preferEngine=()=>engineReady('claude')&&!limitOf('claude')?'claude':engineReady('codex')&&!limitOf('codex')?'codex':'claude';
+  const engineOf=agent=>{const es=enginesOf(aiOf(agent));return es.length>1?preferEngine():es[0]};
   const kitsFor=team=>(config.teamKits||{})[team]??DEFAULT_TEAM_KITS[team]??DEFAULT_TEAM_KITS['*'];
   // Bash rules for a task from its team's kits; read-only mode keeps only the commands that just look
   function kitRules(t){
@@ -236,7 +243,7 @@ export function machineBridge(){
     const list=[...new Set(cmds)];
     return {cmds:list,allow:[...list.map(c=>`Bash(${c}:*)`),...(designOnly(t)?[`Edit(${designRel(t)})`]:[])],deny:DENY_CMDS.map(c=>`Bash(${c}:*)`)};
   }
-  let codexBin=null,codexChecked=false,codexVersion=null,codexAuthCache=null;
+  let codexBin=null,codexChecked=false,codexVersion=null,codexAuthCache=null,codexGen=-1;
   let lastCheck=readJson(CONFIG_FILE,{}).lastCheck||null;
   // Tasks interrupted by a server restart cannot be resumed
   let tasks=readJson(TASKS_FILE,[]).map(t=>t.status!=='running'&&t.status!=='queued'?t:t.asking?{...t,status:'done',asking:false,activity:null,thread:t.thread.map((x,i,a)=>i===a.length-1&&!x.answer&&!x.error?{...x,error:'Server đã khởi động lại khi đang trả lời.'}:x)}:{...t,status:'error',error:'Server đã khởi động lại khi việc đang chạy.',finished:t.finished||new Date().toISOString()});
@@ -374,7 +381,7 @@ export function machineBridge(){
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
   const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel})=>({name,kind,rel}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
-  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,agentAuto:config.agentAuto,lastCheck});
+  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,agentAI:config.agentAI,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,aiUpdate:config.aiUpdate,aiUpdateSkip:config.aiUpdateSkip,agentAuto:config.agentAuto,lastCheck});
 
   // ---------- saved web logins (passwords stay in this file and are never sent to the page or to Claude) ----------
   let sites=readJson(SITES_FILE,[]);
@@ -387,21 +394,24 @@ export function machineBridge(){
   const quoteEnv=v=>!v.includes("'")?`'${v}'`:!v.includes('`')?`\`${v}\``:`"${v.replace(/\n/g,' ')}"`;
 
   async function ensureBin(){
-    if(!binChecked){bin=findClaudeBinary();binChecked=true;if(bin)version=(await run(bin,['--version'])).stdout.trim()||null}
+    if(!binChecked||binGen!==cliGen()){binGen=cliGen();bin=findClaudeBinary();binChecked=true;version=bin?(await run(bin,['--version'])).stdout.trim()||null:null}
     return bin;
   }
   // Only the token signed in through the app: the CLI's own (default) account is never used
   async function auth(){return getSavedClaudeToken()?'token':null}
   async function ensureCodex(){
-    if(!codexChecked){codexBin=findCodexBinary();codexChecked=true;if(codexBin)codexVersion=(await codexRun(codexBin,['--version'])).stdout.trim()||null}
+    if(!codexChecked||codexGen!==cliGen()){codexGen=cliGen();codexBin=findCodexBinary();codexChecked=true;codexAuthCache=null;codexVersion=codexBin?(await codexRun(codexBin,['--version'])).stdout.trim()||null:null}
     return codexBin;
   }
+  // Claude Code / Codex updates (server/ai-updates.js): asked in the app or done in the background, never while a task runs on it
+  const updater=createUpdater({getBin:e=>e==='claude'?bin:codexBin,getVersion:e=>e==='claude'?version:codexVersion,
+    busy:e=>tasks.some(t=>t.status==='running'&&(t.engine===e||t.kind==='plan')),mode:()=>UPDATE_MODES[config.aiUpdate]?config.aiUpdate:'ask',skipped:e=>config.aiUpdateSkip?.[e]});
   async function codexAuthKind(){
     if(codexAuthCache&&Date.now()-codexAuthCache.at<60000)return codexAuthCache.kind;
     const kind=await ensureCodex()?await codexAuth(codexBin):null;
     codexAuthCache={kind,at:Date.now()};return kind;
   }
-  const usesCodex=()=>Object.values(config.agentEngines).includes('codex');
+  const usesCodex=()=>Object.values(config.agentEngines).some(e=>e==='codex'||e==='both');
 
   // ---------- AI plan usage limits (server/ai-limits.js) ----------
   // A plan that hit its usage limit (5-hour, daily, weekly) is not used until it resets (kept in machine.json across
@@ -507,25 +517,62 @@ ${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cm
 `:autoOf(t)!=='ask'?`Bạn được tự chạy lệnh dòng lệnh khi cần (qua Bash); lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; không bao giờ push code hay svn commit/update.
 `:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
 ${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${CHECKLIST_GUIDE}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
-Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. File .md mới không được yêu cầu sẽ bị xóa khi xong việc.
+GIỮ DỰ ÁN SẠCH: người dùng không muốn file thừa trong dự án. Chỉ tạo/sửa trong thư mục làm việc những file là một phần của kết quả được yêu cầu (code, cấu hình, dữ liệu hay tài liệu người dùng cần). File phụ để làm việc (script chạy thử, test tạm, dữ liệu trung gian, log, ảnh chụp kiểm tra, ghi chú) phải đặt tên bắt đầu bằng _ai_tmp (ví dụ _ai_tmp_check.py) hoặc để trong thư mục _ai_tmp/; hệ thống tự xóa chúng khi xong việc, cùng các file tạm/log/cache mới sinh ra. Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. Trong phần kết quả, liệt kê các file đã tạo hoặc sửa trong dự án.
 Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
 ${t.text}`;
   }
-  // ---------- leftover .md files ----------
-  // A task's new .md files (reports, notes, plans the agent wrote on its own) are removed when it ends, unless the
-  // request asked for a markdown/README/document file. Files that existed before the run are never touched.
-  const MD_SKIP=new Set(['node_modules','dist','build','vendor','venv','.venv','__pycache__','coverage']);
-  function listMd(dir,depth=0,out=[]){
-    if(!dir||depth>4||out.length>3000)return out;let ents;try{ents=readdirSync(dir,{withFileTypes:true})}catch{return out}
-    for(const e of ents){if(e.isDirectory()){if(!MD_SKIP.has(e.name)&&!e.name.startsWith('.'))listMd(join(dir,e.name),depth+1,out)}else if(/\.md$/i.test(e.name))out.push(join(dir,e.name))}
+  // ---------- leftover files ----------
+  // Agents are told to keep the project clean and to give their scratch files (test scripts, logs, screenshots, notes)
+  // names starting with _ai_tmp. When the last task running in a folder ends, the files and folders that appeared
+  // during the run and look like leftovers are removed: _ai_tmp*, temp/log/backup files, tool caches, screenshots and
+  // .md notes nobody asked for. Files that existed before the run are never touched; the log lists what was removed
+  // and which new files were kept.
+  const SCAN_SKIP=new Set(['node_modules','.git','.svn','dist','build','vendor','venv','.venv','coverage','.next','.nuxt','.expo','Pods','.gradle','target',ATTACH_SUBDIR,'.ai-office-design']);
+  const JUNK_DIRS=new Set(['__pycache__','.pytest_cache','.mypy_cache','.ruff_cache','.playwright-mcp','.ipynb_checkpoints','_ai_tmp','.ai_tmp']);
+  const TMP_NAME=/^(_ai_tmp|\.ai_tmp)/i;
+  const JUNK_FILE=/^(tmp|temp|scratch|debug)[_.-]|\.(tmp|temp|log|bak|orig|rej|swp|pyc)$|^~\$|^nul$|^\.DS_Store$|^Thumbs\.db$/i;
+  const SHOT_FILE=/^(screenshot|screen[_-]?shot|screen|shot|capture|snap|page|test)[\w.-]*\.(png|jpe?g|webp)$/i;
+  // every file and folder under dir (paths), skipping dependency/build/app folders
+  function listTree(dir,depth=0,out=new Set()){
+    if(!dir||depth>6||out.size>20000)return out;let ents;try{ents=readdirSync(dir,{withFileTypes:true})}catch{return out}
+    for(const e of ents){const p=join(dir,e.name);if(e.isDirectory()){if(SCAN_SKIP.has(e.name))continue;out.add(p+sep);listTree(p,depth+1,out)}else out.add(p)}
     return out;
   }
-  const wantsMd=t=>/\.md\b|markdown|readme|changelog|ghi (ra|vào) file|lưu (ra |thành |vào )?file|xuất (ra )?file|tạo (một |1 )?file/i.test([t.text,t.request,...(t.thread||[]).map(x=>x.q),...(t.clarify||[]).map(x=>x.answer)].join(' '));
-  function cleanMd(t,before,note){
-    if(!before||wantsMd(t))return;const gone=[];
-    for(const f of listMd(t.cwd))if(!before.has(f)){try{rmSync(f,{force:true});gone.push(relative(t.cwd,f))}catch{}}
-    if(gone.length){t.cleaned=[...(t.cleaned||[]),...gone];note('out',`🧹 Đã xóa ${gone.length} file .md tạm không được yêu cầu: ${gone.join(', ')}`,false)}
+  const asked=t=>[t.text,t.request,...(t.thread||[]).map(x=>x.q),...(t.clarify||[]).map(x=>x.answer)].join(' ');
+  const wantsMd=t=>/\.md\b|markdown|readme|changelog|ghi (ra|vào) file|lưu (ra |thành |vào )?file|xuất (ra )?file|tạo (một |1 )?file/i.test(asked(t));
+  const wantsShots=t=>/ảnh chụp|chụp (màn hình|ảnh)|screenshot/i.test(asked(t));
+  // The app's own folders stay out of git status (local .git/info/exclude, nothing in the project changes)
+  function hideAppDirs(cwd){
+    const info=join(cwd||'','.git','info');if(!cwd||!existsSync(info))return;
+    const f=join(info,'exclude');let s='';try{s=readFileSync(f,'utf8')}catch{}
+    const add=[`/${ATTACH_SUBDIR}/`,'/.ai-office-design/','_ai_tmp*'].filter(l=>!s.split(/\r?\n/).includes(l));
+    if(add.length)try{writeFileSync(f,`${s}${s&&!s.endsWith('\n')?'\n':''}# AI 3D Office\n${add.join('\n')}\n`)}catch{}
+  }
+  // One baseline per folder while tasks run in it, so parallel tasks never remove each other's work in progress
+  const runsIn=new Map();// cwd → {before:Set, ids:Set, keepMd, keepShots}
+  function leftStart(t){
+    if(!t.cwd)return;hideAppDirs(t.cwd);
+    let r=runsIn.get(t.cwd);if(!r||![...r.ids].some(id=>procs.has(id)&&id!==t.id)){r={before:listTree(t.cwd),ids:new Set(),keepMd:false,keepShots:false};runsIn.set(t.cwd,r)}
+    r.ids.add(t.id);
+  }
+  function leftEnd(t,note){
+    const r=runsIn.get(t.cwd);if(!r)return;
+    r.keepMd||=wantsMd(t);r.keepShots||=wantsShots(t);r.ids.delete(t.id);
+    if([...r.ids].some(id=>procs.has(id)))return;// another task still works here: clean when it ends
+    runsIn.delete(t.cwd);
+    const added=[...listTree(t.cwd)].filter(p=>!r.before.has(p)),gone=[],kept=[];
+    const junk=p=>{const dir=p.endsWith(sep),name=basename(dir?p.slice(0,-1):p);
+      return TMP_NAME.test(name)||(dir?JUNK_DIRS.has(name):JUNK_FILE.test(name)||(!r.keepShots&&SHOT_FILE.test(name))||(!r.keepMd&&/\.md$/i.test(name)))};
+    // shortest paths first, so a removed folder takes its new content with it
+    for(const p of added.sort((a,b)=>a.length-b.length)){
+      if(gone.some(g=>g.endsWith(sep)&&p.startsWith(g)))continue;
+      if(junk(p)){try{rmSync(p,{recursive:true,force:true});gone.push(p)}catch{}}
+      else if(!p.endsWith(sep))kept.push(p);
+    }
+    const rel=p=>relative(t.cwd,p).replace(/\\/g,'/')+(p.endsWith(sep)?'/':'');
+    if(gone.length){t.cleaned=[...(t.cleaned||[]),...gone.map(rel)];note('out',`🧹 Đã xóa ${gone.length} file/thư mục tạm sinh ra khi làm việc: ${gone.map(rel).slice(0,20).join(', ')}${gone.length>20?'…':''}`,false)}
+    if(kept.length)note('out',`📄 File mới giữ lại trong dự án: ${kept.map(rel).slice(0,20).join(', ')}${kept.length>20?'…':''}`,false);
   }
   // Follow-up question on a finished task. A resumed session already has the context; without one, recap it.
   // A resumed conversation still remembers the old mode from its first prompt: say what changed
@@ -800,17 +847,19 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // retry, later workflow steps), not only the mode it was created with. modeSwitched tells the agent in its prompt.
     t.modeSwitched=t.mode!==config.mode?t.mode:null;t.mode=config.mode;
     if(t.kind==='plan')return startPlan(t);
-    if(!t.asking)t.engine=engineOf(t.agent);// a follow-up stays with the engine that holds the conversation
+    // the task's model says which engine runs it; a follow-up stays with the engine that holds the conversation
+    if(!t.asking)t.engine=engineOfModel(t.model)||engineOf(t.agent);
     // Codex not signed in: keep the workflow moving with Claude Code and say so in the log
-    if(t.engine==='codex'&&codexAuthCache&&!codexAuthCache.kind&&bin){t.engine='claude';t.fallback='Codex chưa đăng nhập nên bước này chạy bằng Claude Code.'}
+    if(t.engine==='codex'&&codexAuthCache&&!codexAuthCache.kind&&bin){t.engine='claude';t.model=sameTier(t.model,'claude');t.fallback='Codex chưa đăng nhập nên bước này chạy bằng Claude Code.'}
     // the plan of the chosen engine hit its usage limit: the other one takes the run, or the task stops if both did
     const rt=routeEngine(t.engine);t.routeNote=rt.note||null;
     if(rt.error){fail(t,rt.error);pump();return}
+    if(rt.engine!==t.engine&&engineOfModel(t.model))t.model=sameTier(t.model,rt.engine);
     t.engine=rt.engine;
     if(t.engine==='codex')return startCodex(t);
     const wd=workdirState(t.cwd);
     if(!bin||!getSavedClaudeToken()||!wd.writable)return fail(t,!bin?'Không tìm thấy Claude Code CLI trên máy.':!getSavedClaudeToken()?'Chưa đăng nhập tài khoản Claude trong ứng dụng.':`Thư mục làm việc không dùng được: ${t.cwd}`);
-    let web=null;const kit=kitRules(t),mdBefore=new Set(listMd(t.cwd));
+    let web=null;const kit=kitRules(t);leftStart(t);
     // Anything outside the allowed rules is asked in the page through this task's permission MCP server
     t.permToken=randomBytes(16).toString('hex');t.perms=[];
     const perm={command:process.execPath,args:[PERM_MCP],env:{...NODE_ENV,AI_OFFICE_PORT:String(port),AI_OFFICE_TASK:String(t.id),AI_OFFICE_TOKEN:t.permToken}};
@@ -852,7 +901,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     done.then(async out=>{
       procs.delete(t.id);dropPerms(t);
       if(web)rmSync(web.secrets,{force:true});
-      cleanMd(t,mdBefore,note);
+      leftEnd(t,note);
       await shootDesigns(t,note);
       await finishSnap(t,note);
       const r=out.result,cancelled=t.status==='cancelled',ok=!cancelled&&r&&!r.is_error&&r.subtype==='success';
@@ -898,13 +947,14 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     let child=null;
     // Planning runs on Claude; on Codex when Claude's plan is used up (or not signed in); keyword planner otherwise
     const input=planPrompt(t.text,t.owner,t.team)+mobilePlanNote(rnProject(t.cwd),mobileEnvCached())+attachPrompt(t);
-    const claudeOk=engineReady('claude')&&!limitOf('claude'),codexOk=!claudeOk&&config.autoSwitch!==false&&engineReady('codex')&&!limitOf('codex');
-    const planner=claudeOk?'claude':codexOk?'codex':null;
-    if(planner==='codex')note('denied',`${limitOf('claude')?limitText('claude'):'Claude Code chưa sẵn sàng'}: Director lập kế hoạch bằng Codex.`);
+    // the Director's own AI setting says which engine plans first; the other takes over when it is used up or not signed in
+    const ok=e=>engineReady(e)&&!limitOf(e),first=engineOf(t.agent),second=first==='claude'?'codex':'claude';
+    const planner=ok(first)?first:config.autoSwitch!==false&&ok(second)?second:null;
+    if(planner&&planner!==first)note('denied',`${limitOf(first)?limitText(first):`${ENGINE_NAME[first]} chưa sẵn sàng`}: Director lập kế hoạch bằng ${ENGINE_NAME[planner]}.`);
     let run=null;
     if(planner==='claude')run=claude(['--max-turns','1','--tools','',...modelArgs(t)],{cwd:t.cwd,input,timeout:180000});
     else if(planner==='codex'){
-      const c=codexExec(codexBin,{cwd:t.cwd,input,extra:['--ephemeral'],timeout:180000});
+      const c=codexExec(codexBin,{cwd:t.cwd,input,extra:['--ephemeral',...codexModelArgs(t)],timeout:180000});
       // same shape as a Claude result for the code below; out.limitText lets a used-up Codex plan be noticed
       run={child:c.child,done:c.done.then(o=>({result:o.message&&!o.error?{is_error:false,subtype:'success',result:o.message,num_turns:1,total_cost_usd:null}:null,stderr:o.stderr,limitText:`${o.error||''}\n${o.stderr}`}))};
     }
@@ -928,7 +978,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         tasks.unshift({id,kind:'step',wf:t.id,wfTitle:t.wfTitle,stepTitle:s.title,request:t.text,deps:s.after.map(k=>ids[k]).filter(Boolean),planDeps:s.after.map(k=>ids[k]).filter(Boolean),
           agent:s.agent,name:a.name,role:a.role,desc:a.desc,team:a.team,level:a.level,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
           model:t.forcedModel||s.model,effort:t.forcedEffort||(t.forcedModel?null:s.effort),modelWhy:t.forcedModel||t.forcedEffort?'Chọn thủ công':s.why||'Director chọn',
-          cwd:t.cwd,mode:t.mode,host:t.host,web:t.web||kitsFor(a.team||'').includes('browser'),siteIds:t.siteIds,engine:engineOf(s.agent),files:t.files,fileNames:t.fileNames});
+          cwd:t.cwd,mode:t.mode,host:t.host,web:t.web||kitsFor(a.team||'').includes('browser'),siteIds:t.siteIds,engine:engineOfModel(t.forcedModel||s.model)||engineOf(s.agent),files:t.files,fileNames:t.fileNames});
       }
       const name=id=>t.team.find(a=>a.id===id)?.name||id;
       t.result=`**Luồng công việc: ${t.wfTitle}** (${plan.steps.length} bước${ai?'':' · chia theo từ khóa'})\n\n${plan.steps.map((s,i)=>`${i+1}. **${name(s.agent)}** · ${s.title} · _${modelLabel(t.forcedModel||s.model)}${(t.forcedEffort||(!t.forcedModel&&s.effort))?`, suy luận ${EFFORTS[t.forcedEffort||s.effort].toLowerCase()}`:''}${!t.forcedModel&&!t.forcedEffort&&s.why?`: ${s.why}`:''}_${s.after.length?` _(sau bước ${s.after.map(k=>plan.steps.findIndex(x=>x.key===k)+1).join(', ')})_`:''}`).join('\n')}`;
@@ -944,7 +994,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(!codexBin||!wd.writable)return fail(t,!codexBin?'Không tìm thấy Codex CLI trên máy.':`Thư mục làm việc không dùng được: ${t.cwd}`);
     let web=null;
     if(t.web)try{web=webSetup(t)}catch(e){return fail(t,e.message)}
-    const mdBefore=new Set(listMd(t.cwd));
+    leftStart(t);
     const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.codexThread),reply=!ask&&!!t.reply,replyResume=reply&&!!t.codexThread;
     if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
     else if(reply)Object.assign(t,{status:'running',activity:'Đang tiếp tục với câu trả lời của bạn…',log:t.log||[]});
@@ -959,6 +1009,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
     else{for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);for(const d of designsFor(t).slice(0,8))if(existsSync(d.png))extra.push('-i',d.png)}// attach images so Codex can see them
+    extra.push(...codexModelArgs(t));
+    if(!ask&&!reply&&t.model)note('init',`Model ${modelLabel(sameTier(t.model,'codex'))}${EFFORTS[t.effort]?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`,false);
     let turns=0;
     // read-only design task: its design folder is the (only writable) workspace; the project is read by its full path
     const dOnly=designOnly(t);if(dOnly)mkdirSync(designDir(t),{recursive:true});
@@ -982,7 +1034,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     done.then(async out=>{
       procs.delete(t.id);
       if(web)rmSync(web.secrets,{force:true});
-      cleanMd(t,mdBefore,note);
+      leftEnd(t,note);
       await shootDesigns(t,note);
       await finishSnap(t,note);
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
@@ -1004,17 +1056,18 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const siteIds=Array.isArray(body.siteIds)?body.siteIds.filter(id=>sites.some(s=>s.id===id)).slice(0,10):[];
     const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),desc:String(body.desc||'').slice(0,2000),team:short(body.agentTeam||'',40),level:LEVELS[body.level]?body.level:undefined,designFrom:Number.isInteger(body.designFrom)?body.designFrom:undefined,text,priority:short(body.priority||'Bình thường',30),
       status:'queued',created:new Date().toISOString(),cwd:config.workdir,mode:config.mode,host:os.hostname(),web:!!body.web||kitsFor(short(body.agentTeam||'',40)).includes('browser'),siteIds,engine:engineOf(body.agent)};
-    // Model and effort: what the user forced, otherwise picked from the request (workflow steps get theirs from the Director)
-    const forced=modelId(body.model),forcedEffort=EFFORTS[body.effort]?body.effort:null,pick=pickModel(text);
-    Object.assign(t,{model:forced||pick.model,effort:forcedEffort||(forced?null:pick.effort),modelWhy:forced||forcedEffort?'Chọn thủ công':'Tự chọn theo nội dung yêu cầu'});
+    // Model and effort: what the user forced, otherwise picked from the request and fitted to what the agent may use
+    const forced=modelId(body.model),forcedEffort=EFFORTS[body.effort]?body.effort:null;
+    const pick=forced?{engine:engineOfModel(forced),model:forced,effort:forcedEffort}:fitModel(aiOf(body.agent),{...pickModel(text),...(forcedEffort?{effort:forcedEffort}:{})},engineOf(body.agent));
+    Object.assign(t,{engine:pick.engine,model:pick.model,effort:pick.effort,modelWhy:forced||forcedEffort?'Chọn thủ công':'Tự chọn theo nội dung yêu cầu'});
     // Workflow: a Director planning task first; it creates the steps for the relevant agents when done
-    const team=Array.isArray(body.team)?body.team.filter(a=>/^[a-z0-9_-]{1,40}$/i.test(a?.id||'')).slice(0,20).map(a=>({id:a.id,name:short(a.name,60),role:short(a.role,80),desc:String(a.desc||'').slice(0,2000),team:short(teamOf(a),40),level:levelOf(a)})):[];
+    const team=Array.isArray(body.team)?body.team.filter(a=>/^[a-z0-9_-]{1,40}$/i.test(a?.id||'')).slice(0,40).map(a=>({id:a.id,name:short(a.name,60),role:short(a.role,80),desc:String(a.desc||'').slice(0,2000),team:short(teamOf(a),40),level:levelOf(a),ai:aiOf(a.id)})):[];
     if(body.workflow&&team.length){
       const d=team.find(a=>a.id==='director')||team.find(a=>a.id===body.agent)||team[0];
-      // Planning is one short JSON answer: Sonnet 5.5 at medium effort, unless the user forced a stronger model
-      const strong=forced&&MODELS[forced].rank>MODELS[LATEST.sonnet].rank;
-      Object.assign(t,{kind:'plan',wf:t.id,owner:body.agent,team,agent:d.id,name:d.name,role:d.role,stepTitle:'Lập kế hoạch & phân công',engine:'claude',
-        forcedModel:forced,forcedEffort,model:strong?forced:LATEST.sonnet,effort:forcedEffort||'medium',modelWhy:strong?'Chọn thủ công':'Lập kế hoạch'});
+      // Planning is one short JSON answer: the normal-tier model of the Director's engine at medium effort, unless the user forced a stronger model
+      const pe=engineOf(d.id),base=fitModel(aiOf(d.id),{model:TIER[pe].normal},pe).model,strong=forced&&MODELS[forced].rank>MODELS[base].rank;
+      Object.assign(t,{kind:'plan',wf:t.id,owner:body.agent,team,agent:d.id,name:d.name,role:d.role,stepTitle:'Lập kế hoạch & phân công',engine:pe,
+        forcedModel:forced,forcedEffort,model:strong?forced:base,effort:forcedEffort||'medium',modelWhy:strong?'Chọn thủ công':'Lập kế hoạch'});
     }
     // Dropped files (docx/pdf/images): move them into the task folder and remember them on the task
     const files=consumeFiles(body.files?.map(f=>f?.id),t.wf??t.id,t.cwd);
@@ -1055,13 +1108,14 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         ramTotal:os.totalmem(),ramFree:os.freemem(),uptime:os.uptime(),user:os.userInfo().username,node:process.version},
       claude:{found:!!b,path:b,version,auth:a},
       codex:{found:!!cb,path:cb,version:codexVersion,auth:ca,ready:!!(cb&&ca&&wd.writable)},
-      engines:ENGINES,agentEngines:config.agentEngines,
+      engines:ENGINES,agentEngines:config.agentEngines,agentAI:config.agentAI||{},
       config:{workdir:config.workdir,mode:config.mode,modes:MODES,defaultWorkdir:DEFAULT_WORKDIR,browserVisible:config.browserVisible,
         toolkits:Object.fromEntries(Object.entries(TOOLKITS).map(([k,v])=>[k,{short:v.short,label:v.label,write:!!v.write}])),teamKits:config.teamKits||{},defaultKits:DEFAULT_TEAM_KITS},
       browser:{mcp:!!MCP_CLI,channel:findBrowser(),sites:sites.filter(s=>!s.temp).map(siteView)},
       mobile:await mobileEnv().then(e=>({...e,summary:mobileSummary(e),project:rnProject(config.workdir)})).catch(()=>null),
       remote:remoteInfo(viewer),
       auto:{levels:AUTO_LEVELS,agents:config.agentAuto||{}},
+      updates:(updater.check().catch(()=>{}),updater.view()),
       limits:{autoSwitch:config.autoSwitch!==false,both:bothLimited(),claude:limitOf('claude'),codex:limitOf('codex')},
       workdir:wd,lastCheck,vcs:wd.exists?await vcsInfo(config.workdir):{kind:null},recentDirs:(config.recentDirs||[]).filter(d=>existsSync(d)),
       running:tasks.filter(t=>t.status==='running').length,queued:tasks.filter(t=>t.status==='queued').length,
@@ -1090,7 +1144,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         if(req.method!=='GET'&&req.headers['x-ai-office']!=='1')return json(res,403,{error:'Thiếu header bảo vệ CSRF.'});
         const path=(req.url||'/').split('?')[0],m=path.match(/^\/tasks\/(\d+)\/(cancel|retry)$/);
         // through remote access (also blocked in remote-access.js): no remote settings, saved passwords or login forms
-        if(isRemoteReq(req)&&(path.startsWith('/remote')||path.startsWith('/sites')&&req.method!=='GET'||/^\/tasks\/\d+\/login$/.test(path)))
+        if(isRemoteReq(req)&&(path.startsWith('/remote')||path==='/update'||path.startsWith('/sites')&&req.method!=='GET'||/^\/tasks\/\d+\/login$/.test(path)))
           return json(res,403,{error:'Việc này chỉ làm được trên chính máy chạy app.'});
         try{
           if(path==='/remote'){
@@ -1105,6 +1159,14 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             }
           }
           if(req.method==='GET'&&path==='/status')return json(res,200,await status(req));
+          // Claude Code / Codex update: {engine} installs it (hidden window), {skip:engine} stops asking for this version, {check:true} looks again
+          if(req.method==='POST'&&path==='/update'){
+            const b=await readBody(req);await ensureBin();await ensureCodex();
+            if(b.check)await updater.check(true);
+            if(b.skip==='claude'||b.skip==='codex'){const v=updater.view().engines[b.skip].latest;if(v){(config.aiUpdateSkip??={})[b.skip]=v;saveConfig()}}
+            if(b.engine==='claude'||b.engine==='codex')updater.install(b.engine);
+            return json(res,200,await status(req));
+          }
           if(req.method==='POST'&&path==='/check'){await ensureBin();return json(res,200,{check:await check(),status:await status(req)})}
           if(req.method==='POST'&&path==='/config'){
             const b=await readBody(req);
@@ -1118,6 +1180,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             if(b.mode!==undefined){if(!MODES[b.mode])return json(res,400,{error:'Chế độ quyền không hợp lệ.'});config.mode=b.mode}
             if(b.browserVisible!==undefined)config.browserVisible=!!b.browserVisible;
             if(b.autoSwitch!==undefined)config.autoSwitch=!!b.autoSwitch;
+            if(b.aiUpdate!==undefined){
+              if(isRemoteReq(req))return json(res,403,{error:'Cài đặt cập nhật AI chỉ đổi được trên chính máy chạy app.'});
+              if(!UPDATE_MODES[b.aiUpdate])return json(res,400,{error:'Chế độ cập nhật không hợp lệ.'});config.aiUpdate=b.aiUpdate;updater.check().catch(()=>{});
+            }
             // which agents may run commands without asking: only from this machine, never through remote access
             if(b.agentAuto&&typeof b.agentAuto==='object'){
               if(isRemoteReq(req))return json(res,403,{error:'Quyền tự chạy lệnh của AI chỉ đổi được trên chính máy chạy app.'});
@@ -1130,7 +1196,13 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             if(b.clearLimit==='claude'||b.clearLimit==='codex')delete config.aiLimits?.[b.clearLimit];
             if(b.teamKits&&typeof b.teamKits==='object')for(const [team,list] of Object.entries(b.teamKits).slice(0,40))
               if(team.length<=40&&Array.isArray(list))(config.teamKits??={})[team]=list.filter(k=>TOOLKITS[k]);
-            if(b.agent!==undefined){if(!/^[a-z0-9_-]{1,40}$/i.test(b.agent)||!ENGINES[b.engine])return json(res,400,{error:'Agent hoặc công cụ không hợp lệ.'});config.agentEngines[b.agent]=b.engine}
+            if(b.agent!==undefined){if(!/^[a-z0-9_-]{1,40}$/i.test(b.agent)||!ENGINES[b.engine])return json(res,400,{error:'Agent hoặc công cụ không hợp lệ.'});config.agentEngines[b.agent]=b.engine;
+              // models it may use ([] = the recommended ones) and its highest reasoning effort (none = no cap)
+              if(Array.isArray(b.models)||b.maxEffort!==undefined){
+                const models=(Array.isArray(b.models)?b.models:[]).filter(m=>MODELS[m]&&enginesOf({engine:b.engine}).includes(MODELS[m].engine)).slice(0,30);
+                const ai={...(models.length?{models}:{}),...(EFFORTS[b.maxEffort]?{maxEffort:b.maxEffort}:{})};
+                config.agentAI??={};if(Object.keys(ai).length)config.agentAI[b.agent]=ai;else delete config.agentAI[b.agent];
+              }}
             saveConfig();return json(res,200,await status(req));
           }
           if(req.method==='GET'&&path==='/tasks')return json(res,200,{tasks:tasks.map(view)});

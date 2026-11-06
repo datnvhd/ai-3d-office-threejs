@@ -2,20 +2,35 @@
 // `codex login` opens the ChatGPT sign-in page and stores credentials in Codex's own home (~/.codex);
 // this server never reads or forwards them. Tasks run with `codex exec --json` (see codexExec below).
 import {spawn,execFile} from 'node:child_process';
-import {existsSync,readdirSync} from 'node:fs';
+import {existsSync,readdirSync,realpathSync} from 'node:fs';
 import {homedir,tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {killTree,reapGroup,NODE_ENV} from './claude-bridge.js';
 import {isRemoteReq} from './remote-access.js';
+import {cliGen} from './ai-updates.js';
 
 const isWin=process.platform==='win32';
 const LOGIN_TIMEOUT=10*60*1000;
 const URL_RE=/https:\/\/auth\.openai\.com\/\S+/;
 const stripAnsi=s=>s.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g,'');
 
+// An npm install's codex.js only finds the native codex.exe of its platform package and spawns it with two env vars.
+// The desktop app runs .js files with Electron, which has no console: a console program it spawns without windowsHide
+// (as codex.js does) gets its own visible cmd window. So the app starts that codex.exe itself, hidden, with the same env.
+const TRIPLES={'win32 x64':'x86_64-pc-windows-msvc','win32 arm64':'aarch64-pc-windows-msvc','darwin x64':'x86_64-apple-darwin','darwin arm64':'aarch64-apple-darwin','linux x64':'x86_64-unknown-linux-musl','linux arm64':'aarch64-unknown-linux-musl'};
+const nativeRoot=new Map();// native binary → its @openai/codex package folder
+function nativeOf(js){
+  const triple=TRIPLES[`${process.platform} ${process.arch}`];if(!triple)return null;
+  let root;try{root=realpathSync(join(dirname(js),'..'))}catch{return null}
+  const pkg=`codex-${process.platform}-${process.arch}`,exe=isWin?'codex.exe':'codex';
+  const p=[join(root,'node_modules','@openai',pkg),join(dirname(root),pkg),root].map(d=>join(d,'vendor',triple,'bin',exe)).find(existsSync);
+  if(p)nativeRoot.set(p,root);
+  return p||null;
+}
+export function findCodexBinary(){const b=findCodexEntry();return b?.endsWith('.js')?nativeOf(b)||b:b}
 // Native binary first; an npm .cmd shim is resolved to its codex.js (run with node),
 // since Node cannot spawn .cmd files without a shell
-export function findCodexBinary(){
+function findCodexEntry(){
   if(process.env.CODEX_BIN&&existsSync(process.env.CODEX_BIN))return process.env.CODEX_BIN;
   const dirs=(process.env.PATH||'').split(isWin?';':':').filter(Boolean);
   for(const n of isWin?['codex.exe','codex.cmd']:['codex'])for(const dir of dirs){
@@ -48,7 +63,8 @@ export function findCodexBinary(){
 const versionKey=v=>v.split(/[.-]/).map(n=>n.padStart(6,'0')).join('.');
 // [command, args] for spawning the binary
 const cmd=(bin,args)=>bin.endsWith('.js')?[process.execPath,[bin,...args]]:[bin,args];
-const envFor=bin=>bin.endsWith('.js')?{...process.env,...NODE_ENV}:process.env;
+// a native binary from an npm install gets the env codex.js would give it (Codex uses it to say how to update)
+const envFor=bin=>bin.endsWith('.js')?{...process.env,...NODE_ENV}:nativeRoot.has(bin)?{...process.env,CODEX_MANAGED_PACKAGE_ROOT:nativeRoot.get(bin),CODEX_MANAGED_BY_NPM:'1'}:process.env;
 
 export function codexRun(bin,args,timeout=30000){
   return new Promise(resolve=>{
@@ -75,7 +91,9 @@ export async function codexAuth(bin){
 export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,timeout,resume}){
   // On Windows the default workspace-write sandbox still blocks every write; Codex's Windows sandbox lets it write in the workspace
   const win=process.platform==='win32'&&sandbox==='workspace-write'?['--enable','experimental_windows_sandbox']:[];
-  const args=resume?['exec','resume','--json','--skip-git-repo-check','-c',`sandbox_mode=${sandbox}`,...win,...extra,resume,'-']:['exec','--json','--skip-git-repo-check','-s',sandbox,...win,'-C',cwd,...extra,'-'];
+  // no update check: the app updates Codex itself (server/ai-updates.js)
+  const noUpd=['-c','check_for_update_on_startup=false'];
+  const args=resume?['exec','resume','--json','--skip-git-repo-check',...noUpd,'-c',`sandbox_mode=${sandbox}`,...win,...extra,resume,'-']:['exec','--json','--skip-git-repo-check',...noUpd,'-s',sandbox,...win,'-C',cwd,...extra,'-'];
   const child=spawn(...cmd(bin,args),{cwd,env:envFor(bin),windowsHide:true,detached:!isWin});// own process group: see killTree
   const done=new Promise(res=>{
     let buf='',stderr='',message=null,usage=null,error=null,timedOut=false;
@@ -95,12 +113,12 @@ export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,ti
 }
 
 export function codexBridge(){
-  let bin=null,binChecked=false,version=null;
+  let bin=null,binChecked=false,version=null,gen=-1;
   let login={state:'idle'};// idle | starting | waiting | success | error
   let proc=null,timer=null,lastTest=null;
 
   async function ensureBin(){
-    if(!binChecked){bin=findCodexBinary();binChecked=true;if(bin)version=(await codexRun(bin,['--version'])).stdout.trim()||null}
+    if(!binChecked||gen!==cliGen()){gen=cliGen();bin=findCodexBinary();binChecked=true;version=bin?(await codexRun(bin,['--version'])).stdout.trim()||null:null}
     return bin;
   }
   function stopLogin(){clearTimeout(timer);killTree(proc);proc=null}

@@ -199,6 +199,12 @@
 .agent-form input:focus,.agent-form textarea:focus,.agent-form select:focus{border-color:#ee996f}
 .agent-look{display:flex;gap:12px;align-items:flex-end}.agent-look label:first-child{flex:1}
 .agent-form input[type=color]{display:block;margin-top:6px;width:52px;height:40px;border:1px solid #475363;border-radius:10px;background:#151b26;padding:3px}
+.ai-pick{border:1px solid #475363;border-radius:12px;padding:6px 12px 12px;margin:14px 0 0}
+.ai-pick legend{font-size:12px;color:#ee996f;font-weight:700;padding:0 6px}
+.ai-engines{display:flex;flex-wrap:wrap;gap:6px 16px}.ai-engines label,.agent-form label.ai-model{display:inline-flex;align-items:center;gap:6px;margin:8px 14px 0 0;color:#e6ebf3;cursor:pointer}
+.agent-form .ai-pick input[type=radio],.agent-form .ai-pick input[type=checkbox]{display:inline-block;width:auto;margin:0;accent-color:#ee996f}
+.ai-models{margin-top:10px}.ai-models b{display:block;font-size:12px;color:#bbc4d3;font-weight:600}.ai-models small{color:#8f9bb0}
+.modeltag.m-luna{background:#fff4dc;color:#9a6500}.modeltag.m-sol,.modeltag.m-terra{background:#e2f6f6;color:#0f7470}.modeltag.m-astra{background:#ffe7e3;color:#b23a26}
 .agent-note{font-size:12px!important;color:#9aa6bb!important;margin:12px 0 0}
 /* Many agents: the picker scrolls instead of pushing the task box down */
 .agent-pick{max-height:168px;overflow-y:auto;padding-right:4px;scrollbar-width:thin}

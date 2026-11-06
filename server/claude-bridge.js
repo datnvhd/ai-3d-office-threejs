@@ -7,6 +7,7 @@ import {homedir,tmpdir} from 'node:os';
 import {join} from 'node:path';
 import pty from '@lydell/node-pty';
 import {isRemoteReq} from './remote-access.js';
+import {cliGen} from './ai-updates.js';
 
 export const STORE_DIR=join(homedir(),'.ai-3d-office');
 const STORE_FILE=join(STORE_DIR,'claude-auth.json');
@@ -22,7 +23,8 @@ const mask=t=>t?`${t.slice(0,13)}…${t.slice(-4)}`:null;
 export function cleanEnv(extra={}){
   const env={...process.env};
   for(const k of Object.keys(env))if(k==='CLAUDECODE'||k.startsWith('CLAUDE_CODE_')||k==='ANTHROPIC_API_KEY'||k==='ANTHROPIC_AUTH_TOKEN')delete env[k];
-  return {...env,...extra};
+  // the app updates Claude Code itself (server/ai-updates.js): its own updater opens a cmd window on Windows
+  return {...env,DISABLE_AUTOUPDATER:'1',...extra};
 }
 
 // Extra env for running a .js file with process.execPath: in the desktop app that is Electron, which acts as Node only with this
@@ -103,12 +105,12 @@ export function killTree(p){
 }
 
 export function claudeBridge(){
-  let bin=null,binChecked=false,version=null;
+  let bin=null,binChecked=false,version=null,gen=-1;
   let login={state:'idle'};// idle | starting | waiting | verifying | success | error
   let proc=null,buffer='',timer=null,browser=null,profile=null,retrying=false;
 
   async function ensureBin(){
-    if(!binChecked){bin=findClaudeBinary();binChecked=true;if(bin)version=(await run(bin,['--version'])).stdout.trim()||null}
+    if(!binChecked||gen!==cliGen()){gen=cliGen();bin=findClaudeBinary();binChecked=true;version=bin?(await run(bin,['--version'])).stdout.trim()||null:null}
     return bin;
   }
 

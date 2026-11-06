@@ -8,24 +8,66 @@ export const MAX_STEPS=8;
 // capability rank. "auto" ones are what the Director picks from (best capability for the price); older versions are
 // only offered for manual choice, as each is weaker and/or pricier than a newer one
 export const MODELS={
-  'claude-haiku-5-5':{label:'Haiku 5.5',family:'haiku',price:[0.1,0.5],rank:4,auto:true},
-  'claude-sonnet-5-5':{label:'Sonnet 5.5',family:'sonnet',price:[2,10],rank:6,auto:true},
-  'claude-opus-5-5':{label:'Opus 5.5',family:'opus',price:[4,20],rank:7,auto:true},
-  'claude-opus-5':{label:'Opus 5',family:'opus',price:[5,25],rank:7},
-  'claude-sonnet-5':{label:'Sonnet 5',family:'sonnet',price:[2,10],rank:4},
-  'claude-opus-4-8':{label:'Opus 4.8',family:'opus',price:[5,25],rank:5},
-  'claude-opus-4-7':{label:'Opus 4.7',family:'opus',price:[5,25],rank:5},
-  'claude-opus-4-6':{label:'Opus 4.6',family:'opus',price:[5,25],rank:3},
-  'claude-sonnet-4-6':{label:'Sonnet 4.6',family:'sonnet',price:[3,15],rank:2},
-  'claude-sonnet-4-5':{label:'Sonnet 4.5',family:'sonnet',price:[3,15],rank:1},
-  'claude-haiku-4-5':{label:'Haiku 4.5',family:'haiku',price:[1,5],rank:1}
+  'claude-haiku-5-5':{label:'Haiku 5.5',engine:'claude',family:'haiku',price:[0.1,0.5],rank:4,auto:true},
+  'claude-sonnet-5-5':{label:'Sonnet 5.5',engine:'claude',family:'sonnet',price:[2,10],rank:6,auto:true},
+  'claude-opus-5-5':{label:'Opus 5.5',engine:'claude',family:'opus',price:[4,20],rank:7,auto:true},
+  'claude-opus-5':{label:'Opus 5',engine:'claude',family:'opus',price:[5,25],rank:7},
+  'claude-sonnet-5':{label:'Sonnet 5',engine:'claude',family:'sonnet',price:[2,10],rank:4},
+  'claude-opus-4-8':{label:'Opus 4.8',engine:'claude',family:'opus',price:[5,25],rank:5},
+  'claude-opus-4-7':{label:'Opus 4.7',engine:'claude',family:'opus',price:[5,25],rank:5},
+  'claude-opus-4-6':{label:'Opus 4.6',engine:'claude',family:'opus',price:[5,25],rank:3},
+  'claude-sonnet-4-6':{label:'Sonnet 4.6',engine:'claude',family:'sonnet',price:[3,15],rank:2},
+  'claude-sonnet-4-5':{label:'Sonnet 4.5',engine:'claude',family:'sonnet',price:[3,15],rank:1},
+  'claude-haiku-4-5':{label:'Haiku 4.5',engine:'claude',family:'haiku',price:[1,5],rank:1},
+  // Codex (ChatGPT plan, `codex exec -m`): from Codex CLI's model list; usage counts against the ChatGPT plan, no per-token price
+  'gpt-6-luna':{label:'GPT-6 Luna',engine:'codex',family:'luna',rank:4,auto:true},
+  'gpt-6.1-sol':{label:'GPT-6.1 Sol',engine:'codex',family:'sol',rank:6,auto:true},
+  'gpt-6-astra':{label:'GPT-6 Astra',engine:'codex',family:'astra',rank:7,auto:true},
+  'gpt-6.1-terra':{label:'GPT-6.1 Terra',engine:'codex',family:'terra',rank:5},
+  'gpt-6-sol':{label:'GPT-6 Sol',engine:'codex',family:'sol',rank:4},
+  'gpt-5.6-sol':{label:'GPT-5.6 Sol',engine:'codex',family:'sol',rank:3},
+  'gpt-5.6-terra':{label:'GPT-5.6 Terra',engine:'codex',family:'terra',rank:2},
+  'gpt-5.6-luna':{label:'GPT-5.6 Luna',engine:'codex',family:'luna',rank:1}
 };
 // Newest model of each family: the fallback when a pinned version is not available, and what old family aliases meant
-export const LATEST={haiku:'claude-haiku-5-5',sonnet:'claude-sonnet-5-5',opus:'claude-opus-5-5'};
+export const LATEST={haiku:'claude-haiku-5-5',sonnet:'claude-sonnet-5-5',opus:'claude-opus-5-5',luna:'gpt-6-luna',sol:'gpt-6.1-sol',astra:'gpt-6-astra',terra:'gpt-6.1-terra'};
 export const modelId=m=>MODELS[m]?m:LATEST[m]||null;
 export const modelLabel=m=>MODELS[modelId(m)]?.label||'';
-// Reasoning effort (`claude --effort`); low costs about half of high, xhigh about double
+// Reasoning effort (`claude --effort`, Codex `model_reasoning_effort`); low costs about half of high, xhigh about double
 export const EFFORTS={low:'Thấp',medium:'Vừa',high:'Cao',xhigh:'Rất cao',max:'Tối đa'};
+const EFFORT_ORDER=Object.keys(EFFORTS);
+
+// ---------- Which AI each agent may use ----------
+// Per agent (machine.json agentEngines + agentAI): engine 'claude' | 'codex' | 'both', the models it may use
+// ([] = the recommended ones) and the highest reasoning effort a task may get.
+export const ENGINE_NAMES={claude:'Claude Code',codex:'Codex (ChatGPT)',both:'Claude + Codex'};
+// Difficulty tier → recommended model of each engine
+export const TIER={claude:{easy:'claude-haiku-5-5',normal:'claude-sonnet-5-5',hard:'claude-opus-5-5'},codex:{easy:'gpt-6-luna',normal:'gpt-6.1-sol',hard:'gpt-6-astra'}};
+const TIER_OF={haiku:'easy',luna:'easy',sonnet:'normal',sol:'normal',terra:'normal',opus:'hard',astra:'hard'};
+export const tierOf=m=>TIER_OF[MODELS[modelId(m)]?.family]||'normal';
+export const engineOfModel=m=>MODELS[modelId(m)]?.engine||null;
+// The same-tier model on another engine (a Claude task moved to Codex, or the other way round)
+export const sameTier=(m,engine)=>engineOfModel(m)===engine?modelId(m):TIER[engine][tierOf(m)];
+export const enginesOf=ai=>ai?.engine==='both'?['claude','codex']:[ai?.engine==='codex'?'codex':'claude'];
+export function allowedModels(ai,engine){
+  const all=Object.keys(MODELS).filter(m=>MODELS[m].engine===engine);
+  return ai?.models?.length?all.filter(m=>ai.models.includes(m)):all.filter(m=>MODELS[m].auto);
+}
+export const capEffort=(effort,max)=>EFFORTS[effort]&&EFFORTS[max]&&EFFORT_ORDER.indexOf(effort)>EFFORT_ORDER.indexOf(max)?max:effort;
+// Fits a {model, effort} pick to what the agent may use: its engine(s) (prefer = engine to try first when it may use both),
+// an allowed model of the same difficulty (else the closest in strength) and at most its highest effort. Returns {engine, model, effort}.
+export function fitModel(ai,pick,prefer){
+  const engines=enginesOf(ai).filter(e=>allowedModels(ai,e).length);if(!engines.length)engines.push(enginesOf(ai)[0]);
+  const want=engineOfModel(pick.model);
+  const engine=engines.includes(want)?want:engines.includes(prefer)?prefer:engines[0];
+  let list=allowedModels(ai,engine);if(!list.length)list=allowedModels(null,engine);
+  const target=sameTier(pick.model||TIER.claude.normal,engine);
+  const model=list.includes(target)?target:[...list].sort((a,b)=>Math.abs(MODELS[a].rank-MODELS[target].rank)-Math.abs(MODELS[b].rank-MODELS[target].rank)||MODELS[b].rank-MODELS[a].rank)[0];
+  return {engine,model,effort:capEffort(pick.effort,ai?.maxEffort)||null};
+}
+// One line for the planner: which AI an agent uses
+const aiLine=a=>{const ai=a.ai;if(!ai)return '';const ms=enginesOf(ai).flatMap(e=>allowedModels(ai,e));
+  return ` · AI: ${ENGINE_NAMES[ai.engine]||ENGINE_NAMES.claude} · model được dùng: ${ms.join(', ')}${ai.maxEffort?` · effort tối đa: ${ai.maxEffort}`:''}`};
 
 const plain=s=>String(s||'').toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g,'').replace(/đ/g,'d');
 
@@ -78,7 +120,8 @@ export function ruleSteps(text,owner,team){
   // Nothing matched: the agent the user picked does it (devs still get a test step)
   if(!s.length){const o=add(owner,'Thực hiện',text);if(['frontend','backend'].includes(owner))add('qa','Kiểm thử',`Kiểm thử kết quả: ${text}`,[o])}
   const taken=new Set();
-  for(const x of s){const kind=/duyệt|tổng hợp/i.test(x.title)?'review':x.model===LATEST.opus?'hard':x.model===LATEST.haiku?'easy':'normal';x.agent=staff(team,x.agent,kind,taken)}
+  for(const x of s){const kind=/duyệt|tổng hợp/i.test(x.title)?'review':x.model===LATEST.opus?'hard':x.model===LATEST.haiku?'easy':'normal';x.agent=staff(team,x.agent,kind,taken);
+    Object.assign(x,fitModel(team.find(a=>a.id===x.agent)?.ai,x))}
   return s.slice(0,MAX_STEPS);
 }
 
@@ -88,7 +131,7 @@ export function planPrompt(text,owner,team){
 Hãy lập LUỒNG CÔNG VIỆC: chia yêu cầu thành các bước, mỗi bước giao cho đúng một agent phù hợp, theo thứ tự phụ thuộc.
 
 Đội ngũ (id · tên · vai trò):
-${team.map(a=>`- ${a.id} · ${a.name} · ${a.role} · đội ${teamOf(a)} · ${LEVELS[levelOf(a)]}${a.desc?` · mô tả: ${String(a.desc).replace(/\s+/g,' ').slice(0,300)}`:''}`).join('\n')}
+${team.map(a=>`- ${a.id} · ${a.name} · ${a.role} · đội ${teamOf(a)} · ${LEVELS[levelOf(a)]}${aiLine(a)}${a.desc?` · mô tả: ${String(a.desc).replace(/\s+/g,' ').slice(0,300)}`:''}`).join('\n')}
 
 Quy tắc:
 - Chỉ dùng các agent liên quan; tối đa ${MAX_STEPS} bước. Việc đơn giản chỉ cần 1–2 bước.
@@ -101,10 +144,16 @@ Quy tắc:
 - Ví dụ: "Sửa lỗi không đăng nhập được" → frontend/backend sửa lỗi → qa kiểm thử lại.
 - Ví dụ: "Phân tích doanh thu quý" → analyst phân tích → director tổng hợp & duyệt.
 - Bước nào cũng được TRẢ LẠI bước trước để sửa khi chưa đạt (hệ thống tự lặp: sửa → kiểm tra lại, tối đa ${MAX_REWORK} lần mỗi bước). Vì vậy với việc cần chất lượng, đặt bước qa kiểm thử hoặc director duyệt sau bước làm, và ghi rõ tiêu chí đạt trong "task" của bước kiểm tra đó.
-- Chọn "model" và "effort" cho TỪNG bước: tổ hợp rẻ nhất mà vẫn làm tốt bước đó. Giá: USD cho 1 triệu token vào/ra.
+- Chọn "model" và "effort" cho TỪNG bước: tổ hợp rẻ nhất mà vẫn làm tốt bước đó. Mỗi agent dùng Claude, Codex hoặc cả hai (xem "AI" và "model được dùng" của agent): CHỈ chọn model trong danh sách được dùng của agent nhận bước đó và không vượt "effort tối đa". Agent dùng cả hai thì chọn bên hợp việc hơn (ví dụ Codex cho code/thiết kế ảnh, Claude cho phân tích/viết), hoặc chia các bước song song cho cả hai để giảm tải hạn mức.
+  Claude (giá USD cho 1 triệu token vào/ra):
   · "claude-haiku-5-5" (0,1/0,5, rẻ nhất, nhanh): việc đơn giản, máy móc: dịch, chính tả, định dạng, tóm tắt, trích thông tin có sẵn, tra một giá trị, điền form theo dữ liệu cho trước.
   · "claude-sonnet-5-5" (2/10): phần lớn công việc: tra cứu và phân tích giá/thị trường, nghiên cứu, so sánh, phân tích dữ liệu, tổng hợp báo cáo, thao tác web nhiều bước, viết code, sửa lỗi thông thường, viết và chạy test, duyệt thiết kế.
   · "claude-opus-5-5" (4/20, mạnh nhất): cần suy luận sâu: kiến trúc hoặc thiết kế hệ thống, bảo mật, lỗi khó tìm nguyên nhân, thuật toán phức tạp, quyết định rủi ro cao.
+  Codex (tính vào hạn mức gói ChatGPT, cùng ba mức độ khó):
+  · "gpt-6-luna" (nhanh, tiết kiệm): việc đơn giản như Haiku.
+  · "gpt-6.1-sol" (mô hình chính cho code và việc hằng ngày): việc thông thường như Sonnet.
+  · "gpt-6-astra" (mạnh nhất): việc khó như Opus.
+  Các model khác trong danh sách được dùng của agent (bản cũ hơn) chỉ chọn khi agent không có model khuyên dùng phù hợp.
   · "effort" là mức suy luận: "low" việc máy móc, "medium" việc thông thường, "high" việc cần cân nhắc kỹ, "xhigh" bài khó nhiều bước suy luận. Effort tăng chi phí đáng kể (low khoảng một nửa high, xhigh khoảng gấp đôi high). Với việc chỉ khó vừa phải, tăng effort trước khi chuyển lên model đắt hơn.
   · "why": một câu ngắn nêu lý do chọn model và effort đó.
 
@@ -125,7 +174,7 @@ export function parsePlan(raw,team){
     const key=String(x?.key||'').slice(0,20);
     if(!key||keys.has(key)||!team.some(a=>a.id===x.agent)||!String(x.task||'').trim())return null;
     // An unknown model falls back to the keyword pick; max effort is never chosen automatically
-    const id=modelId(x.model),pick=id?{model:id,effort:EFFORTS[x.effort]&&x.effort!=='max'?x.effort:null}:pickModel(x.task);
+    const id=modelId(x.model),pick=fitModel(team.find(a=>a.id===x.agent).ai,id?{model:id,effort:EFFORTS[x.effort]&&x.effort!=='max'?x.effort:null}:pickModel(x.task));
     steps.push({key,agent:x.agent,title:String(x.title||'Bước '+(steps.length+1)).slice(0,80),task:String(x.task).slice(0,4000),...pick,why:id?String(x.why||'').slice(0,160):'Chọn theo từ khóa',after:(Array.isArray(x.after)?x.after:[]).map(String).filter(k=>keys.has(k))});
     keys.add(key);
   }
