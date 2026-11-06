@@ -107,6 +107,15 @@ export function killTree(p){
   }
 }
 
+// The sign-in code is "<code>#<state>" (letters, digits, - and _). Copied from a terminal (Windows Terminal on
+// Windows 11 copies the whole line) it can carry Claude Code's prompt "Paste code here if prompted >" or other text
+// around it: keep only the code#state part.
+export function cleanCode(code){
+  const s=typeof code==='string'?code.replace(/paste\s*code\s*here\s*if\s*prompted\s*>?/gi,' ').trim():'';
+  const pair=s.match(/[A-Za-z0-9_-]{10,}#[A-Za-z0-9_-]{10,}/);
+  return pair?pair[0]:s.replace(/\s+/g,'');
+}
+
 export function claudeBridge(){
   let bin=null,binChecked=false,version=null,gen=-1;
   let login={state:'idle'};// idle | starting | waiting | verifying | success | error
@@ -222,7 +231,7 @@ export function claudeBridge(){
             const {code}=await readBody(req);
             if(!proc||login.state!=='waiting')return json(res,409,{error:'Không có phiên đăng nhập đang chờ mã.'});
             // a code copied across lines or with spaces still counts; anything else is not a code
-            const clean=typeof code==='string'?code.replace(/\s+/g,''):'';
+            const clean=cleanCode(code);
             if(!/^[\w#.\-]{10,600}$/.test(clean))return json(res,400,{error:'Mã xác thực không đúng định dạng: hãy bấm "Copy Code" trên trang đăng nhập rồi dán lại.'});
             if(retrying)return json(res,409,{error:'Đang mở lại trang đăng nhập sau lần mã bị từ chối: đợi vài giây, đăng nhập trên trang mới rồi dán mã mới.'});
             // Code and Enter in one write are taken as a paste and never submitted: send Enter separately
