@@ -15,7 +15,7 @@ Open the local Vite address shown in your terminal.
 
 ```bash
 npm run app    # build, then open the office in an Electron window
-npm run dist   # build release/AI 3D Office Setup <version>.exe (or GitHub Actions: build-windows)
+npm run dist   # build release/AI-3D-Office-<version>-windows-x64-setup.exe (or GitHub Actions)
 ```
 
 The installer bundles Electron (and its Node), so the other machine does not need Node.js or `npm install`. It still needs the **Claude Code CLI** (on `PATH`, `~/.local/bin` or the VS Code extension), **Chrome or Edge** for sign-in and web tasks, and optionally **Codex CLI**. Each machine signs in with its own account in the app; data goes to that user's `~/.ai-3d-office` as in dev (do not copy it between machines: it holds the token).
@@ -25,13 +25,13 @@ The installer bundles Electron (and its Node), so the other machine does not nee
 ### Ubuntu (22.04 and later)
 
 ```bash
-npm run dist:linux   # needs Docker; writes release/ai-3d-office_<version>_amd64.deb (or GitHub Actions: build-linux)
+npm run dist:linux   # needs Docker; writes release/ai-3d-office_<version>_ubuntu_amd64.deb (or GitHub Actions)
 ```
 
 `scripts/build-linux.js` copies the sources into a `node:22-bookworm` container and installs the dependencies there, so the native modules (node-pty, esbuild, rollup) are the Linux ones; it works from Windows too. On the Ubuntu machine:
 
 ```bash
-sudo apt install ./ai-3d-office_1.0.0_amd64.deb   # pulls in the libraries it needs
+sudo apt install ./ai-3d-office_1.0.0_ubuntu_amd64.deb   # pulls in the libraries it needs
 ai-3d-office                                       # or "AI 3D Office" in the app menu
 ```
 
@@ -40,11 +40,11 @@ Tested on clean Ubuntu 22.04 and 24.04 containers. The package declares `libgbm1
 ### macOS (12 Monterey and later, Apple Silicon and Intel)
 
 ```bash
-npm run dist:mac            # on a Mac: release/AI 3D Office-<version>-mac-<arm64|x64>.dmg for this Mac's chip
+npm run dist:mac            # on a Mac: release/AI-3D-Office-<version>-macos-<arm64|x64>.dmg for this Mac's chip
 npm run dist:mac -- --ci    # from any OS: GitHub Actions builds both chips (needs gh signed in, branch pushed)
 ```
 
-A `.dmg` can only be built on macOS, and `npm ci` installs the native modules (node-pty, esbuild, rollup) of the Mac's own chip, so each chip is built on its own machine. `.github/workflows/build-mac.yml` does that on `macos-15` (arm64) and `macos-15-intel` (x64), then starts the packaged app with `AI_OFFICE_SELFTEST=1` (serves the page and the machine API, prints them, quits) before keeping the dmg as the run's artifact (`gh run download --name ai-3d-office-mac-arm64`). It also runs on tags `v*`.
+A `.dmg` can only be built on macOS, and `npm ci` installs the native modules (node-pty, esbuild, rollup) of the Mac's own chip, so each chip is built on its own machine. `.github/workflows/build-mac.yml` does that on `macos-15` (arm64) and `macos-15-intel` (x64), then starts the packaged app with `AI_OFFICE_SELFTEST=1` (serves the page and the machine API, prints them, quits) before keeping the dmg as the run's artifact (`gh run download --name ai-3d-office-macos-arm64`). It also runs on tags `v*`.
 
 Signing (`scripts/build-mac.js`): with a **Developer ID Application** certificate (in the keychain, or `CSC_LINK`/`CSC_KEY_PASSWORD`; in CI the secrets `MAC_CERT_P12_BASE64`/`MAC_CERT_PASSWORD`) the app is signed with the hardened runtime (`electron/entitlements.mac.plist`: JIT, unsigned native modules and child CLIs), and notarized when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are set. Without a certificate it is signed ad-hoc: it runs, but Gatekeeper blocks the first open of a downloaded copy. Right-click the app → **Open** (macOS 15: System Settings → Privacy & Security → **Open Anyway**), or `xattr -dr com.apple.quarantine "/Applications/AI 3D Office.app"`.
 
@@ -226,8 +226,8 @@ Three workflows build the installers on GitHub's own machines, start the package
 
 | Workflow | Runner | File | Check |
 |---|---|---|---|
-| `build-windows` | windows-latest | `AI 3D Office Setup <version>.exe` (x64) | unpacked app self-test |
-| `build-linux` | ubuntu-22.04 | `ai-3d-office_<version>_amd64.deb` | installed with apt on a clean Ubuntu 24.04 runner, then self-test under Xvfb |
-| `build-mac` | macos-15, macos-15-intel | `AI 3D Office-<version>-mac-<arm64\|x64>.dmg` | codesign verify + self-test |
+| Windows installer (.exe) | windows-latest | `AI-3D-Office-<version>-windows-x64-setup.exe` | unpacked app self-test (waits for the app only, not daemons such as adb) |
+| Ubuntu installer (.deb) | ubuntu-22.04 | `ai-3d-office_<version>_ubuntu_amd64.deb` | installed with apt on a clean Ubuntu 24.04 runner, then self-test under Xvfb |
+| macOS installer (.dmg) | macos-15, macos-15-intel | `AI-3D-Office-<version>-macos-<arm64|x64>.dmg` |\|x64>.dmg` | codesign verify + self-test |
 
 All three run on a pushed tag `v*` (e.g. `git tag v1.0.1 && git push origin v1.0.1`), and from the Actions tab (**Run workflow**) once the files are on the default branch.

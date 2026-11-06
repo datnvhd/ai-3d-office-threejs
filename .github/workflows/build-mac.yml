@@ -2,13 +2,14 @@
 # Start it from the Actions tab, with `npm run dist:mac -- --ci`, or by pushing a tag v*.
 # Optional secrets for a signed + notarized app: MAC_CERT_P12_BASE64, MAC_CERT_PASSWORD (Developer ID Application),
 # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID. Without them the app is signed ad-hoc.
-name: build-mac
+name: macOS installer (.dmg)
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
 jobs:
   dmg:
+    name: macOS ${{ matrix.arch == 'arm64' && 'Apple Silicon (arm64)' || 'Intel (x64)' }}
     strategy:
       fail-fast: false
       matrix:
@@ -38,6 +39,6 @@ jobs:
           grep -q '"page":200' selftest.txt
       - uses: actions/upload-artifact@v4
         with:
-          name: ai-3d-office-mac-${{ matrix.arch }}
+          name: ai-3d-office-macos-${{ matrix.arch }}
           path: release/*.dmg
           if-no-files-found: error

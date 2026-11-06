@@ -1,13 +1,15 @@
 # Windows installer (NSIS .exe, x64), built on a Windows runner so the native modules are the Windows ones.
 # Start it from the Actions tab (once this file is on the default branch) or by pushing a tag v*.
-name: build-windows
+name: Windows installer (.exe)
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
 jobs:
   exe:
+    name: Windows x64
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -17,11 +19,15 @@ jobs:
       - run: npx electron-builder --win nsis --x64 --publish never
       - name: Self-test the packaged app
         shell: pwsh
+        timeout-minutes: 5
         run: |
           $exe = Get-ChildItem release/win-unpacked -Filter '*.exe' | Where-Object Name -notmatch 'Uninstall' | Select-Object -First 1
           Write-Host "App: $($exe.FullName)"
           $env:AI_OFFICE_SELFTEST = '1'
-          $p = Start-Process -FilePath $exe.FullName -RedirectStandardOutput selftest.txt -RedirectStandardError selftest.err -PassThru -Wait
+          # wait for the app itself only: Start-Process -Wait would also wait for daemons it started (adb on this runner)
+          $p = Start-Process -FilePath $exe.FullName -RedirectStandardOutput selftest.txt -RedirectStandardError selftest.err -PassThru
+          $null = $p.Handle
+          if (-not $p.WaitForExit(180000)) { Stop-Process -Id $p.Id -Force; throw 'self-test timed out' }
           Get-Content selftest.txt; Get-Content selftest.err -Tail 20
           if ($p.ExitCode -ne 0 -or -not (Select-String -Path selftest.txt -Pattern '"page":200' -Quiet)) { throw "self-test failed ($($p.ExitCode))" }
       - uses: actions/upload-artifact@v4

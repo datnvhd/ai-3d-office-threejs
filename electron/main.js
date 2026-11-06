@@ -30,6 +30,8 @@ if(process.platform!=='win32'){
 }
 // AI_OFFICE_SELFTEST=1: start the server, check the page and the machine API answer, print the result and quit (CI)
 const SELFTEST=!!process.env.AI_OFFICE_SELFTEST;
+// never hang a CI job: give up after 2 minutes
+if(SELFTEST)setTimeout(()=>{console.error('SELFTEST: quá 2 phút, dừng.');app.exit(2)},120000).unref();
 
 let win=null,server=null;
 if(!app.requestSingleInstanceLock())app.quit();
@@ -39,7 +41,10 @@ else{
     try{
       server=await preview({configFile:false,root:ROOT,logLevel:'warn',plugins:[claudeBridge(),codexBridge(),machineBridge()],
         build:{outDir:'dist'},preview:{host:'127.0.0.1',port:PORT,open:false}});
-    }catch(e){dialog.showErrorBox('AI 3D Office',`Không khởi động được server: ${e?.message||e}`);app.quit();return}
+    }catch(e){
+      // a modal error box would block a CI self-test forever: print it instead
+      if(SELFTEST){console.error('SELFTEST: không khởi động được server:',e?.message||e);app.exit(1);return}
+      dialog.showErrorBox('AI 3D Office',`Không khởi động được server: ${e?.message||e}`);app.quit();return}
     const url=server.resolvedUrls.local[0],origin=new URL(url).origin;
     if(SELFTEST){
       let code=0;

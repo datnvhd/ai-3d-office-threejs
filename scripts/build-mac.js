@@ -17,7 +17,7 @@ if(args.includes('--ci')){
   const ref=(spawnSync('git',['rev-parse','--abbrev-ref','HEAD'],{encoding:'utf8'}).stdout||'main').trim();
   console.log(`Chạy GitHub Actions "build-mac" trên nhánh ${ref} (cần gh đã đăng nhập và nhánh đã được push)…`);
   const s=run('gh',['workflow','run','build-mac.yml','--ref',ref]);
-  if(s===0)console.log('Đã gửi. Xem tiến độ: gh run watch · tải file: gh run download --name ai-3d-office-mac-arm64 (hoặc -x64)');
+  if(s===0)console.log('Đã gửi. Xem tiến độ: gh run watch · tải file: gh run download --name ai-3d-office-macos-arm64 (hoặc -x64)');
   process.exit(s);
 }
 if(process.platform!=='darwin'){

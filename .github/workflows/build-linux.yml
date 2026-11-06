@@ -1,13 +1,14 @@
 # Ubuntu installer (.deb, x64). Built on Ubuntu 22.04 (the oldest supported), then installed with apt on a clean
 # Ubuntu 24.04 runner and started there, so both the package's dependencies and the app are checked.
 # Start it from the Actions tab (once this file is on the default branch) or by pushing a tag v*.
-name: build-linux
+name: Ubuntu installer (.deb)
 on:
   workflow_dispatch:
   push:
     tags: ['v*']
 jobs:
   deb:
+    name: Ubuntu x64 (build on 22.04)
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v5
@@ -22,13 +23,14 @@ jobs:
           path: release/*.deb
           if-no-files-found: error
   install-test:
+    name: Ubuntu 24.04 (apt install + self-test)
     needs: deb
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
         with: {name: ai-3d-office-ubuntu-amd64}
       - name: Install with apt
-        run: sudo apt-get update -qq && sudo apt-get install -y -qq ./ai-3d-office_*_amd64.deb xvfb
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ./ai-3d-office_*_ubuntu_amd64.deb xvfb
       - name: Self-test the installed app
         run: |
           which ai-3d-office

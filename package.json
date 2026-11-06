@@ -36,12 +36,12 @@
     "asar": false,
     "npmRebuild": false,
     "win": {"target": [{"target": "nsis", "arch": ["x64"]}]},
-    "linux": {"target": [{"target": "deb", "arch": ["x64"]}], "executableName": "ai-3d-office", "syncDesktopName": true,"category": "Development", "maintainer": "TriNam", "synopsis": "AI 3D Office", "artifactName": "${name}_${version}_${arch}.${ext}"},
+    "linux": {"target": [{"target": "deb", "arch": ["x64"]}], "executableName": "ai-3d-office", "syncDesktopName": true,"category": "Development", "maintainer": "TriNam", "synopsis": "AI 3D Office", "artifactName": "${name}_${version}_ubuntu_${arch}.${ext}"},
     "deb": {"depends": ["libgtk-3-0", "libnotify4", "libnss3", "libxss1", "libxtst6", "xdg-utils", "libatspi2.0-0", "libuuid1", "libsecret-1-0", "libgbm1", "libasound2t64 | libasound2"]},
     "mac": {"target": [{"target": "dmg", "arch": ["arm64", "x64"]}], "category": "public.app-category.developer-tools", "minimumSystemVersion": "12.0",
       "hardenedRuntime": true, "entitlements": "electron/entitlements.mac.plist", "entitlementsInherit": "electron/entitlements.mac.plist", "notarize": false,
-      "artifactName": "${productName}-${version}-mac-${arch}.${ext}"},
+      "artifactName": "AI-3D-Office-${version}-macos-${arch}.${ext}"},
     "dmg": {"title": "${productName} ${version}", "writeUpdateInfo": false},
-    "nsis": {"oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "shortcutName": "AI 3D Office"}
+    "nsis": {"artifactName": "AI-3D-Office-${version}-windows-${arch}-setup.${ext}", "oneClick": false, "perMachine": false, "allowToChangeInstallationDirectory": true, "shortcutName": "AI 3D Office"}
   }
 }
