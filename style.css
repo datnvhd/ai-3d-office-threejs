@@ -289,3 +289,27 @@
 .pv-designs label{display:flex;align-items:center;gap:5px;color:#56607d;cursor:pointer}.pv-designs input{accent-color:#f4966b}
 .pv-dacts{margin-top:10px}
 #designChip{background:#fff1e8;border-color:#f4b38e}
+/* AI staff: grid of cards / list by team (src.js renderAvatars); #avatars beats the old "#avatars{display:flex}" on line 1 */
+.side .section-title .viewsw{float:right;display:inline-flex;gap:3px;margin-top:-3px}
+.viewsw button{width:26px;height:22px;padding:0;border:1px solid #e3e6f3;border-radius:7px;background:#f4f5fc;color:#6b7390;font-size:13px;line-height:1;cursor:pointer}
+.viewsw button:hover{background:#fff}.viewsw button.on{background:#fff4ee;border-color:#f4996d;color:#c45a24}
+.agent-pick.view-grid,.agent-pick.view-list{max-height:270px}
+.agent-pick .adot{width:8px;height:8px;border-radius:50%;background:#cfd4e4;flex:none}
+.agent-pick .adot.busy{background:#2fbf71;box-shadow:0 0 0 3px #2fbf7130}
+#avatars.agent-pick.view-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.agent-pick.view-grid .acard{position:relative;flex-direction:column;justify-content:flex-start;gap:3px;padding:9px 4px 7px;border-radius:12px;text-align:center;min-width:0}
+.agent-pick.view-grid .acard i{width:34px;height:34px;font-size:15px}
+.agent-pick.view-grid .acard b:not(.adot){max-width:100%;font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-pick.view-grid .acard small{max-width:100%;font-size:9.5px;font-weight:600;color:#8a92ad;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-pick.view-grid .acard .lvl{margin:1px 0 0}
+.agent-pick.view-grid .acard .adot{position:absolute;top:7px;right:7px}
+.agent-pick.view-grid .add-agent{justify-content:center;border-radius:12px;min-height:56px}
+#avatars.agent-pick.view-list{display:flex;flex-direction:column;padding-left:0;flex-wrap:nowrap;gap:3px}
+.agent-pick.view-list .ateam{margin:7px 2px 1px;font-size:10px;font-weight:800;letter-spacing:.4px;text-transform:uppercase;color:#8a92ad}
+.agent-pick.view-list .ateam:first-child{margin-top:0}.agent-pick.view-list .ateam span{color:#b3b9cf;font-weight:700}
+.agent-pick.view-list .arow{width:100%;gap:8px;padding:5px 9px 5px 5px;border-radius:10px;text-align:left}
+.agent-pick.view-list .arow i{width:28px;height:28px;font-size:12px;flex:none}
+.agent-pick.view-list .ainfo{display:flex;flex-direction:column;flex:1;min-width:0}
+.agent-pick.view-list .ainfo b{font-size:11.5px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-pick.view-list .ainfo small{font-size:10px;font-weight:600;color:#8a92ad;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.agent-pick.view-list .add-agent{justify-content:center;border-radius:10px;margin-top:4px}
