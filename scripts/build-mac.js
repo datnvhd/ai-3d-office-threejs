@@ -40,7 +40,7 @@ const arch=args.includes('--x64')?'x64':args.includes('--arm64')?'arm64':process
 // stay for vite build; the packaged app picks the ones of the chip it runs on.
 if(arch!==process.arch){
   const lock=JSON.parse(readFileSync(new URL('../package-lock.json',import.meta.url),'utf8')).packages||{};
-  const pkgs=Object.entries(lock).filter(([k])=>k.endsWith(`-darwin-${arch}`)).map(([k,v])=>`${k.replace(/^.*node_modules\//,'')}@${v.version}`);
+  const pkgs=Object.entries(lock).filter(([k])=>new RegExp(`[-/]darwin-${arch}$`).test(k)&&!k.includes("/node_modules/",13)).map(([k,v])=>`${k.replace(/^.*node_modules\//,'')}@${v.version}`);
   console.log(`Build ${arch} trên máy ${process.arch}: cài thêm module native của ${arch}: ${pkgs.join(', ')}`);
   // `npm install` may nest them (esbuild's ended up under esbuild/node_modules): unpack each tarball at the top level
   const tmp=mkdtempSync(join(tmpdir(),'ai-office-mac-'));
