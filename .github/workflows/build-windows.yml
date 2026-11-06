@@ -1,0 +1,31 @@
+# Windows installer (NSIS .exe, x64), built on a Windows runner so the native modules are the Windows ones.
+# Start it from the Actions tab (once this file is on the default branch) or by pushing a tag v*.
+name: build-windows
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+jobs:
+  exe:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: {node-version: 22, cache: npm}
+      - run: npm ci --no-audit --no-fund
+      - run: npx vite build
+      - run: npx electron-builder --win nsis --x64 --publish never
+      - name: Self-test the packaged app
+        shell: pwsh
+        run: |
+          $exe = Get-ChildItem release/win-unpacked -Filter '*.exe' | Where-Object Name -notmatch 'Uninstall' | Select-Object -First 1
+          Write-Host "App: $($exe.FullName)"
+          $env:AI_OFFICE_SELFTEST = '1'
+          $p = Start-Process -FilePath $exe.FullName -RedirectStandardOutput selftest.txt -RedirectStandardError selftest.err -PassThru -Wait
+          Get-Content selftest.txt; Get-Content selftest.err -Tail 20
+          if ($p.ExitCode -ne 0 -or -not (Select-String -Path selftest.txt -Pattern '"page":200' -Quiet)) { throw "self-test failed ($($p.ExitCode))" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ai-3d-office-windows-x64
+          path: release/*.exe
+          if-no-files-found: error
