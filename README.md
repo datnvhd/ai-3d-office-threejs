@@ -242,3 +242,15 @@ When a run is refused because the plan's usage limit is used up (Claude: 5-hour,
 - when **both** are used up, stops the task (and the Director's planning) with one message giving both reset times, turns the **Máy cá nhân** chip red ("hết hạn mức AI") and shows a toast once.
 
 **HẠN MỨC GÓI AI** in the Máy cá nhân window shows each plan's state, **Dùng lại ngay** (after upgrading the plan or an early reset) and **Tự chuyển sang AI còn hạn mức** (on by default; off: the task stops with the limit message instead). The health check lists it too. Switching needs the other CLI installed and signed in.
+
+## Letting chosen agents run commands without asking
+
+By default every command outside the team's toolkits (and every file edit Claude Code wants to confirm) waits for the user to click **Cho phép** in the page. **QUYỀN TỰ CHẠY LỆNH CỦA TỪNG AI** in the **Máy cá nhân** window sets, per agent:
+
+| Level | What runs without asking |
+|---|---|
+| **Hỏi mỗi lần** (default) | nothing beyond the toolkits |
+| **Tự chạy lệnh** | shell commands; file edits still follow the permission mode |
+| **Tự cho phép tất cả** | shell commands, file edits **inside the working folder** (even in read-only mode) and the other tools; edits outside the folder still ask |
+
+Whatever the level, commands that look destructive or reach outside the machine still ask (recursive delete, `sudo`/`runas`, `curl … \| sh`, shutdown/reboot, disk tools, registry writes, `git push/reset --hard/clean`, `npm publish`), and the always-blocked commands (`DENY_CMDS`) never run. The task log shows each action that was allowed automatically (`✅ Tự cho phép …`). The setting lives in `machine.json` (`agentAuto`), applies to workflow steps by their agent, can only be changed on this machine (not through remote access), and asks for confirmation when raised. Codex tasks do not ask at all (Codex's own sandbox decides), so this applies to Claude Code agents.

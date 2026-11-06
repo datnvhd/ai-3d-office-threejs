@@ -21,7 +21,7 @@ export async function machineApi(path,opt={}){
   return d;
 }
 
-export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
+export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAgents=()=>[]}){
   const chip=document.createElement('button');chip.id='machineChip';chip.className='claude-chip';chip.innerHTML='<span class="cdot checking"></span><span class="mtext">Máy cá nhân…</span>';
   document.querySelector('.actions').prepend(chip);
   const modal=document.createElement('div');modal.className='modal hidden';
@@ -45,6 +45,15 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
   }
   let lastBoth=false;
   const fmtLimit=l=>new Date(l.until).toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'});
+  // Per-agent auto-approval: by default every command outside the kits asks; the user can let chosen agents run them
+  const autoHtml=A=>{
+    if(!A)return '';
+    const list=getAgents(),viewer=!!st.remote?.viewer,nAuto=list.filter(a=>A.agents[a.id]).length;
+    const opt=(id,cur)=>Object.entries(A.levels).map(([k,l])=>`<option value="${k}" ${k===cur?'selected':''}>${esc(l)}</option>`).join('');
+    return `<div class="section-title">QUYỀN TỰ CHẠY LỆNH CỦA TỪNG AI <span>${nAuto?`${nAuto} AI tự chạy`:'tất cả đều hỏi'}</span></div>
+      <p class="claude-note">Mặc định AI phải chờ bạn bấm cho phép với mỗi lệnh nằm ngoài bộ công cụ. <b>Tự chạy lệnh</b>: lệnh dòng lệnh chạy luôn, sửa file vẫn theo quyền thực thi ở trên. <b>Tự cho phép tất cả</b>: thêm cả sửa file trong thư mục làm việc (kể cả khi đang Chỉ đọc) và các công cụ khác; sửa file ngoài thư mục vẫn hỏi. Luôn vẫn hỏi với lệnh nguy hiểm (xóa đệ quy, sudo, tải script về chạy, tắt máy…), và các lệnh luôn cấm (git push, rm -rf, npm publish…) không bao giờ chạy.${viewer?' <b>Chỉ đổi được trên máy chạy app.</b>':''}</p>
+      <div class="mauto">${list.map(a=>{const cur=A.agents[a.id]||'ask';return `<label class="mauto-row ${cur!=='ask'?'on':''}"><span class="tagdot" style="background:#${(a.color??0x9aa3b5).toString(16).padStart(6,'0')}"></span><b>${esc(a.name)}</b><em>${esc(a.team)}</em><select data-auto="${esc(a.id)}" ${viewer?'disabled':''}>${opt(a.id,cur)}</select></label>`}).join('')}</div>`;
+  };
   // Usage limits of the AI plans: which one is used up until when, and whether work moves to the other one
   const limitsHtml=L=>{
     if(!L)return '';
@@ -106,6 +115,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
       <div class="msite-form" data-id="${esc(editing?.id||'')}"><div class="msite-grid"><input id="sLabel" placeholder="Tên (ví dụ Jira Trí Nam)" value="${esc(editing?.label||'')}"><input id="sUrl" placeholder="Link (ví dụ http://pm.trinam.vn)" value="${esc(editing?.url||'')}"><input id="sUser" placeholder="Tên đăng nhập" autocomplete="off" value="${esc(editing?.username||'')}"><input id="sPass" type="password" placeholder="${editing?'Mật khẩu (để trống = giữ nguyên)':'Mật khẩu'}" autocomplete="new-password"></div>
         <div class="claude-actions"><button class="assign" data-act="saveSite">${editing?'Lưu thay đổi':'＋ Lưu tài khoản'}</button>${editing?'<button class="ghost" data-act="cancelSite">Hủy</button>':''}</div></div>
       <p class="claude-note">Mật khẩu chỉ lưu trên máy này (<code>~/.ai-3d-office/sites.json</code>), không gửi xuống trình duyệt và không gửi cho Claude: agent gõ tên biến bí mật, Playwright tự thay bằng mật khẩu thật và che mật khẩu trong mọi nội dung trả về.</p>
+      ${autoHtml(st.auto)}
       ${limitsHtml(st.limits)}
       ${mobileHtml(st.mobile)}
       ${remoteHtml(st.remote)}
@@ -132,6 +142,10 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
         await machineApi('/sites',{method:'POST',body:JSON.stringify({id:editing?.id,label:v('sLabel'),url:v('sUrl'),username:v('sUser'),password:v('sPass')})});
         toast(editing?'Đã cập nhật tài khoản':'Đã lưu tài khoản web');editing=null;await refresh();
       }
+      else if(name==='auto'){
+        const lvl=el.value,who=getAgents().find(a=>a.id===el.dataset.auto)?.name||el.dataset.auto;
+        if(lvl!=='ask'&&!confirm(`Cho phép ${who} ${lvl==='all'?'tự chạy lệnh và tự sửa file trong thư mục làm việc':'tự chạy lệnh'} mà không hỏi bạn?\nLệnh nguy hiểm vẫn sẽ hỏi.`)){el.value=st.auto.agents[el.dataset.auto]||'ask';return}
+        st=await machineApi('/config',{method:'POST',body:JSON.stringify({agentAuto:{[el.dataset.auto]:lvl}})});onStatus(st);toast(`${who}: ${st.auto.levels[lvl]}`)}
       else if(name==='autoSwitch'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({autoSwitch:el.checked})});onStatus(st);toast(el.checked?'Sẽ tự chuyển sang AI còn hạn mức':'Không tự chuyển: việc sẽ dừng khi gói AI hết hạn mức')}
       else if(name==='clearLimit'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({clearLimit:el.dataset.engine})});onStatus(st);toast(`Việc tiếp theo sẽ thử lại ${el.dataset.engine==='claude'?'Claude':'Codex'}`)}
       else if(name==='remote'){const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({on:el.checked})});st={...st,remote:r};toast(r.on?'Đã bật truy cập từ xa: gửi link cho máy cần mở':r.error||'Đã tắt truy cập từ xa')}
@@ -147,7 +161,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[]}){
     finally{busy=false;checking=false;render()}
   }
   body.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b)});
-  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target)});
+  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
   body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir')});
 
   refresh();

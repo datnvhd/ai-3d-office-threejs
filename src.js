@@ -378,7 +378,7 @@ var pv=createProgressView({toast,onPerm:permJob,loginBox,onLogin:(j,box)=>submit
   onDesignHandoff:j=>{const fe=agents.find(a=>teamOf(a)==='Frontend'&&levelOf(a)!=='leader'&&!busyAgent(a.id))||agents.find(a=>teamOf(a)==='Frontend')||selected;
     setDesignFrom(j);selectAgent(fe.id);if(!taskEl.value.trim())taskEl.value=`Code giao diện theo các ảnh thiết kế đã chọn (của ${agentOf(j.agent).name}): `;taskEl.focus();toast(`🎨 Việc tiếp theo sẽ code theo ${designFrom.n} ảnh thiết kế`)},onAssign:id=>{selectAgent(id);taskEl.focus()}});
 function openAgent(id){selectAgent(id);pv.open(id)}
-const machineUI=initMachineConnect({toast,onStatus:s=>{machine=s;renderRunNote()},getTeams:()=>[...new Set(agents.map(teamOf))]});
+const machineUI=initMachineConnect({toast,onStatus:s=>{machine=s;renderRunNote()},getTeams:()=>[...new Set(agents.map(teamOf))],getAgents:()=>agents.map(a=>({id:a.id,name:a.name,team:teamOf(a),color:a.color}))});
 $('useWeb').onchange=e=>{useWeb=e.target.checked;try{localStorage.setItem('office-use-web',useWeb?'1':'0')}catch{}renderRunNote()};
 $('useWf').onchange=e=>{useWf=e.target.checked;try{localStorage.setItem('office-use-wf',useWf?'1':'0')}catch{}renderRunNote()};
 $('runOn').onchange=e=>{runOn=e.target.value;try{localStorage.setItem('office-run-on',runOn)}catch{}renderRunNote()};

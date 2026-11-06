@@ -320,3 +320,11 @@
 .tag .tagname{overflow:hidden;text-overflow:ellipsis}
 .tag.selected{z-index:2;border-color:#f4996d;background:#fff4eef0}
 .tag.busy::after{width:6px;height:6px;border-width:1.5px;margin-left:0;flex:none}
+/* Per-agent auto-approval (machine-connect.js autoHtml), in the dark Máy cá nhân window */
+.mauto{display:flex;flex-direction:column;gap:4px;max-height:260px;overflow-y:auto;padding-right:2px}
+.mauto-row{display:flex;align-items:center;gap:8px;padding:6px 8px 6px 11px;border:1px solid #3a4250;border-radius:10px;background:#1a202b;font-size:12.5px}
+.mauto-row.on{border-color:#f4966b;background:#f4966b1a}
+.mauto-row b{color:#e8edf5;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px}
+.mauto-row em{font-style:normal;font-size:11px;color:#8d97a8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+.mauto-row select{margin-left:auto;font-size:12px;padding:4px 8px;border-radius:8px;border:1px solid #475363;background:#11161f;color:#e8edf5;max-width:170px}
+.mauto-row.on select{border-color:#f4966b;color:#ffd9c7}

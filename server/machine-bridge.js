@@ -322,6 +322,28 @@ export function machineBridge(){
     if(tool==='Write')return `${input.file_path||''} (${String(input.content||'').length} ký tự)\n${String(input.content||'').slice(0,700)}`;
     return short(JSON.stringify(input),1200);
   }
+  // ---------- per-agent auto-approval (default: ask every time) ----------
+  // 'commands': shell commands outside the kits run without asking (file edits still follow the permission mode);
+  // 'all': also file edits inside the working folder (even in read-only mode) and the other tools. Edits outside the
+  // working folder still ask. The always-blocked commands (DENY_CMDS) never reach a prompt, and commands that look
+  // destructive or reach outside the machine still ask the user whatever the setting.
+  const AUTO_LEVELS={ask:'Hỏi mỗi lần',commands:'Tự chạy lệnh',all:'Tự cho phép tất cả'};
+  const autoOf=t=>AUTO_LEVELS[config.agentAuto?.[t.agent]]?config.agentAuto[t.agent]:'ask';
+  const RISKY=/\b(rm|rmdir)\s+(-\w*[rf]|\/s)|\bdel\s+(\/[a-z]\s+)*\/[sq]|remove-item\b[^|;&]*-(recurse|force)|\bformat(-volume)?\s+[a-z]:|\bmkfs|\bdd\s+if=|\b(shutdown|reboot|halt|poweroff)\b|stop-computer|restart-computer|\bsudo\b|\brunas\b|\bchmod\s+-R\s+777|\bchown\s+-R|\b(curl|wget|iwr|invoke-webrequest|irm)\b[^|]*\|\s*(sh|bash|zsh|iex|invoke-expression|powershell)|\bgit\s+(push|reset\s+--hard|clean)|\bnpm\s+publish|\breg\s+(add|delete)|\bset-executionpolicy|\b(diskpart|bcdedit|cipher\s+\/w)/i;
+  // allowed without asking: {how} when the agent's level covers this request, null when the user must be asked
+  function autoDecision(t,tool,input){
+    const lvl=autoOf(t);if(lvl==='ask')return null;
+    const shell=tool==='Bash'||tool==='PowerShell';
+    if(shell&&RISKY.test(String(input?.command||'')))return null;
+    if(lvl==='all'&&editTools.has(tool)){
+      const f=input?.file_path||input?.notebook_path;if(!f||!t.cwd)return null;
+      const rel=relative(resolve(t.cwd),resolve(t.cwd,String(f))),inside=!rel.startsWith('..')&&!isAbsolute(rel);
+      return inside?'tự cho phép tất cả':null;
+    }
+    if(lvl==='all')return 'tự cho phép tất cả';
+    if(lvl==='commands'&&shell)return 'tự chạy lệnh';
+    return null;
+  }
   // A task's pending prompts are answered "no" when it ends or is stopped
   function dropPerms(t,why='Việc đã dừng.'){for(const p of t.perms||[])permDecisions.set(p.id,{decision:'deny',message:why});t.perms=[]}
   // Files uploaded but not yet attached to a task: id -> {path,name,kind,ext,at}. Dropped after an hour if unused.
@@ -352,7 +374,7 @@ export function machineBridge(){
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
   const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel})=>({name,kind,rel}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
-  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,lastCheck});
+  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,agentAuto:config.agentAuto,lastCheck});
 
   // ---------- saved web logins (passwords stay in this file and are never sent to the page or to Claude) ----------
   let sites=readJson(SITES_FILE,[]);
@@ -480,8 +502,9 @@ ${t.team?`Đội: ${t.team} · cấp bậc: ${LEVELS[levelOf(t)]}. ${LEVEL_NOTE[
 `:''}${t.desc?`Mô tả công việc và cách làm việc người dùng đặt cho bạn (luôn tuân theo):
 ${t.desc}
 `:''}Bạn đang chạy trực tiếp trên máy cá nhân của người dùng, trong thư mục làm việc hiện tại (${t.cwd}).
-Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?(designOnly(t)?` Không tạo hoặc sửa file của dự án. Ngoại lệ duy nhất: được tạo/sửa file thiết kế (HTML/SVG) trong ${designDir(t)}, hãy làm việc đó.`:' Không tạo hoặc sửa file; chỉ đọc, phân tích và trả lời.'):' Chỉ tạo/sửa file bên trong thư mục làm việc.'}${modeNote(t)}
-${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. Lệnh khác cần người dùng bấm cho phép và có thể bị từ chối (khi bị từ chối thì tìm cách khác hoặc giải thích, không thử lại cùng lệnh); không bao giờ push code hay svn commit/update.
+Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?(designOnly(t)?` Không tạo hoặc sửa file của dự án. Ngoại lệ duy nhất: được tạo/sửa file thiết kế (HTML/SVG) trong ${designDir(t)}, hãy làm việc đó.`:autoOf(t)==='all'?' Người dùng cho phép riêng bạn tự tạo/sửa file bên trong thư mục làm việc khi việc cần; ngoài thư mục đó thì không.':' Không tạo hoặc sửa file; chỉ đọc, phân tích và trả lời.'):' Chỉ tạo/sửa file bên trong thư mục làm việc.'}${modeNote(t)}
+${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. ${autoOf(t)==='ask'?'Lệnh khác cần người dùng bấm cho phép và có thể bị từ chối (khi bị từ chối thì tìm cách khác hoặc giải thích, không thử lại cùng lệnh)':'Người dùng cho phép bạn tự chạy các lệnh khác khi cần (lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; khi bị từ chối thì tìm cách khác)'}; không bao giờ push code hay svn commit/update.
+`:autoOf(t)!=='ask'?`Bạn được tự chạy lệnh dòng lệnh khi cần (qua Bash); lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; không bao giờ push code hay svn commit/update.
 `:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
 ${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${CHECKLIST_GUIDE}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
 Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. File .md mới không được yêu cầu sẽ bị xóa khi xong việc.
@@ -727,7 +750,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args,env:NODE_ENV},...extraServers}}));
     t.siteLabels=list.map(s=>s.label);t.browser=browser;
     // Only the built-in tools a web task needs, and none of the browser tools it never uses (their schemas cost tokens every turn)
-    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'||designOnly(t)?['Write','Edit']:[]),...(kit.allow.length?['Bash']:[])];
+    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'||designOnly(t)||autoOf(t)==='all'?['Write','Edit']:[]),...(kit.allow.length||autoOf(t)!=='ask'?['Bash']:[])];
     return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','WebSearch',...kit.allow,'--disallowedTools',...WEB_TOOLS_OFF,...kit.deny]};
   }
   // Workflow steps wait for their dependencies; if one fails or is stopped, the steps after it stop too
@@ -1038,6 +1061,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       browser:{mcp:!!MCP_CLI,channel:findBrowser(),sites:sites.filter(s=>!s.temp).map(siteView)},
       mobile:await mobileEnv().then(e=>({...e,summary:mobileSummary(e),project:rnProject(config.workdir)})).catch(()=>null),
       remote:remoteInfo(viewer),
+      auto:{levels:AUTO_LEVELS,agents:config.agentAuto||{}},
       limits:{autoSwitch:config.autoSwitch!==false,both:bothLimited(),claude:limitOf('claude'),codex:limitOf('codex')},
       workdir:wd,lastCheck,vcs:wd.exists?await vcsInfo(config.workdir):{kind:null},recentDirs:(config.recentDirs||[]).filter(d=>existsSync(d)),
       running:tasks.filter(t=>t.status==='running').length,queued:tasks.filter(t=>t.status==='queued').length,
@@ -1094,6 +1118,14 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             if(b.mode!==undefined){if(!MODES[b.mode])return json(res,400,{error:'Chế độ quyền không hợp lệ.'});config.mode=b.mode}
             if(b.browserVisible!==undefined)config.browserVisible=!!b.browserVisible;
             if(b.autoSwitch!==undefined)config.autoSwitch=!!b.autoSwitch;
+            // which agents may run commands without asking: only from this machine, never through remote access
+            if(b.agentAuto&&typeof b.agentAuto==='object'){
+              if(isRemoteReq(req))return json(res,403,{error:'Quyền tự chạy lệnh của AI chỉ đổi được trên chính máy chạy app.'});
+              for(const [id,lvl] of Object.entries(b.agentAuto).slice(0,60)){
+                if(!/^[a-z0-9_-]{1,40}$/i.test(id)||!AUTO_LEVELS[lvl])return json(res,400,{error:'AI hoặc mức quyền không hợp lệ.'});
+                config.agentAuto??={};if(lvl==='ask')delete config.agentAuto[id];else config.agentAuto[id]=lvl;
+              }
+            }
             // the user knows the plan is usable again (upgraded, reset early): try it on the next task
             if(b.clearLimit==='claude'||b.clearLimit==='codex')delete config.aiLimits?.[b.clearLimit];
             if(b.teamKits&&typeof b.teamKits==='object')for(const [team,list] of Object.entries(b.teamKits).slice(0,40))
@@ -1112,6 +1144,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             const b=await readBody(req),tool=short(b.tool,80),input=b.input&&typeof b.input==='object'?b.input:{},rule=permRule(tool,input);
             if((t.permAlways||[]).includes(rule))return json(res,200,{decision:'allow'});
             if(t.status!=='running')return json(res,200,{decision:'deny',message:'Việc đã dừng.'});
+            // this agent may run it without asking: allow at once and say so in the log
+            const how=autoDecision(t,tool,input);
+            if(how){(t.log||=[]).push({at:Date.now(),kind:'tool',text:`✅ Tự cho phép (${how}): ${describeTool({name:tool,input})}`});save();return json(res,200,{decision:'allow'})}
             const p={id:'p'+(++permSeq),tool,desc:describeTool({name:tool,input}),detail:redact(permDetail(tool,input)),ruleLabel:permRuleLabel(tool,input),rule,at:Date.now()};
             (t.perms||=[]).push(p);t.activity=`🔐 Chờ bạn cho phép: ${p.desc}`;
             (t.log||=[]).push({at:Date.now(),kind:'ask',text:`🔐 Xin phép: ${p.desc}`});save();
