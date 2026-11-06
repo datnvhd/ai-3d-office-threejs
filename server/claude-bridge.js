@@ -11,7 +11,7 @@ import {isRemoteReq} from './remote-access.js';
 export const STORE_DIR=join(homedir(),'.ai-3d-office');
 const STORE_FILE=join(STORE_DIR,'claude-auth.json');
 const TOKEN_RE=/sk-ant-oat01-[A-Za-z0-9_-]{20,}/;
-const URL_RE=/https:\/\/claude\.(?:com|ai)\/\S*oauth\/authorize\?\S+/;
+const URL_RE_G=/https:\/\/claude\.(?:com|ai)\/\S*oauth\/authorize\?\S+/g;
 const LOGIN_TIMEOUT=10*60*1000;
 const isWin=process.platform==='win32';
 
@@ -105,7 +105,7 @@ export function killTree(p){
 export function claudeBridge(){
   let bin=null,binChecked=false,version=null;
   let login={state:'idle'};// idle | starting | waiting | verifying | success | error
-  let proc=null,buffer='',timer=null,browser=null,profile=null;
+  let proc=null,buffer='',timer=null,browser=null,profile=null,retrying=false;
 
   async function ensureBin(){
     if(!binChecked){bin=findClaudeBinary();binChecked=true;if(bin)version=(await run(bin,['--version'])).stdout.trim()||null}
@@ -124,6 +124,13 @@ export function claudeBridge(){
   function closeBrowser(){
     killTree(browser);browser=null;
     const dir=profile;profile=null;
+    // The chrome.exe we started often hands the window to another process and exits, so its pid is not enough:
+    // stop every process that uses this sign-in's throw-away profile
+    if(dir){
+      if(isWin)execFile('powershell.exe',['-NoProfile','-NonInteractive','-Command',
+        `Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*${dir.replace(/'/g,"''")}*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }`],{windowsHide:true},()=>{});
+      else execFile('pkill',['-f',dir],()=>{});
+    }
     if(dir)setTimeout(()=>{try{rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:500})}catch{}},2000);
   }
 
@@ -142,17 +149,35 @@ export function claudeBridge(){
   async function startLogin(){
     if(proc)return;
     if(!await ensureBin()){login={state:'error',message:'Không tìm thấy Claude Code CLI trên máy.'};return}
-    buffer='';login={state:'starting'};
+    buffer='';login={state:'starting'};retrying=false;
     proc=pty.spawn(bin,['setup-token'],{name:'xterm-256color',cols:1000,rows:60,cwd:tmpdir(),env:cleanEnv({BROWSER:noopBrowser()})});
     proc.onData(d=>{
       buffer=(buffer+d).slice(-40000);
-      const text=stripAnsi(buffer);
+      const text=stripAnsi(buffer),low=text.toLowerCase();
       const token=text.match(TOKEN_RE);
       if(token&&proc){finishWithToken(token[0]);return}
-      const url=text.match(URL_RE);
-      if(url&&login.state==='starting')login={state:'waiting',url:url[0],fresh:openFreshBrowser(url[0])};
-      const err=text.slice(-2000).match(/(?:OAuth error[^\n]*|Failed to exchange[^\n]*|Invalid code[^\n]*|account[^\n]*on hold[^\n]*)/i);
-      if(err&&login.state==='waiting')login={...login,message:err[0].trim()};
+      // The newest sign-in link: after a rejected code Claude Code starts a new sign-in with a new link (new state),
+      // and only a code from that new page is accepted, so the page is opened again
+      const url=[...text.matchAll(URL_RE_G)].pop()?.[0];
+      if(url&&login.state==='starting')login={state:'waiting',url,fresh:openFreshBrowser(url)};
+      else if(url&&login.state==='waiting'&&url!==login.url){
+        login={...login,url,fresh:openFreshBrowser(url),retries:(login.retries||0)+1,
+          message:`${(login.error||'Mã không được chấp nhận').replace(/[.\s]+$/,'')}. Đã mở lại trang đăng nhập: hãy đăng nhập lại trên trang mới và dán mã MỚI (mã cũ không dùng được nữa).`};
+      }
+      // Rejected code: Claude Code waits for Enter before it starts over. Press it once per rejection (up to 5 times),
+      // otherwise the next code the user pastes is typed into that prompt and every later attempt fails too.
+      const retryAt=low.lastIndexOf('press enter to retry'),promptAt=low.lastIndexOf('paste code');
+      // the error of the current attempt only (an older one stays in the buffer after the new link appears)
+      const err=text.slice(Math.max(0,promptAt)).match(/(?:OAuth error[^\n]*|Failed to exchange[^\n]*|Invalid code[^\n]*|account[^\n]*on hold[^\n]*)/i);
+      if(err&&login.state==='waiting'&&!retrying){
+        const e=err[0].replace(/\s*Press Enter to retry\.?/i,'').trim();login={...login,error:e,message:e};
+      }
+      if(retryAt>promptAt&&!retrying&&proc&&login.state==='waiting'){
+        retrying=true;
+        if((login.retries||0)>=5){stopLogin();login={state:'error',message:`${login.error||'Mã không được chấp nhận'}. Đã thử 5 lần, hãy bấm đăng nhập lại từ đầu.`};return}
+        setTimeout(()=>proc?.write('\r'),300);
+      }
+      if(promptAt>retryAt)retrying=false;
     });
     proc.onExit(()=>{proc=null;clearTimeout(timer);if(login.state==='starting'||login.state==='waiting')login={state:'error',message:login.message||'Tiến trình đăng nhập đã kết thúc mà chưa nhận được token.'}});
     timer=setTimeout(()=>{if(proc){stopLogin();login={state:'error',message:'Hết thời gian chờ đăng nhập (10 phút).'}}},LOGIN_TIMEOUT);
@@ -191,9 +216,12 @@ export function claudeBridge(){
           if(req.method==='POST'&&path==='/login/code'){
             const {code}=await readBody(req);
             if(!proc||login.state!=='waiting')return json(res,409,{error:'Không có phiên đăng nhập đang chờ mã.'});
-            if(typeof code!=='string'||!/^[\w#.\-]{10,600}$/.test(code.trim()))return json(res,400,{error:'Mã xác thực không đúng định dạng.'});
+            // a code copied across lines or with spaces still counts; anything else is not a code
+            const clean=typeof code==='string'?code.replace(/\s+/g,''):'';
+            if(!/^[\w#.\-]{10,600}$/.test(clean))return json(res,400,{error:'Mã xác thực không đúng định dạng: hãy bấm "Copy Code" trên trang đăng nhập rồi dán lại.'});
+            if(retrying)return json(res,409,{error:'Đang mở lại trang đăng nhập sau lần mã bị từ chối: đợi vài giây, đăng nhập trên trang mới rồi dán mã mới.'});
             // Code and Enter in one write are taken as a paste and never submitted: send Enter separately
-            const p=proc;login={...login,message:null};p.write(code.trim());setTimeout(()=>{if(proc===p)p.write('\r')},500);
+            const p=proc;login={...login,message:null,error:null};p.write(clean);setTimeout(()=>{if(proc===p)p.write('\r')},500);
             return json(res,200,{ok:true});
           }
           if(req.method==='POST'&&path==='/login/cancel'){stopLogin();login={state:'idle'};return json(res,200,await status())}

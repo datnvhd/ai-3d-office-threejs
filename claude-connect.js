@@ -94,8 +94,14 @@ export function initClaudeConnect({toast}){
     clearTimeout(pollTimer);
     pollTimer=setTimeout(async()=>{
       try{
-        const prev=st?.login.state;st=await api('/status');
-        if(!body.querySelector('#claudeCode')||prev!==st.login.state)render();else setChip();
+        const prev=st?.login.state,prevKey=st&&[st.login.state,st.login.message,st.login.url].join('|');st=await api('/status');
+        // redraw when the state, the error (rejected code) or the sign-in link (new attempt) changes, keeping a code
+        // that is being pasted and the focus on the box
+        const input=body.querySelector('#claudeCode'),key=[st.login.state,st.login.message,st.login.url].join('|');
+        if(!input||key!==prevKey){
+          const v=input?.value||'',focused=document.activeElement===input;render();
+          const again=body.querySelector('#claudeCode');if(again&&prev===st.login.state&&st.login.url===(prevKey||'').split('|')[2]){again.value=v;if(focused)again.focus()}
+        }else setChip();
         if(st.login.state==='success'&&prev!=='success')toast('Đã kết nối Claude Code và lưu token');
       }catch{}
       if(st&&['starting','waiting','verifying'].includes(st.login.state))poll();
