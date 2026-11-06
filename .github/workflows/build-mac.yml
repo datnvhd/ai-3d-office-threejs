@@ -1,4 +1,7 @@
-# macOS installers: one .dmg per chip, each built on a runner of that chip (native modules are per chip).
+# macOS installers: one .dmg per chip. Both are built on GitHub's Intel Macs (macos-15-intel), which are always
+# available; the Apple Silicon (M-chip) runners are often queued for a long time for lack of capacity. For arm64,
+# scripts/build-mac.js adds the arm64 native modules (node-pty, esbuild, rollup) from package-lock.json, and the
+# packaged app is checked to be arm64 throughout (an Intel Mac cannot start it; the x64 app gets a full self-test).
 # Start it from the Actions tab, with `npm run dist:mac -- --ci`, or by pushing a tag v*.
 # Optional secrets for a signed + notarized app: MAC_CERT_P12_BASE64, MAC_CERT_PASSWORD (Developer ID Application),
 # APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID. Without them the app is signed ad-hoc.
@@ -13,10 +16,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - {runner: macos-15, arch: arm64}
-          - {runner: macos-15-intel, arch: x64}
-    runs-on: ${{ matrix.runner }}
+        arch: [arm64, x64]
+    runs-on: macos-15-intel
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -30,13 +32,30 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-      - name: Self-test the packaged app
+      - name: Check the packaged app
+        env: {ARCH: '${{ matrix.arch }}'}
         run: |
           APP=$(ls -d release/mac*/*.app | head -1)
           echo "App: $APP"
           codesign --verify --deep --strict "$APP" && echo "codesign OK"
-          AI_OFFICE_SELFTEST=1 "$APP/Contents/MacOS/AI 3D Office" | tee selftest.txt
-          grep -q '"page":200' selftest.txt
+          MAIN="$APP/Contents/MacOS/AI 3D Office"
+          echo "main executable: $(lipo -archs "$MAIN")"
+          lipo -archs "$MAIN" | grep -qw "$ARCH"
+          RES="$APP/Contents/Resources/app/node_modules"
+          # the native modules the app loads on this chip must be there and built for it
+          for m in "@lydell/node-pty-darwin-$ARCH" "@rollup/rollup-darwin-$ARCH" "@esbuild/darwin-$ARCH"; do
+            test -d "$RES/$m" || { echo "missing $m"; exit 1; }
+            for f in $(find "$RES/$m" -type f \( -name '*.node' -o -name 'esbuild' -o -name 'spawn-helper' \)); do
+              a=$(lipo -archs "$f"); echo "$m/${f##*/}: $a"; echo "$a" | grep -qw "$ARCH" || exit 1
+            done
+          done
+          echo "Electron framework: $(lipo -archs "$APP/Contents/Frameworks/Electron Framework.framework/Electron Framework")"
+          lipo -archs "$APP/Contents/Frameworks/Electron Framework.framework/Electron Framework" | grep -qw "$ARCH"
+          # an Intel runner can start only the Intel app
+          if [ "$ARCH" = x64 ]; then
+            AI_OFFICE_SELFTEST=1 "$MAIN" | tee selftest.txt
+            grep -q '"page":200' selftest.txt
+          fi
       - uses: actions/upload-artifact@v4
         with:
           name: ai-3d-office-macos-${{ matrix.arch }}
