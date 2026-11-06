@@ -43,11 +43,15 @@ jobs:
           lipo -archs "$MAIN" | grep -qw "$ARCH"
           RES="$APP/Contents/Resources/app/node_modules"
           # the native modules the app loads on this chip must be there and built for it
+          # (the app path has spaces: read find's output NUL-separated, not word-split)
           for m in "@lydell/node-pty-darwin-$ARCH" "@rollup/rollup-darwin-$ARCH" "@esbuild/darwin-$ARCH"; do
-            test -d "$RES/$m" || { echo "missing $m"; exit 1; }
-            for f in $(find "$RES/$m" -type f \( -name '*.node' -o -name 'esbuild' -o -name 'spawn-helper' \)); do
-              a=$(lipo -archs "$f"); echo "$m/${f##*/}: $a"; echo "$a" | grep -qw "$ARCH" || exit 1
-            done
+            test -d "$RES/$m" || { echo "missing $m"; ls "$RES/$(dirname "$m")" || true; exit 1; }
+            n=0
+            while IFS= read -r -d '' f; do
+              a=$(lipo -archs "$f"); echo "$m/${f##*/}: $a"; n=$((n+1))
+              echo "$a" | grep -qw "$ARCH" || { echo "wrong chip: $f"; exit 1; }
+            done < <(find "$RES/$m" -type f \( -name '*.node' -o -name 'esbuild' -o -name 'spawn-helper' \) -print0)
+            [ "$n" -gt 0 ] || { echo "no binary found in $m"; exit 1; }
           done
           echo "Electron framework: $(lipo -archs "$APP/Contents/Frameworks/Electron Framework.framework/Electron Framework")"
           lipo -archs "$APP/Contents/Frameworks/Electron Framework.framework/Electron Framework" | grep -qw "$ARCH"
