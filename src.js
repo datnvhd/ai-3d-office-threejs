@@ -12,6 +12,7 @@ import {createProgressView} from './progress-view.js';
 import {setHTML} from './dom-keep.js';
 import {ruleSteps,MODELS,EFFORTS,modelId,sameTier,ENGINE_NAMES,enginesOf,LEVELS,BUILTIN_TEAM,teamOf,levelOf,normalizeLeaders} from './workflow-plan.js';
 import {initWebMCP} from './webmcp.js';
+import {escapeHTML,md} from './ui-text.js';
 const app=document.querySelector('#app');
 // Left column: assign work · right column: what the agents did with it (running, done with result, failed with error)
 app.innerHTML=`<div id="scene"></div><div class="top"><div class="brand"><span class="logo">▦</span><div><b>My Office <i>3D</i></b><small>AI AGENT WORKSPACE</small></div></div><div class="topstats"><span><em class="dot green"></em><b id="active">0</b> AI đang làm việc</span><span><em class="dot orange"></em><b id="queued">0</b> đang xử lý</span><span><em class="dot blue"></em><b id="done">0</b> hoàn thành</span><span><em class="dot red"></em><b id="failed">0</b> lỗi</span></div><div class="actions"><button id="reset">⟲ Đặt lại góc nhìn</button><button id="help">? Hướng dẫn</button></div></div><div class="floatinglabels" id="labels"></div>
@@ -53,8 +54,12 @@ const agents=(savedAgents||BUILTIN.map(b=>({id:b.id,builtin:true}))).map(v=>{
     used.delete(a.slot);used.add(to);Object.assign(a,{slot:to,x:SLOTS[to].x,z:SLOTS[to].z,door:SLOTS[to].door,sit:SLOTS[to].sit})}}
 normalizeLeaders(agents);
 const world=new THREE.Scene();
-const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false});renderer.setPixelRatio(Math.min(devicePixelRatio,2));renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.65;document.querySelector('#scene').appendChild(renderer.domElement);
-const camera=new THREE.PerspectiveCamera(40,1,.1,240);let theta=Math.PI/4,phi=.96,dist=37;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
+// Phone: touch screen up to 900 px wide, or a phone turned sideways (same test as the redirect in index.html)
+const PHONE_Q='(pointer:coarse) and (max-width:900px), (pointer:coarse) and (max-height:500px)',PHONE0=matchMedia(PHONE_Q).matches;
+const renderer=new THREE.WebGLRenderer({antialias:!PHONE0,alpha:false});renderer.setPixelRatio(Math.min(devicePixelRatio,PHONE0?1.5:2));renderer.shadowMap.enabled=!PHONE0;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.65;document.querySelector('#scene').appendChild(renderer.domElement);
+const camera=new THREE.PerspectiveCamera(40,1,.1,240);let theta=Math.PI/4,phi=.96,dist=PHONE0?54:37;
+// on a phone the sheet covers the lower part: the picture is shifted up by phShift px so the office sits in the free part
+let phShift=0;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
 const room=createOffice(world,renderer),office=room.group,pickables=[];
 function agentCharacter(agent){const g=new THREE.Group();g.position.set(agent.x,0,agent.z);g.rotation.y=agent.yaw??.35;office.add(g);agent.char=createCharacter(agent.look);g.add(agent.char.group);const hit=new THREE.Mesh(new THREE.CylinderGeometry(.43,.43,2,12),new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));hit.position.y=1;hit.userData.agent=agent.id;g.add(hit);pickables.push(hit);agent.group=g;agent.labelPos=new THREE.Vector3(agent.x,2.05,agent.z);const ring=new THREE.Mesh(new THREE.RingGeometry(.37,.42,32),new THREE.MeshBasicMaterial({color:agent.color,side:THREE.DoubleSide,transparent:true,opacity:0}));ring.rotation.x=-Math.PI/2;ring.position.y=.013;g.add(ring);agent.ring=ring;return g}
 // Characters stand in front of their desk with the chair pushed to one side
@@ -111,26 +116,6 @@ const taskEl=document.getElementById('task'),$=id=>document.getElementById(id);
 const hex=c=>'#'+c.toString(16).padStart(6,'0'),clock=d=>d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'});
 const agentOf=id=>agents.find(a=>a.id===id)||{id,name:id,role:'',color:0x9aa3b5};
 function allJobs(){return [...sim,...remote].sort((a,b)=>b.created-a.created)}
-function escapeHTML(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
-// Minimal Markdown for Claude's answers (escaped first, so only these tags can appear): code blocks, tables, headings, lists, inline code/bold/italic
-function md(src){
-  const inline=s=>s.replace(/`([^`]+)`/g,'<code>$1</code>').replace(/\*\*([^*]+)\*\*/g,'<b>$1</b>').replace(/(^|[\s(])\*([^*\s][^*]*)\*/g,'$1<i>$2</i>');
-  const cells=l=>l.trim().replace(/^\||\|$/g,'').split('|').map(c=>inline(c.trim()));
-  const lines=escapeHTML(src).replace(/\r/g,'').split('\n'),out=[];let i=0;
-  while(i<lines.length){
-    const l=lines[i];
-    if(/^```/.test(l)){const buf=[];while(++i<lines.length&&!/^```/.test(lines[i]))buf.push(lines[i]);i++;out.push(`<pre><code>${buf.join('\n')}</code></pre>`);continue}
-    if(/^\s*\|.*\|\s*$/.test(l)&&/^\s*\|?[\s:|-]+\|?\s*$/.test(lines[i+1]||'')&&lines[i+1].includes('-')){
-      const head=cells(l),rows=[];i+=2;while(i<lines.length&&/^\s*\|.*\|\s*$/.test(lines[i]))rows.push(cells(lines[i++]));
-      out.push(`<table><tr>${head.map(c=>`<th>${c}</th>`).join('')}</tr>${rows.map(r=>`<tr>${r.map(c=>`<td>${c}</td>`).join('')}</tr>`).join('')}</table>`);continue}
-    const h=l.match(/^#{1,6}\s+(.*)/);if(h){out.push(`<h4>${inline(h[1])}</h4>`);i++;continue}
-    if(/^\s*([-*]|\d+\.)\s+/.test(l)){const ol=/^\s*\d+\./.test(l),items=[];while(i<lines.length&&/^\s*([-*]|\d+\.)\s+/.test(lines[i]))items.push(inline(lines[i++].replace(/^\s*([-*]|\d+\.)\s+/,'')).replace(/^\[([ xX~\/-])\]\s*/,(m,c)=>/x/i.test(c)?'☑ ':c===' '?'☐ ':'◐ '));out.push(`<${ol?'ol':'ul'}>${items.map(x=>`<li>${x}</li>`).join('')}</${ol?'ol':'ul'}>`);continue}
-    if(!l.trim()){i++;continue}
-    const para=[];while(i<lines.length&&lines[i].trim()&&!/^(```|#{1,6}\s|\s*([-*]|\d+\.)\s|\s*\|.*\|\s*$)/.test(lines[i]))para.push(inline(lines[i++]));
-    if(para.length)out.push(`<p>${para.join('<br>')}</p>`);else out.push(`<p>${inline(lines[i++])}</p>`);
-  }
-  return out.join('');
-}
 const fromServer=t=>({key:'m'+t.id,rid:t.id,remote:true,agent:t.agent,text:t.text,priority:t.priority,status:t.status,steps:t.steps||0,activity:t.activity,started:t.started?new Date(t.started):null,result:t.result,error:t.error,created:new Date(t.created),finished:t.finished?new Date(t.finished):null,durationMs:t.durationMs,turns:t.turns,costUsd:t.costUsd,cwd:t.cwd,mode:t.mode,host:t.host,engine:t.engine||'claude',web:!!t.web,siteLabels:t.siteLabels||[],fileNames:t.fileNames||[],kind:t.kind,wf:t.wf!=null?'m'+t.wf:null,wfTitle:t.wfTitle,stepTitle:t.stepTitle,model:t.model,effort:t.effort,modelWhy:t.modelWhy,asks:t.asks||0,perms:t.perms||[],todos:t.todos||[],changesN:t.changesN??t.changes?.length??0,undone:t.undone||null,vcs:t.vcs||null,asking:!!t.asking,deps:(t.deps||[]).map(id=>'m'+id),question:t.question||null,clarify:t.clarify||[],designs:t.designs||[],designFrom:t.designFrom,rework:t.rework||null,origin:t.origin??null,progress:t.status==='done'?100:Math.min(92,8+(t.steps||0)*9)});
 function selectAgent(id){selected=agentOf(id);$('profile-name').textContent=selected.name;$('profile-role').textContent=[selected.role,`${LEVELS[levelOf(selected)]} · đội ${teamOf(selected)}`].filter(Boolean).join(' · ');$('profile-desc').textContent=selected.desc||'';$('profile-desc').title=selected.desc||'';$('agentDel').classList.toggle('hidden',selected.id==='director');$('profile-icon').style.background=hex(selected.color);$('profile-icon').textContent=selected.name[0];agents.forEach(a=>a.ring.material.opacity=a.id===id?.95:0);document.querySelectorAll('.tag').forEach((e,i)=>e.classList.toggle('selected',agents[i].id===id));document.querySelectorAll('#avatars [data-agent]').forEach(e=>e.classList.toggle('on',e.dataset.agent===id));renderProfile();renderRunNote()}
 // Which CLI the server runs this agent's tasks with (set in the machine config, Designer → Codex by default)
@@ -335,7 +320,7 @@ function announceDone(j){
   if(!j.asks&&!document.querySelector('.agent-form')?.closest('.modal:not(.hidden)')){selectAgent(j.agent);pv.open(j.agent,j.key)}
 }
 setInterval(watchJobs,1000);
-function updateStats(){const jobs=allJobs(),run=jobs.filter(j=>GROUP[j.status]==='running');$('active').textContent=new Set(run.map(j=>j.agent)).size;$('queued').textContent=run.length;$('done').textContent=jobs.filter(j=>j.status==='done').length;$('failed').textContent=jobs.filter(j=>GROUP[j.status]==='error').length;agents.forEach(a=>a.el.classList.toggle('busy',run.some(j=>j.agent===a.id)));
+function updateStats(){const jobs=allJobs(),run=jobs.filter(j=>GROUP[j.status]==='running');{const pc=document.getElementById('phCount');if(pc){pc.textContent=run.length;pc.hidden=!run.length}}$('active').textContent=new Set(run.map(j=>j.agent)).size;$('queued').textContent=run.length;$('done').textContent=jobs.filter(j=>j.status==='done').length;$('failed').textContent=jobs.filter(j=>GROUP[j.status]==='error').length;agents.forEach(a=>a.el.classList.toggle('busy',run.some(j=>j.agent===a.id)));
   document.querySelectorAll('#avatars [data-agent]').forEach(e=>{const b=run.some(j=>j.agent===e.dataset.agent),d=e.querySelector('.adot');if(d){d.classList.toggle('busy',b);d.title=b?'Đang làm việc':'Đang rảnh'}});renderResults();renderProfile();pv?.refresh()}
 // The AI staff as a grid of cards or as a list grouped by team (remembered per browser); a dot shows who is working
 let agentView=(()=>{try{return localStorage.getItem('office-agent-view')==='list'?'list':'grid'}catch{return 'grid'}})();
@@ -461,7 +446,7 @@ $('assign').onclick=async()=>{
   if(runOn!=='machine'&&attachments.length)toast('Tệp đính kèm chỉ xử lý khi chạy trên Máy cá nhân');
   btn.disabled=true;
   try{if(designFrom&&runOn!=='machine')toast('Ảnh thiết kế chỉ dùng được khi chạy trên Máy cá nhân');
-    await submitTask({text:taskEl.value,priority:$('priority').value,files:runOn==='machine'?attachIds():[],siteIds:useWeb&&$('webSite').value!=='auto'?[$('webSite').value]:[]});taskEl.value='';clearAttach();setDesignFrom(null)}
+    await submitTask({text:taskEl.value,priority:$('priority').value,files:runOn==='machine'?attachIds():[],siteIds:useWeb&&$('webSite').value!=='auto'?[$('webSite').value]:[]});taskEl.value='';clearAttach();setDesignFrom(null);if(document.body.classList.contains('ph'))phSet('result')}
   catch(e){toast(e.message);if(e.openMachine)machineUI.open();else if(!taskEl.value.trim())taskEl.focus()}
   finally{btn.disabled=false}
 };
@@ -526,7 +511,7 @@ setInterval(()=>{let changed=false;
   if(changed)updateStats()},2200);
 selectAgent(selected.id);renderRunNote();updateStats();syncRemote();
 const HOME_VIEW=[Math.PI/4,.96,37];$('reset').onclick=()=>{[theta,phi,dist]=HOME_VIEW;updateCamera()};const guide=$('guide');$('help').onclick=()=>guide.classList.remove('hidden');$('closeguide').onclick=$('okguide').onclick=()=>guide.classList.add('hidden');
-let dragging=false,moved=0,px=0,py=0;renderer.domElement.addEventListener('pointerdown',e=>{dragging=true;moved=0;px=e.clientX;py=e.clientY;renderer.domElement.setPointerCapture(e.pointerId)});renderer.domElement.addEventListener('pointermove',e=>{if(!dragging)return;const dx=e.clientX-px,dy=e.clientY-py;moved+=Math.abs(dx)+Math.abs(dy);theta-=dx*.006;phi=Math.max(.40,Math.min(1.38,phi+dy*.005));px=e.clientX;py=e.clientY;updateCamera()});renderer.domElement.addEventListener('pointerup',e=>{dragging=false;if(moved>7)return;const p=new THREE.Vector2(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);const ray=new THREE.Raycaster();ray.setFromCamera(p,camera);const hits=ray.intersectObjects(pickables);if(hits.length)openAgent(hits[0].object.userData.agent)});renderer.domElement.addEventListener('wheel',e=>{dist=Math.max(10,Math.min(60,dist+e.deltaY*.02));updateCamera()},{passive:true});let lastT=0;function animate(t){requestAnimationFrame(animate);const dt=Math.min(.1,(t-lastT)/1000);lastT=t;wander.update(dt);outdoor.update(t,dt);renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;camera.updateProjectionMatrix();const tags=[],tagScale=Math.max(.72,Math.min(1,1.25-dist/90));
+let dragging=false,moved=0,px=0,py=0,touchN=0;renderer.domElement.addEventListener('pointerdown',e=>{dragging=true;moved=0;px=e.clientX;py=e.clientY;renderer.domElement.setPointerCapture(e.pointerId)});renderer.domElement.addEventListener('pointermove',e=>{if(!dragging||touchN>1)return;const dx=e.clientX-px,dy=e.clientY-py;moved+=Math.abs(dx)+Math.abs(dy);theta-=dx*.006;phi=Math.max(.40,Math.min(1.38,phi+dy*.005));px=e.clientX;py=e.clientY;updateCamera()});renderer.domElement.addEventListener('pointerup',e=>{dragging=false;if(moved>7)return;const p=new THREE.Vector2(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);const ray=new THREE.Raycaster();ray.setFromCamera(p,camera);const hits=ray.intersectObjects(pickables);if(hits.length)openAgent(hits[0].object.userData.agent)});renderer.domElement.addEventListener('wheel',e=>{dist=Math.max(10,Math.min(60,dist+e.deltaY*.02));updateCamera()},{passive:true});let lastT=0;function animate(t){requestAnimationFrame(animate);const dt=Math.min(.1,(t-lastT)/1000);lastT=t;wander.update(dt);outdoor.update(t,dt);renderer.setSize(innerWidth,innerHeight,false);camera.aspect=innerWidth/innerHeight;if(phShift)camera.setViewOffset(innerWidth,innerHeight,0,phShift,innerWidth,innerHeight);else if(camera.view)camera.clearViewOffset();camera.updateProjectionMatrix();const tags=[],tagScale=Math.max(.72,Math.min(1,1.25-dist/90));
 for(const a of agents){a.group.getWorldPosition(a.labelPos);a.labelPos.y=2.05;const p=a.labelPos.clone().project(camera);const visible=p.z<1;const x=(p.x*.5+.5)*innerWidth,y=(-p.y*.5+.5)*innerHeight;tags.push({a,x,y,z:p.z,visible});if(a.bubble?.classList.contains('show')){a.bubble.style.transform=`translate(-50%,-100%) translate(${x}px,${y-12}px)`;a.bubble.style.visibility=visible?'visible':'hidden'}a.char.update(t)}
 placeTags(tags,tagScale);room.update(t);renderer.render(world,camera)}requestAnimationFrame(animate);
 
@@ -606,5 +591,44 @@ $('agentDel').onclick=async()=>{
 try{const k=localStorage.getItem('office-select');if(k){localStorage.removeItem('office-select');if(agents.some(a=>a.id===k))selectAgent(k)}}catch{}
 // the agent just added gets up for a first walk right away
 try{const n=localStorage.getItem('office-new');if(n){localStorage.removeItem('office-new');wander.nudge(n)}}catch{}
+
+// ---------- Phone: 3D office on top, a sheet with "Giao việc" and "Kết quả" below ----------
+// A tap on the open tab (or ▾) folds the sheet away to show the whole office; the camera picture is shifted so the office
+// stays in the part of the screen the sheet leaves free. "Bản gọn" goes back to the light page without 3D (m.html).
+const phoneMq=matchMedia(PHONE_Q);
+let phTab=(()=>{try{return localStorage.getItem('office-ph-tab')==='result'?'result':'task'}catch{return 'task'}})(),phMin=false;
+const phTabs=document.createElement('nav');phTabs.className='phtabs';
+phTabs.innerHTML='<button data-ph="task">✍ Giao việc</button><button data-ph="result">📋 Kết quả <b id="phCount" hidden></b></button><button class="phfold" data-ph="fold" aria-label="Thu gọn hoặc mở khung">▾</button>';
+app.appendChild(phTabs);
+{const lite=document.createElement('a');lite.className='phlite';lite.href='m.html';lite.textContent='Bản gọn';lite.onclick=()=>{try{sessionStorage.removeItem('office-view')}catch{}};document.querySelector('.actions').appendChild(lite)}
+function phLayout(){
+  if(!document.body.classList.contains('ph')){phShift=0;return}
+  const cs=getComputedStyle(document.body),px=v=>parseFloat(v)||0;
+  const sheet=phMin?0:innerHeight*px(cs.getPropertyValue('--sheet-h'))/100,free=innerHeight-sheet-px(cs.getPropertyValue('--tab-h'))-px(cs.getPropertyValue('--top-h'));
+  phShift=Math.round(innerHeight/2-(px(cs.getPropertyValue('--top-h'))+free/2));
+}
+function phRender(){
+  const on=phoneMq.matches,b=document.body.classList;
+  b.toggle('ph',on);b.toggle('tab-task',on&&phTab==='task');b.toggle('tab-result',on&&phTab==='result');b.toggle('ph-min',on&&phMin);
+  phTabs.querySelectorAll('[data-ph]').forEach(x=>x.classList.toggle('on',!phMin&&x.dataset.ph===phTab));
+  phTabs.querySelector('.phfold').textContent=phMin?'▴':'▾';
+  phLayout();
+}
+function phSet(tab){
+  if(tab==='fold'||tab===phTab&&!phMin)phMin=!phMin;
+  else{phTab=tab;phMin=false;try{localStorage.setItem('office-ph-tab',tab)}catch{}}
+  phRender();
+}
+phTabs.onclick=e=>{const x=e.target.closest('[data-ph]');if(x)phSet(x.dataset.ph)};
+phoneMq.addEventListener('change',phRender);addEventListener('resize',phLayout);phRender();
+// two fingers: pinch to zoom (one finger still turns the office, a tap still opens an agent)
+{const cv=renderer.domElement,pts=new Map();let pinch=0;
+  const gap=()=>{const [a,b]=[...pts.values()];return Math.hypot(a.x-b.x,a.y-b.y)||1};
+  cv.addEventListener('pointerdown',e=>{pts.set(e.pointerId,{x:e.clientX,y:e.clientY});touchN=pts.size;if(pts.size===2){pinch=gap();moved=99}});
+  cv.addEventListener('pointermove',e=>{if(!pts.has(e.pointerId))return;pts.set(e.pointerId,{x:e.clientX,y:e.clientY});
+    if(pts.size>=2){const g=gap();if(pinch){dist=Math.max(10,Math.min(70,dist*pinch/g));updateCamera()}pinch=g}});
+  const up=e=>{pts.delete(e.pointerId);touchN=pts.size;if(pts.size<2)pinch=0;const rest=[...pts.values()][0];if(rest){px=rest.x;py=rest.y}};
+  cv.addEventListener('pointerup',up);cv.addEventListener('pointercancel',up);
+}
 // Tools for in-browser AI agents (WebMCP); no-op where unsupported
 initWebMCP({agents,allJobs,submitTask,cancelJob,retryJob,askJob,machineApi,scenes:room.scenes,applyScene,MODELS,EFFORTS,STATUS,GROUP});

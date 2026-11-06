@@ -4,7 +4,7 @@
 // published hash and unpacked with the system's tar. No npm, no admin rights, no console window. The bridges look
 // here after the user's own installs (PATH, ~/.local/bin), so a machine that already has a tool keeps using its own.
 import {createHash} from 'node:crypto';
-import {createWriteStream,existsSync,mkdirSync,rmSync,readFileSync,writeFileSync,readdirSync,chmodSync} from 'node:fs';
+import {createWriteStream,existsSync,mkdirSync,rmSync,readFileSync,writeFileSync,readdirSync,chmodSync,renameSync} from 'node:fs';
 import {join} from 'node:path';
 import {homedir} from 'node:os';
 import {spawn} from 'node:child_process';
@@ -17,7 +17,7 @@ const isWin=process.platform==='win32',EXE=isWin?'.exe':'';
 let gen=0;
 export const cliGen=()=>gen;
 export const bumpCli=()=>{gen++};
-export const TOOL_NAMES={node:'Node.js',claude:'Claude Code',codex:'Codex CLI'};
+export const TOOL_NAMES={node:'Node.js',claude:'Claude Code',codex:'Codex CLI',cloudflared:'Cloudflare Tunnel'};
 
 const TRIPLE={'win32 x64':'x86_64-pc-windows-msvc','win32 arm64':'aarch64-pc-windows-msvc','darwin x64':'x86_64-apple-darwin','darwin arm64':'aarch64-apple-darwin','linux x64':'x86_64-unknown-linux-musl','linux arm64':'aarch64-unknown-linux-musl'}[`${process.platform} ${process.arch}`];
 const PLAT=`${process.platform}-${process.arch}`;// win32-x64, darwin-arm64, linux-x64…
@@ -66,6 +66,15 @@ async function release(name){
     if(!hex)throw new Error(`Không thấy mã kiểm tra cho ${file}`);
     return {version:lts.version.replace(/^v/,''),url:`https://nodejs.org/dist/${lts.version}/${file}`,check:{algo:'sha256',hex},bin:isWin?join(base,'node.exe'):join(base,'bin','node')};
   }
+  if(name==='cloudflared'){
+    // Cloudflare's own release on GitHub; the API gives each file's sha256
+    const r=await getJson('https://api.github.com/repos/cloudflare/cloudflared/releases/latest');
+    const arch=process.arch==='arm64'?'arm64':'amd64';
+    const file={win32:'cloudflared-windows-amd64.exe',darwin:`cloudflared-darwin-${arch}.tgz`,linux:`cloudflared-linux-${arch}`}[process.platform];
+    const a=r.assets?.find(x=>x.name===file);if(!a)throw new Error(`Không thấy bản cloudflared cho ${process.platform} ${process.arch}`);
+    const hex=String(a.digest||'').match(/^sha256:([0-9a-f]{64})$/)?.[1];if(!hex)throw new Error('Bản cloudflared không có mã kiểm tra');
+    return {version:String(r.tag_name).replace(/^v/,''),url:a.browser_download_url,check:{algo:'sha256',hex},raw:!file.endsWith('.tgz'),bin:`cloudflared${EXE}`};
+  }
   throw new Error('Công cụ không hợp lệ');
 }
 // npm "sha512-<base64>" integrity → {algo, b64}
@@ -100,9 +109,10 @@ export async function installTool(name,onProgress=()=>{}){
   if(!existsSync(join(dest,rel.bin))){
     try{
       await download(rel.url,tmp,rel.check,p=>onProgress('Đang tải',p));
-      onProgress('Đang giải nén',100);
+      onProgress(rel.raw?'Đang cài':'Đang giải nén',100);
       rmSync(dest,{recursive:true,force:true});mkdirSync(dest,{recursive:true});
-      await untar(tmp,dest);
+      // a single program file (cloudflared on Windows/Linux) is kept as is; archives are unpacked
+      if(rel.raw)renameSync(tmp,join(dest,rel.bin));else await untar(tmp,dest);
     }catch(e){rmSync(dest,{recursive:true,force:true});throw e}
     finally{rmSync(tmp,{force:true})}
   }

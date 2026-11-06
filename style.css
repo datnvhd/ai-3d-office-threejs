@@ -334,3 +334,52 @@
 .mauto-row em{font-style:normal;font-size:11px;color:#8d97a8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
 .mauto-row select{margin-left:auto;font-size:12px;padding:4px 8px;border-radius:8px;border:1px solid #475363;background:#11161f;color:#e8edf5;max-width:170px}
 .mauto-row.on select{border-color:#f4966b;color:#ffd9c7}
+/* Remote access: each link with its kind, QR code for phones, password of the public link */
+.rlink{margin:10px 0 0}.rkind{display:block;font-style:normal;font-size:12px;color:#9aa6bb;margin:0 0 4px}
+.rqr{display:flex;gap:14px;align-items:center;margin:10px 0 4px}.rqr svg{width:180px;height:180px;flex:none;border-radius:10px;background:#fff}.rqr span{font-size:12px;color:#bbc4d3;line-height:1.5}
+.rpass{display:flex;gap:8px;margin:8px 0 0}.rpass input{flex:1;min-width:0;background:#151b26;color:#fff;border:1px solid #475363;border-radius:10px;padding:9px 12px;outline:none}.rpass input:focus{border-color:#ee996f}
+@media(max-width:520px){.rqr{flex-direction:column;align-items:flex-start}}
+/* ---------- 3D office on a phone (body.ph, set in src.js): 3D on top, a sheet with two tabs below ---------- */
+.ph{--top-h:52px;--tab-h:54px;--sheet-h:56vh;--safe-b:env(safe-area-inset-bottom)}
+.ph.ph-min{--sheet-h:0px}
+.ph .top{height:var(--top-h);padding:env(safe-area-inset-top) 10px 0;background:linear-gradient(180deg,#f3f4fcf5,#f3f4fcc0 75%,transparent)}
+.ph .brand small,.ph .brand .tag,.ph .topstats,.ph .actions #reset,.ph .actions #help,.ph .intro,.ph .scenery,.ph .bottom{display:none!important}
+.ph .brand{gap:8px}.ph .brand b{font-size:17px}.ph .logo{transform:scale(.72);transform-origin:left center;margin-right:-10px}
+.ph .actions{gap:5px}
+.ph .claude-chip{padding:7px 9px;font-size:11px;gap:5px;min-height:34px}
+.ph .claude-chip>span:not(.cdot){display:none}
+.ph #claudeChip::after{content:'Claude'}.ph .claude-chip:has(.xtext)::after{content:'Codex'}.ph #machineChip::after{content:'Máy'}
+.ph .phlite{display:inline-flex}
+.phlite{display:none;align-items:center;min-height:34px;padding:7px 10px;border-radius:999px;border:1px solid #e1e4f2;background:#fff;color:#c45a24;font-size:11px;font-weight:700;text-decoration:none}
+/* tab bar sits on top of the sheet; a tap on the open tab folds the sheet away to show the whole office */
+.phtabs{display:none}
+.ph .phtabs{display:flex;position:fixed;left:0;right:0;bottom:calc(var(--sheet-h) + var(--safe-b));height:var(--tab-h);z-index:7;gap:6px;padding:8px 10px 6px;background:#fffffff2;border-top:1px solid #e1e4f2;border-radius:20px 20px 0 0;box-shadow:0 -10px 30px #2a315020;transition:bottom .22s ease}
+.ph.ph-min .phtabs{bottom:var(--safe-b);border-radius:0}
+.phtabs button{flex:1;display:flex;align-items:center;justify-content:center;gap:6px;border:0;border-radius:12px;background:#f1f3fa;color:#3c4460;font-weight:700;font-size:14px}
+.phtabs button.on{background:#1f2540;color:#fff}
+.phtabs button b{font-size:11px;min-width:20px;padding:1px 6px;border-radius:999px;background:#f08a5d;color:#fff}
+.phtabs .phfold{flex:none;width:44px;font-size:18px;background:#f1f3fa;color:#3c4460}
+.ph .side{left:0;right:0;top:auto;bottom:0;width:auto;height:calc(var(--sheet-h) + var(--safe-b));max-height:none;border-radius:0;border-left:0;border-right:0;border-bottom:0;padding:12px 14px calc(10px + var(--safe-b));box-shadow:none;background:#fff;backdrop-filter:none;transition:height .22s ease,opacity .15s}
+.ph.ph-min .side{opacity:0;pointer-events:none}
+.ph.tab-task .side-right,.ph.tab-result .side-left{display:none}
+.ph .side-left{overflow-y:auto;-webkit-overflow-scrolling:touch}
+.ph .side .panel-kicker,.ph .side .side-title,.ph .side .disclaimer,.ph .side .hint,.ph .profile-desc,.ph .runnote{display:none}
+/* the staff as one swipeable row */
+.ph #avatars.agent-pick.view-grid,.ph #avatars.agent-pick.view-list{display:flex;flex-direction:row;flex-wrap:nowrap;overflow-x:auto;overflow-y:hidden;max-height:none;gap:8px;margin:0 -14px;padding:2px 14px 8px;scroll-snap-type:x proximity;scrollbar-width:none}
+.ph .agent-pick::-webkit-scrollbar{display:none}
+.ph .agent-pick .ateam{display:none}
+.ph .agent-pick>button{flex:none;scroll-snap-align:center}
+.ph .agent-pick .acard{width:84px;padding:8px 4px}.ph .agent-pick .arow{width:auto;max-width:180px}.ph .agent-pick .add-agent{min-height:0;align-self:stretch}.ph .side .section-title .viewsw{display:none}
+.ph .agent-pick .arow{border-radius:14px}
+.ph .side .section-title{margin-top:8px}
+.ph .side .profile{margin-top:6px;padding:8px 10px}.ph .side .profile-avatar{width:36px;height:36px;font-size:17px}
+.ph #task{font-size:16px;min-height:88px}
+.ph .opts{gap:8px}.ph .opts select{font-size:15px;min-height:42px}
+.ph .side-left #assign{min-height:50px;font-size:16px}
+.ph .side-right{display:flex;flex-direction:column}
+.ph .result-tabs{flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}.ph .result-tabs::-webkit-scrollbar{display:none}.ph .result-tabs button{flex:none;min-height:36px}
+.ph .tasklist{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch}
+/* windows (task progress, settings) take the whole screen */
+.ph .pv-box,.ph .modal .guide{width:100vw;max-width:none;height:100%;max-height:none;border-radius:0}
+.ph .pv-box{padding-top:env(safe-area-inset-top)}
+.ph #scene canvas{touch-action:none}

@@ -16,7 +16,8 @@ import {createUpdater,cliGen,UPDATE_MODES} from './ai-updates.js';
 import {createSnapshots} from './snapshot.js';
 import {rnProject,mobileEnv,mobileEnvCached,mobileSummary,MOBILE_KIT,mobilePrompt,mobilePlanNote} from './mobile.js';
 import {detectLimit,ENGINE_NAME} from './ai-limits.js';
-import {createRemoteServer,isRemoteReq,newRemoteKey,lanAddresses,DEFAULT_REMOTE_PORT} from './remote-access.js';
+import {createRemoteServer,isRemoteReq,newRemoteKey,lanAddresses,hashPassword,MIN_PASSWORD,DEFAULT_REMOTE_PORT} from './remote-access.js';
+import {createTunnel} from './tunnel.js';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion,fitModel,TIER,sameTier,engineOfModel,enginesOf,ENGINE_NAMES} from '../workflow-plan.js';
@@ -1078,12 +1079,20 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
 
   // ---------- remote access (server/remote-access.js): other computers open this office with a key ----------
   let remote=null,remoteError=null,remoteBusy=null;
+  // Public link (any network): a second remote server on 127.0.0.1 that also asks for the password, reached through a
+  // Cloudflare quick tunnel; independent of the LAN switch, same access key
+  let pubServer=null,pubError=null;
+  const tunnel=createTunnel();
+  process.once('exit',()=>tunnel.stop());
   const remoteCfg=()=>config.remote||(config.remote={on:false,key:null,port:DEFAULT_REMOTE_PORT});
   // the key is shown only on this machine; a remote viewer just learns that it is connected from afar
-  function remoteInfo(viewer=false){
-    const c=remoteCfg();
-    return {on:!!remote,wanted:!!c.on,port:remote?.port||c.port||DEFAULT_REMOTE_PORT,error:remoteError,viewer,
-      ...(viewer?{}:{key:c.key,addresses:lanAddresses().map(a=>({...a,url:`http://${a.address}:${remote?.port||c.port||DEFAULT_REMOTE_PORT}/?key=${encodeURIComponent(c.key||'')}`}))})};
+  async function remoteInfo(viewer=false){
+    const c=remoteCfg(),port=remote?.port||c.port||DEFAULT_REMOTE_PORT,T=tunnel.state();
+    // public: the link carries the key, the password is typed on the device
+    const pub={wanted:!!c.public?.on,hasPassword:!!c.public?.pass,state:pubError?'error':T.state,message:pubError||T.message||null,minPassword:MIN_PASSWORD,
+      ...(viewer?{}:{url:T.state==='on'&&T.url?`${T.url}/?key=${encodeURIComponent(c.key||'')}`:null})};
+    return {on:!!remote,wanted:!!c.on,port,error:remoteError,viewer,public:pub,
+      ...(viewer?{}:{key:c.key,addresses:lanAddresses().map(a=>({...a,url:`http://${a.address}:${port}/?key=${encodeURIComponent(c.key||'')}`}))})};
   }
   async function applyRemote(){
     const c=remoteCfg();
@@ -1097,6 +1106,14 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       }
     })();
     await remoteBusy;remoteBusy=null;
+    // public link: needs a password; the tunnel points at the 127.0.0.1-only server that asks for it
+    const P=c.public||{};
+    if(P.on&&P.pass){
+      if(!c.key){c.key=newRemoteKey();saveConfig()}
+      if(!pubServer)try{pubServer=await createRemoteServer({targetPort:()=>port,key:()=>remoteCfg().key,password:()=>remoteCfg().public?.pass,host:'127.0.0.1',port:(c.port||DEFAULT_REMOTE_PORT)+1});pubError=null}
+        catch(e){pubServer=null;pubError=`Không mở được cổng cho link công khai: ${e.message}`}
+      if(pubServer)tunnel.start(pubServer.port);
+    }else{tunnel.stop();if(pubServer){await pubServer.close().catch(()=>{});pubServer=null}pubError=null}
   }
 
   async function status(req=null){
@@ -1113,7 +1130,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         toolkits:Object.fromEntries(Object.entries(TOOLKITS).map(([k,v])=>[k,{short:v.short,label:v.label,write:!!v.write}])),teamKits:config.teamKits||{},defaultKits:DEFAULT_TEAM_KITS},
       browser:{mcp:!!MCP_CLI,channel:findBrowser(),sites:sites.filter(s=>!s.temp).map(siteView)},
       mobile:await mobileEnv().then(e=>({...e,summary:mobileSummary(e),project:rnProject(config.workdir)})).catch(()=>null),
-      remote:remoteInfo(viewer),
+      remote:await remoteInfo(viewer),
       auto:{levels:AUTO_LEVELS,agents:config.agentAuto||{}},
       updates:(updater.check().catch(()=>{}),updater.view()),
       limits:{autoSwitch:config.autoSwitch!==false,both:bothLimited(),claude:limitOf('claude'),codex:limitOf('codex')},
@@ -1137,8 +1154,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     configureServer(server){
       // what the machine lacks (Node.js, Claude Code, Codex CLI) is installed in the background once the server runs (not during vite build)
       if(!process.env.CI&&!process.env.AI_OFFICE_SELFTEST)setTimeout(()=>{(async()=>{await ensureBin();await ensureCodex();await updater.setup()})().catch(()=>{})},3000).unref?.();
-      server.httpServer?.on('listening',()=>{const a=server.httpServer.address();if(a?.port)port=a.port;if(remoteCfg().on)applyRemote()});
-      server.httpServer?.once('close',()=>{remote?.close().catch(()=>{});remote=null});
+      server.httpServer?.on('listening',()=>{const a=server.httpServer.address();if(a?.port)port=a.port;if(remoteCfg().on||remoteCfg().public?.on)applyRemote()});
+      server.httpServer?.once('close',()=>{remote?.close().catch(()=>{});remote=null;tunnel.stop();pubServer?.close().catch(()=>{});pubServer=null});
       if(!existsSync(config.workdir)&&config.workdir===DEFAULT_WORKDIR)try{mkdirSync(DEFAULT_WORKDIR,{recursive:true})}catch{}
       server.middlewares.use('/api/machine',async(req,res)=>{
         // Runs programs on this computer: only this computer may call it, and writes need the CSRF header
@@ -1150,14 +1167,20 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
           return json(res,403,{error:'Việc này chỉ làm được trên chính máy chạy app.'});
         try{
           if(path==='/remote'){
-            if(req.method==='GET')return json(res,200,remoteInfo());
+            if(req.method==='GET')return json(res,200,await remoteInfo());
             if(req.method==='POST'){
               const b=await readBody(req),c=remoteCfg();
               if(b.port!==undefined){const p=+b.port;if(!Number.isInteger(p)||p<1024||p>65535)return json(res,400,{error:'Cổng phải từ 1024 đến 65535.'});if(p!==c.port){c.port=p;c.portChanged=true}}
               if(b.newKey){c.key=newRemoteKey();if(remote){await remote.close().catch(()=>{});remote=null}}// old links and cookies stop working
               if(b.on!==undefined)c.on=!!b.on;
+              // public link: a password of at least MIN_PASSWORD characters is required before it can be switched on
+              if(b.password!==undefined){
+                const pw=String(b.password||'');if(pw.length<MIN_PASSWORD||pw.length>200)return json(res,400,{error:`Mật khẩu cần từ ${MIN_PASSWORD} ký tự.`});
+                c.public={...c.public,pass:hashPassword(pw)};// every device signed in before has to sign in again
+              }
+              if(b.public!==undefined){if(b.public&&!c.public?.pass)return json(res,400,{error:'Đặt mật khẩu truy cập trước khi bật link công khai.'});c.public={...c.public,on:!!b.public}}
               await applyRemote();delete c.portChanged;saveConfig();
-              return json(res,200,remoteInfo());
+              return json(res,200,await remoteInfo());
             }
           }
           if(req.method==='GET'&&path==='/status')return json(res,200,await status(req));

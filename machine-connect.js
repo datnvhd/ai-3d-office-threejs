@@ -4,6 +4,9 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const fmt=d=>d?new Date(d).toLocaleString('vi-VN'):'—';
 const gb=b=>(b/1073741824).toFixed(1)+' GB';
 import {openFolderPicker} from './folder-picker.js';
+import qrcode from 'qrcode-generator';
+// QR code of a link as an inline SVG (dark modules on white, with the quiet zone phones need to read it)
+const qrSvg=text=>{const q=qrcode(0,'M');q.addData(text);q.make();return q.createSvgTag({cellSize:4,margin:4,scalable:true})};
 // Which version control holds the working folder and where its code is pushed
 export const vcsBadge=v=>!v?.kind?'<span class="vcsb none">Không VCS</span>':`<span class="vcsb ${v.kind}">${v.kind==='git'?'Git':'SVN'}</span>`;
 export const vcsText=v=>!v?.kind?'Không quản lý phiên bản (diff/hoàn tác vẫn dùng bản chụp của app)'
@@ -28,7 +31,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
   modal.innerHTML='<div class="guide claude-box machine-box"><button class="close">✕</button><div class="panel-kicker">KẾT NỐI · MÁY CÁ NHÂN</div><div class="mbody"></div></div>';
   document.getElementById('app').appendChild(modal);
   const body=modal.querySelector('.mbody');
-  let st=null,busy=false,checking=false,editing=null;
+  let st=null,busy=false,checking=false,editing=null,showQr=null;
 
   const open=()=>{modal.classList.remove('hidden');render();refresh()};
   chip.onclick=open;
@@ -120,18 +123,28 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
   // Remote access: other computers on the LAN/VPN open this office with a key (server/remote-access.js)
   const remoteHtml=r=>{
     if(!r)return '';
-    if(r.viewer)return `<div class="section-title">TRUY CẬP TỪ XA</div><p class="claude-note">Bạn đang mở văn phòng từ máy khác. Việc vẫn chạy trên máy <b>${esc(st.host.name)}</b>. Đăng nhập Claude/Codex, mật khẩu web và cài đặt truy cập từ xa chỉ đổi được trên máy đó.</p>`;
-    const links=(r.addresses||[]).map(a=>`<div class="claude-code"><input readonly value="${esc(a.url)}" title="${esc(a.name)}"><button class="ghost" data-act="copy" data-text="${esc(a.url)}">Sao chép</button></div>`).join('')||'<p class="claude-note">Máy chưa có địa chỉ mạng LAN.</p>';
-    return `<div class="section-title">TRUY CẬP TỪ XA</div>
-      <label class="mcheck"><input type="checkbox" id="mRemote" ${r.wanted?'checked':''}> Cho máy khác trong mạng (LAN hoặc VPN như Tailscale) mở văn phòng này bằng mã truy cập</label>
+    if(r.viewer)return `<div class="section-title">TRUY CẬP TỪ XA</div><p class="claude-note">Bạn đang mở văn phòng từ thiết bị khác. Việc vẫn chạy trên máy <b>${esc(st.host.name)}</b>. Đăng nhập Claude/Codex, mật khẩu web và cài đặt truy cập từ xa chỉ đổi được trên máy đó.</p>`;
+    // a link with copy and QR buttons; the phone scans the QR code to open it
+    const linkRow=(id,url,label,hint)=>`<div class="rlink"><em class="rkind">${label}</em><div class="claude-code"><input readonly value="${esc(url)}"><button class="ghost" data-act="copy" data-text="${esc(url)}">Sao chép</button><button class="ghost" data-act="qr" data-i="${id}">${showQr===id?'Ẩn QR':'Mã QR'}</button></div>${showQr===id?`<div class="rqr">${qrSvg(url)}<span>Mở camera hoặc app quét QR trên điện thoại rồi quét mã này. ${hint}</span></div>`:''}</div>`;
+    const links=(r.addresses||[]).map((a,i)=>linkRow('lan'+i,a.url,`📶 ${esc(a.name)} · chỉ khi chung mạng Wi-Fi/LAN`,'Điện thoại cần chung mạng Wi-Fi với máy này.')).join('')||'<p class="claude-note">Máy chưa có địa chỉ mạng nào để máy khác kết nối.</p>';
+    const P=r.public||{};
+    const pubState=P.state==='on'&&P.url?linkRow('pub',P.url,'🌐 Link công khai · dùng được ở mọi mạng (4G, Wi-Fi khác)','Trên điện thoại nhập mật khẩu truy cập một lần; thiết bị được nhớ 30 ngày.')
+      :P.state==='installing'||P.state==='starting'?`<p class="claude-note"><span class="spinner"></span> ${esc(P.message||'Đang tạo link công khai…')}</p>`
+      :P.state==='error'?`<p class="claude-err">${esc(P.message||'Không tạo được link công khai.')}</p>`:'';
+    return `<div class="section-title">TRUY CẬP TỪ XA · ĐIỆN THOẠI & MÁY KHÁC</div>
+      <label class="mcheck"><input type="checkbox" id="mRemote" ${r.wanted?'checked':''}> Cùng mạng: cho điện thoại hoặc máy khác trong cùng Wi-Fi/LAN mở văn phòng này bằng mã truy cập</label>
       ${r.error?`<p class="claude-err">${esc(r.error)}</p>`:''}
-      ${r.on?`${links}
-      <p class="claude-note">Mở link trên máy kia (mã nằm sau <code>?key=</code>, cổng ${r.port}). Ai có link đều điều khiển được agent trên máy này: chỉ gửi cho người tin cậy. Kết nối là HTTP thường, chỉ dùng trong mạng nội bộ hoặc VPN, không mở ra Internet. Lần đầu macOS có thể hỏi cho phép kết nối đến.</p>
-      <div class="claude-actions"><button class="ghost" data-act="remoteKey">↻ Đổi mã (link cũ hết hiệu lực)</button></div>`:''}`;
+      ${r.on?links:''}
+      <label class="mcheck"><input type="checkbox" id="mPublic" ${P.wanted?'checked':''} ${P.hasPassword?'':'disabled'}> Mọi mạng: tạo link công khai HTTPS (Cloudflare Tunnel) để mở từ điện thoại dùng 4G hoặc mạng khác</label>
+      <div class="rpass"><input type="password" id="mPubPass" autocomplete="new-password" placeholder="${P.hasPassword?'Đổi mật khẩu truy cập':`Đặt mật khẩu truy cập (từ ${P.minPassword||8} ký tự)`}"><button class="ghost" data-act="pubPass">${P.hasPassword?'Đổi mật khẩu':'Lưu mật khẩu'}</button></div>
+      ${P.hasPassword?'':'<p class="claude-note">Link công khai nằm trên Internet nên cần mật khẩu riêng: đặt mật khẩu trước rồi mới bật được.</p>'}
+      ${P.wanted?pubState:''}
+      ${r.on||P.wanted?`<p class="claude-note">Mã truy cập nằm sau <code>?key=</code>. Ai có link cùng mạng đều điều khiển được agent trên máy này; link công khai còn cần mật khẩu. Chỉ gửi cho người tin cậy. Link công khai đổi mỗi lần app khởi động lại hoặc mất mạng: mở lại cửa sổ này để lấy link mới. Lần đầu Windows/macOS có thể hỏi cho phép kết nối: hãy cho phép.</p>
+      <div class="claude-actions"><button class="ghost" data-act="remoteKey">↻ Đổi mã (mọi link và thiết bị cũ phải mở lại)</button></div>`:''}`;
   };
 
   function render(){
-    setChip();
+    setChip();followPublic();
     if(!st){body.innerHTML='<p class="claude-note"><span class="spinner"></span> Đang đọc thông tin máy…</p>';return}
     const {host,claude,config,workdir,lastCheck}=st;
     const authText=claude.auth==='token'?'Token dài hạn đã lưu':'<em class="bad">chưa đăng nhập</em>';
@@ -166,6 +179,9 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
       <div class="claude-actions"><button class="assign" data-act="check" ${checking?'disabled':''}>▶ Chạy kiểm tra trên máy</button><button class="ghost" data-act="refresh">⟲ Làm mới</button></div>`;
   }
 
+  // while the public link is being made (download, tunnel start), look again every 2 s if the window is open
+  let pubPoll=null;
+  const followPublic=()=>{clearTimeout(pubPoll);if(['installing','starting'].includes(st?.remote?.public?.state)&&!modal.classList.contains('hidden'))pubPoll=setTimeout(()=>{if(!busy)refresh()},2000)};
   async function refresh(){try{st=await machineApi('/status');onStatus(st)}catch(e){st=null;chip.querySelector('.mtext').textContent='Máy cá nhân: lỗi kết nối';chip.querySelector('.cdot').className='cdot off'}render()}
   async function act(name,el){
     if(busy)return;busy=true;
@@ -195,7 +211,10 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
       else if(name==='updateMode'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({aiUpdate:el.value})});onStatus(st);toast('Cập nhật AI: '+st.updates.modes[st.updates.mode])}
       else if(name==='clearLimit'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({clearLimit:el.dataset.engine})});onStatus(st);toast(`Việc tiếp theo sẽ thử lại ${el.dataset.engine==='claude'?'Claude':'Codex'}`)}
       else if(name==='remote'){const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({on:el.checked})});st={...st,remote:r};toast(r.on?'Đã bật truy cập từ xa: gửi link cho máy cần mở':r.error||'Đã tắt truy cập từ xa')}
+      else if(name==='pubPass'){const pw=body.querySelector('#mPubPass').value;const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({password:pw})});st={...st,remote:r};toast('Đã lưu mật khẩu truy cập: thiết bị đã mở link công khai phải nhập lại')}
+      else if(name==='public'){const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({public:el.checked})});st={...st,remote:r};toast(el.checked?'Đang tạo link công khai… (lần đầu app tải Cloudflare Tunnel)':'Đã tắt link công khai')}
       else if(name==='remoteKey'){if(!confirm('Đổi mã truy cập? Các máy đang mở bằng link cũ sẽ phải nhập mã mới.'))return;const r=await machineApi('/remote',{method:'POST',body:JSON.stringify({newKey:true})});st={...st,remote:r};toast('Đã đổi mã truy cập')}
+      else if(name==='qr'){const i=el.dataset.i;showQr=showQr===i?null:i}
       else if(name==='copy'){
         const done=navigator.clipboard?await navigator.clipboard.writeText(el.dataset.text).then(()=>true,()=>false):false;
         if(done)toast('Đã sao chép link');else{el.previousElementSibling?.select();toast('Đã chọn sẵn link: bấm Ctrl/Cmd+C để sao chép')}
@@ -207,7 +226,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
     finally{busy=false;checking=false;render()}
   }
   body.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b)});
-  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.name==='mUpdate')act('updateMode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
+  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.name==='mUpdate')act('updateMode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mPublic')act('public',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
   body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir')});
 
   refresh();
