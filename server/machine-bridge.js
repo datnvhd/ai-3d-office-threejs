@@ -18,7 +18,7 @@ import {rnProject,mobileEnv,mobileEnvCached,mobileSummary,MOBILE_KIT,mobilePromp
 import {detectLimit,ENGINE_NAME} from './ai-limits.js';
 import {createRemoteServer,isRemoteReq,newRemoteKey,lanAddresses,hashPassword,MIN_PASSWORD,DEFAULT_REMOTE_PORT} from './remote-access.js';
 import {createTunnel} from './tunnel.js';
-import {publicSkills,skillRefs,skillPrompt,skillsAvailablePrompt,importSkills,removeSkill,PERSONAL_DIR} from './skills.js';
+import {loadSkills,publicSkills,skillRefs,skillPrompt,skillsAvailablePrompt,importSkills,removeSkill,PERSONAL_DIR} from './skills.js';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion,fitModel,TIER,sameTier,engineOfModel,enginesOf,ENGINE_NAMES} from '../workflow-plan.js';
@@ -1150,6 +1150,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   // the permission token and rules stay on the server; the list view sends only how many files changed
   const view=t=>({...t,files:undefined,log:(t.log||[]).slice(-8),thread:undefined,asks:t.thread?.length||0,permToken:undefined,permAlways:undefined,changes:undefined,changesN:t.changes?.length||0});
   const full=t=>({...t,files:undefined,permToken:undefined,permAlways:undefined});
+  // the skill list, read in the background (server/skills.js); never waits more than 3s (e.g. a macOS privacy prompt)
+  const skillsNow=async(cwd,maxAge)=>{await Promise.race([loadSkills(cwd,maxAge),new Promise(r=>setTimeout(r,3000))]);return publicSkills(cwd)};
   const permCaller=(req,t)=>t?.permToken&&req.headers['x-perm-token']===t.permToken;
 
   const plugin={
@@ -1294,15 +1296,15 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
           }
           // agent list of the office: built-in ones by id (with the user's name/role/description), custom ones in full
           // Skills: list (for the / menu), import a .zip/.skill/SKILL.md (raw body, name in X-Filename), remove a personal one
-          if(req.method==='GET'&&path==='/skills')return json(res,200,{skills:publicSkills(config.workdir),dir:PERSONAL_DIR});
+          if(req.method==='GET'&&path==='/skills')return json(res,200,{skills:await skillsNow(config.workdir),dir:PERSONAL_DIR});
           if(req.method==='POST'&&path==='/skills/import'){
             const name=(()=>{try{return decodeURIComponent(req.headers['x-filename']||'')}catch{return String(req.headers['x-filename']||'')}})();
             if(!name)return json(res,400,{error:'Thiếu tên tệp.'});
             const buf=await new Promise((ok,bad)=>{const c=[];let n=0;req.on('data',d=>{n+=d.length;if(n>MAX_FILE){bad(Object.assign(new Error('Tệp quá lớn (tối đa 25MB).'),{code:400}));req.destroy()}else c.push(d)});req.on('end',()=>ok(Buffer.concat(c)));req.on('error',bad)});
-            return json(res,200,{imported:importSkills(name,buf),skills:publicSkills(config.workdir)});
+            const imported=importSkills(name,buf);return json(res,200,{imported,skills:await skillsNow(config.workdir,0)});
           }
           const skDel=req.method==='DELETE'&&path.match(/^\/skills\/([\w.-]{1,64})$/);
-          if(skDel){removeSkill(skDel[1],config.workdir);return json(res,200,{skills:publicSkills(config.workdir)})}
+          if(skDel){removeSkill(skDel[1],config.workdir);return json(res,200,{skills:await skillsNow(config.workdir,0)})}
           if(req.method==='GET'&&path==='/agents')return json(res,200,{agents:readJson(AGENTS_FILE,null)});
           if(req.method==='POST'&&path==='/agents'){
             const list=(await readBody(req)).agents;
@@ -1360,7 +1362,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             const buf=await new Promise((ok,bad)=>{const c=[];let n=0;req.on('data',d=>{n+=d.length;if(n>MAX_FILE){bad(Object.assign(new Error('Tệp quá lớn (tối đa 25MB).'),{code:400}));req.destroy()}else c.push(d)});req.on('end',()=>ok(Buffer.concat(c)));req.on('error',bad)});
             return json(res,200,stageUpload(name,buf));
           }
-          if(req.method==='POST'&&path==='/tasks'){await ensureBin();await ensureCodex();return json(res,200,{task:view(add(await readBody(req)))})}
+          if(req.method==='POST'&&path==='/tasks'){await ensureBin();await ensureCodex();const body=await readBody(req);await skillsNow(config.workdir);return json(res,200,{task:view(add(body))})}
           // Delete finished tasks. A workflow goes as a whole, and only once none of its steps is running or waiting
           // (its later steps need the earlier results).
           const active=t=>t.status==='running'||t.status==='queued';
@@ -1389,6 +1391,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             if(!q||q.length>8000)return json(res,400,{error:'Câu hỏi trống hoặc quá dài (tối đa 8000 ký tự).'});
             if(t.status!=='done'||t.kind==='plan')return json(res,409,{error:'Chỉ hỏi thêm được việc đã hoàn thành.'});
             await ensureBin();await ensureCodex();
+            await skillsNow(t.cwd);
             (t.thread||=[]).push({q,at:new Date().toISOString(),...(k=>k.length?{skills:k}:{})(skillRefs(q,t.cwd))});if(t.thread.length>30)t.thread.shift();
             Object.assign(t,{asking:true,status:'queued',activity:'Chờ đến lượt trả lời câu hỏi thêm'});save();pump();
             return json(res,200,{task:full(t)});
@@ -1422,7 +1425,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             if(!text||text.length>4000)return json(res,400,{error:'Câu trả lời trống hoặc quá dài (tối đa 4000 ký tự).'});
             if(t.status!=='waiting'||!t.question)return json(res,409,{error:'Việc này không còn chờ câu trả lời.'});
             // /name in the answer: that skill's instructions go with it (and stay with the task from now on)
-            const sk=skillRefs(text,t.cwd);if(sk.length)t.skills=[...new Set([...(t.skills||[]),...sk])];
+            await skillsNow(t.cwd);const sk=skillRefs(text,t.cwd);if(sk.length)t.skills=[...new Set([...(t.skills||[]),...sk])];
             (t.clarify||=[]).push({q:t.question.q,options:t.question.options,answer:text,at:new Date().toISOString(),...(sk.length?{skills:sk}:{})});
             t.clarifies=(t.clarifies||0)+1;
             if(t.kind==='plan')t.text+=`\n\nThông tin bổ sung (trả lời câu hỏi "${t.question.q}"): ${text}`;else t.reply=text;

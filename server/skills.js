@@ -3,7 +3,8 @@
 // exist, so an agent picks one up by itself when it fits; typing /name in a request or a follow-up puts that skill's
 // full instructions into the prompt (Claude Code and Codex alike). Skills imported in the app (.zip, .skill or a
 // SKILL.md) are saved to ~/.claude/skills, the personal skills folder Claude Code also reads on its own.
-import {existsSync,readdirSync,readFileSync,statSync,mkdirSync,writeFileSync,rmSync,renameSync} from 'node:fs';
+import {existsSync,mkdirSync,writeFileSync,rmSync,renameSync} from 'node:fs';
+import fsp from 'node:fs/promises';
 import {join,dirname,basename,extname,posix} from 'node:path';
 import os from 'node:os';
 import {inflateRawSync} from 'node:zlib';
@@ -33,26 +34,43 @@ export function parseSkill(text){
   return {meta,body:(m?s.slice(m[0].length):s).trim()};
 }
 
-let cache={key:null,at:0,list:[]};
-export function listSkills(cwd){
-  if(cache.key===(cwd||'')&&Date.now()-cache.at<5000)return cache.list;
-  const seen=new Set(),list=[];
-  for(const r of roots(cwd)){
-    let ents;try{ents=readdirSync(r.dir,{withFileTypes:true})}catch{continue}
-    for(const e of ents){
-      if(list.length>=MAX_SKILLS)break;
-      if(e.name.startsWith('.')||!(e.isDirectory()||e.isSymbolicLink()))continue;
-      const dir=join(r.dir,e.name),file=join(dir,'SKILL.md');
-      let text;try{if(!statSync(file).isFile())continue;text=readFileSync(file,'utf8').slice(0,64*1024)}catch{continue}
-      const {meta}=parseSkill(text),name=NAME.test(meta.name||'')?meta.name:NAME.test(e.name)?e.name:null;
-      if(!name||seen.has(name.toLowerCase()))continue;seen.add(name.toLowerCase());
-      list.push({name,description:String(meta.description||'').slice(0,300),source:r.source,label:r.label,native:r.native,dir,file});
-    }
+// Skill lists are read in the background (fs/promises) and kept in memory. The server shares its thread with the
+// desktop app's window, and on macOS a read under Documents/Desktop waits for the privacy prompt to be answered: a
+// synchronous read there froze the whole app. A folder that takes too long is skipped for now and read again later.
+const caches=new Map();// cwd → {at, list, loading}
+const ROOT_WAIT=2500;
+async function scanRoot(r){
+  const out=[];let ents;try{ents=await fsp.readdir(r.dir,{withFileTypes:true})}catch{return out}
+  for(const e of ents){
+    if(out.length>=MAX_SKILLS)break;
+    if(e.name.startsWith('.')||!(e.isDirectory()||e.isSymbolicLink()))continue;
+    const dir=join(r.dir,e.name),file=join(dir,'SKILL.md');
+    let text;try{text=(await fsp.readFile(file,'utf8')).slice(0,64*1024)}catch{continue}
+    const {meta}=parseSkill(text),name=NAME.test(meta.name||'')?meta.name:NAME.test(e.name)?e.name:null;
+    if(name)out.push({name,description:String(meta.description||'').slice(0,300),source:r.source,label:r.label,native:r.native,dir,file,text});
   }
-  list.sort((a,b)=>a.name.localeCompare(b.name));
-  cache={key:cwd||'',at:Date.now(),list};return list;
+  return out;
 }
-const forget=()=>{cache.at=0};
+async function scan(cwd){
+  const parts=await Promise.all(roots(cwd).map(r=>Promise.race([scanRoot(r),new Promise(ok=>setTimeout(ok,ROOT_WAIT,[])).then(x=>x)])));
+  const seen=new Set(),list=[];
+  for(const s of parts.flat()){const k=s.name.toLowerCase();if(seen.has(k)||list.length>=MAX_SKILLS)continue;seen.add(k);list.push(s)}// first root wins
+  return list.sort((a,b)=>a.name.localeCompare(b.name));
+}
+// Fresh list (read again when older than maxAge ms)
+export function loadSkills(cwd,maxAge=5000){
+  const k=cwd||'',c=caches.get(k);
+  if(c?.list&&Date.now()-c.at<maxAge&&!c.stale)return Promise.resolve(c.list);
+  if(c?.loading)return c.loading;
+  const loading=scan(cwd).then(list=>{caches.set(k,{at:Date.now(),list});return list},()=>{caches.set(k,{...c,loading:null});return c?.list||[]});
+  caches.set(k,{...c,loading});return loading;
+}
+// What is known now, without waiting (starts a refresh when old)
+export function listSkills(cwd){
+  const c=caches.get(cwd||'');if(!c?.list||c.stale||Date.now()-c.at>5000)loadSkills(cwd);
+  return c?.list||[];
+}
+const forget=()=>{for(const c of caches.values())c.stale=true};
 export const findSkill=(name,cwd)=>listSkills(cwd).find(s=>s.name.toLowerCase()===String(name).toLowerCase())||null;
 // what the page gets: no paths on disk
 export const publicSkills=cwd=>listSkills(cwd).map(({name,description,source,label})=>({name,description,source,label}));
@@ -66,10 +84,10 @@ export function skillRefs(text,cwd){
   return out;
 }
 
-// Prompt section for the skills the user asked for with /name: their full instructions, read fresh from disk
+// Prompt section for the skills the user asked for with /name: their full instructions (as read with the list)
 export function skillPrompt(names,cwd){
   const parts=(names||[]).map(n=>findSkill(n,cwd)).filter(Boolean).map(s=>{
-    let body='';try{body=parseSkill(readFileSync(s.file,'utf8')).body}catch{return ''}
+    const body=parseSkill(s.text||'').body;if(!body)return '';
     return `### Kỹ năng /${s.name}${s.description?` — ${s.description}`:''}
 Thư mục của kỹ năng: ${s.dir}
 ----- BẮT ĐẦU SKILL.md -----

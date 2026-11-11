@@ -119,7 +119,10 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
   // the caret left the "/word" (click, arrow keys) or the box lost focus
   document.addEventListener('selectionchange',()=>{if(!target||box.hidden)return;if(document.activeElement!==target)return;const t=trigger(target);if(!t)close();else if(t.query!==query){query=t.query;start=t.start;idx=0;render()}});
   document.addEventListener('focusout',e=>{if(e.target===target)setTimeout(()=>{if(document.activeElement!==target&&!box.matches(':hover'))close(true)},150)},true);
-  document.addEventListener('pointerdown',e=>{if(!box.hidden&&!box.contains(e.target)&&e.target!==target){lastClose={el:target,at:Date.now()};close(true)}},true);
+  // any click outside the list closes it, a click in the text box too (to keep typing without the menu)
+  document.addEventListener('pointerdown',e=>{if(!box.hidden&&!box.contains(e.target)){lastClose={el:target,at:Date.now()};close(true)}},true);
+  // the window lost focus (another app, a macOS privacy prompt, a file dialog)
+  addEventListener('blur',()=>{if(!box.hidden)close(true)});
   addEventListener('resize',()=>{if(!box.hidden)place()});
   document.addEventListener('scroll',()=>{if(!box.hidden){if(target?.isConnected)place();else close()}},true);
   box.addEventListener('pointerdown',e=>e.preventDefault());// keep the cursor in the text box
