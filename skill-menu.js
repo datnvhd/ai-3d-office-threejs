@@ -3,6 +3,7 @@
 // Picking inserts "/name " and the server puts that skill's instructions into the prompt. The menu can also import
 // a skill (.zip, .skill or SKILL.md) into ~/.claude/skills and remove a personal one.
 const CSS=`.skm{position:fixed;z-index:60;background:#fff;color:#1f2540;border:1px solid #dfe2f0;border-radius:12px;box-shadow:0 14px 40px #1f254033;font-size:13px;display:flex;flex-direction:column;overflow:hidden}
+.skm[hidden]{display:none}
 .skm-head{padding:8px 12px;font-size:10.5px;font-weight:700;letter-spacing:.6px;color:#8a92ad;border-bottom:1px solid #eef0f7;display:flex;justify-content:space-between;gap:8px}
 .skm-list{overflow-y:auto;padding:4px}
 .skm-it{display:flex;align-items:flex-start;gap:8px;padding:7px 9px;border-radius:8px;cursor:pointer}
