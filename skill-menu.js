@@ -30,6 +30,8 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
   let skills=null,loadedAt=0,loading=null,target=null,start=-1,query='',items=[],idx=0;
   // the "/" the user closed the menu on (Esc, ✕, click away): typing on after it does not reopen it, a new "/" does
   let dismissed=null;
+  // a "/" put in by the 🧩 button (removed again when the menu closes untouched), and the last close (the 🧩 button toggles)
+  let autoSlash=null,lastClose={el:null,at:0};
 
   async function load(force){
     if(!force&&skills&&Date.now()-loadedAt<10000)return skills;
@@ -68,7 +70,17 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
     box.hidden=false;render();
     if(fresh||!skills){await load(fresh);if(target===el&&!box.hidden)render()}
   }
-  function close(byUser){if(byUser&&target)dismissed={el:target,start};box.hidden=true;target=null}
+  function close(byUser){
+    const el=target;
+    if(byUser&&el){
+      dismissed={el,start};
+      // closed right after the 🧩 button opened it: take its "/" back out
+      if(autoSlash?.el===el&&!query&&el.value[autoSlash.start]==='/'&&el.selectionStart===autoSlash.start+1){
+        el.setRangeText('',autoSlash.start,autoSlash.start+1,'end');dismissed=null;
+      }
+    }
+    autoSlash=null;box.hidden=true;target=null;
+  }
   function pick(s){
     const el=target;if(!el)return;
     const end=el.selectionStart,before=el.value.slice(0,start),after=el.value.slice(end).replace(/^[\w.-]*/,'');
@@ -95,7 +107,7 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
     if(t&&!dismissed)open(e.target,t);else if(e.target===target)close();
   },true);
   document.addEventListener('keydown',e=>{
-    if(box.hidden||e.isComposing)return;
+    if(box.hidden||e.isComposing&&e.key!=='Escape')return;
     if(e.target!==target){if(target&&!target.isConnected&&matches(e.target))target=e.target;else return}// the box was re-rendered
     const n=items.length+1;// + the import row
     if(e.key==='ArrowDown'||e.key==='ArrowUp'){idx=(idx+(e.key==='ArrowDown'?1:n-1))%n;render()}
@@ -107,7 +119,7 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
   // the caret left the "/word" (click, arrow keys) or the box lost focus
   document.addEventListener('selectionchange',()=>{if(!target||box.hidden)return;if(document.activeElement!==target)return;const t=trigger(target);if(!t)close();else if(t.query!==query){query=t.query;start=t.start;idx=0;render()}});
   document.addEventListener('focusout',e=>{if(e.target===target)setTimeout(()=>{if(document.activeElement!==target&&!box.matches(':hover'))close(true)},150)},true);
-  document.addEventListener('pointerdown',e=>{if(!box.hidden&&!box.contains(e.target)&&e.target!==target)close(true)},true);
+  document.addEventListener('pointerdown',e=>{if(!box.hidden&&!box.contains(e.target)&&e.target!==target){lastClose={el:target,at:Date.now()};close(true)}},true);
   addEventListener('resize',()=>{if(!box.hidden)place()});
   document.addEventListener('scroll',()=>{if(!box.hidden){if(target?.isConnected)place();else close()}},true);
   box.addEventListener('pointerdown',e=>e.preventDefault());// keep the cursor in the text box
@@ -126,8 +138,10 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
 
   // Open the menu from a button: puts "/" at the caret (with a space before it when needed)
   function openFor(el){
+    if(lastClose.el===el&&Date.now()-lastClose.at<500){el.focus();return}// the click that just closed it: stay closed
+    if(!box.hidden&&target===el){close(true);el.focus();return}
     el.focus();const p=el.selectionStart??el.value.length,b=el.value.slice(0,p),pre=b&&!/\s$/.test(b)?' /':'/';
-    el.setRangeText(pre,p,el.selectionEnd??p,'end');el.dispatchEvent(new Event('input',{bubbles:true}));
+    el.setRangeText(pre,p,el.selectionEnd??p,'end');dismissed=null;el.dispatchEvent(new Event('input',{bubbles:true}));if(!box.hidden&&target===el)autoSlash={el,start};
   }
   return {openFor,reload:()=>load(true),importFiles:doImport};
 }
