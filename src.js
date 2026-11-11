@@ -4,16 +4,20 @@ import {createCharacter,PRESETS} from './characters.js';
 import {attachModel} from './character-models.js';
 import {initClaudeConnect} from './claude-connect.js';
 import {initCodexConnect} from './codex-connect.js';
+import {initGoogleConnect} from './google-connect.js';
 import {createOffice} from './office.js';
 import {createWander,ROW_X} from './wander.js';
 import {createOutdoor} from './outdoor.js';
-import {initMachineConnect,machineApi,pickWorkdir,vcsBadge} from './machine-connect.js';
+import {initMachineConnect,machineApi,pickWorkdir,vcsBadge,quotaLine} from './machine-connect.js';
 import {createProgressView} from './progress-view.js';
 import {setHTML} from './dom-keep.js';
 import {ruleSteps,MODELS,EFFORTS,modelId,sameTier,ENGINE_NAMES,enginesOf,LEVELS,BUILTIN_TEAM,teamOf,levelOf,normalizeLeaders} from './workflow-plan.js';
 import {initWebMCP} from './webmcp.js';
 import {initSkillMenu} from './skill-menu.js';
-import {escapeHTML,md} from './ui-text.js';
+import {pwField} from './pw-field.js';
+import {tokenTag,sumTokens} from './ui-text.js';
+import {escapeHTML,md,downloadList,linkFiles,optionButtons,toggleFill,fillPlaceholder,composeAnswer,fillOf} from './ui-text.js';
+let quotaNow=null;// what is left of each AI plan (machine-connect.js loads it)
 const app=document.querySelector('#app');
 // Left column: assign work · right column: what the agents did with it (running, done with result, failed with error)
 app.innerHTML=`<div id="scene"></div><div class="top"><div class="brand"><span class="logo">▦</span><div><b>My Office <i>3D</i></b><small>AI AGENT WORKSPACE</small></div></div><div class="topstats"><span><em class="dot green"></em><b id="active">0</b> AI đang làm việc</span><span><em class="dot orange"></em><b id="queued">0</b> đang xử lý</span><span><em class="dot blue"></em><b id="done">0</b> hoàn thành</span><span><em class="dot red"></em><b id="failed">0</b> lỗi</span></div><div class="actions"><button id="reset">⟲ Đặt lại góc nhìn</button><button id="help">? Hướng dẫn</button></div></div><div class="floatinglabels" id="labels"></div>
@@ -117,14 +121,16 @@ const taskEl=document.getElementById('task'),$=id=>document.getElementById(id);
 const hex=c=>'#'+c.toString(16).padStart(6,'0'),clock=d=>d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'});
 const agentOf=id=>agents.find(a=>a.id===id)||{id,name:id,role:'',color:0x9aa3b5};
 function allJobs(){return [...sim,...remote].sort((a,b)=>b.created-a.created)}
-const fromServer=t=>({key:'m'+t.id,rid:t.id,remote:true,agent:t.agent,text:t.text,priority:t.priority,status:t.status,steps:t.steps||0,activity:t.activity,started:t.started?new Date(t.started):null,result:t.result,error:t.error,created:new Date(t.created),finished:t.finished?new Date(t.finished):null,durationMs:t.durationMs,turns:t.turns,costUsd:t.costUsd,cwd:t.cwd,mode:t.mode,host:t.host,engine:t.engine||'claude',web:!!t.web,siteLabels:t.siteLabels||[],fileNames:t.fileNames||[],kind:t.kind,wf:t.wf!=null?'m'+t.wf:null,wfTitle:t.wfTitle,stepTitle:t.stepTitle,model:t.model,effort:t.effort,modelWhy:t.modelWhy,asks:t.asks||0,perms:t.perms||[],todos:t.todos||[],changesN:t.changesN??t.changes?.length??0,undone:t.undone||null,vcs:t.vcs||null,asking:!!t.asking,deps:(t.deps||[]).map(id=>'m'+id),question:t.question||null,clarify:t.clarify||[],designs:t.designs||[],designFrom:t.designFrom,rework:t.rework||null,origin:t.origin??null,progress:t.status==='done'?100:Math.min(92,8+(t.steps||0)*9)});
+const fromServer=t=>({key:'m'+t.id,rid:t.id,remote:true,agent:t.agent,text:t.text,priority:t.priority,status:t.status,steps:t.steps||0,activity:t.activity,started:t.started?new Date(t.started):null,result:t.result,error:t.error,created:new Date(t.created),finished:t.finished?new Date(t.finished):null,durationMs:t.durationMs,turns:t.turns,costUsd:t.costUsd,cwd:t.cwd,mode:t.mode,host:t.host,engine:t.engine||'claude',web:!!t.web,siteLabels:t.siteLabels||[],fileNames:t.fileNames||[],kind:t.kind,wf:t.wf!=null?'m'+t.wf:null,wfTitle:t.wfTitle,stepTitle:t.stepTitle,model:t.model,effort:t.effort,modelWhy:t.modelWhy,asks:t.asks||0,perms:t.perms||[],todos:t.todos||[],changesN:t.changesN??t.changes?.length??0,outFiles:t.outFiles||[],tokens:t.tokens||null,undone:t.undone||null,vcs:t.vcs||null,asking:!!t.asking,deps:(t.deps||[]).map(id=>'m'+id),question:t.question||null,clarify:t.clarify||[],designs:t.designs||[],designFrom:t.designFrom,rework:t.rework||null,origin:t.origin??null,progress:t.status==='done'?100:Math.min(92,8+(t.steps||0)*9)});
 function selectAgent(id){selected=agentOf(id);$('profile-name').textContent=selected.name;$('profile-role').textContent=[selected.role,`${LEVELS[levelOf(selected)]} · đội ${teamOf(selected)}`].filter(Boolean).join(' · ');$('profile-desc').textContent=selected.desc||'';$('profile-desc').title=selected.desc||'';$('agentDel').classList.toggle('hidden',selected.id==='director');$('profile-icon').style.background=hex(selected.color);$('profile-icon').textContent=selected.name[0];agents.forEach(a=>a.ring.material.opacity=a.id===id?.95:0);document.querySelectorAll('.tag').forEach((e,i)=>e.classList.toggle('selected',agents[i].id===id));document.querySelectorAll('#avatars [data-agent]').forEach(e=>e.classList.toggle('on',e.dataset.agent===id));renderProfile();renderRunNote()}
 // Which CLI the server runs this agent's tasks with (set in the machine config, Designer → Codex by default)
 const engineOf=id=>ENGINE_NAMES[machine?.agentEngines?.[id]]?machine.agentEngines[id]:'claude';
 const engineName=id=>ENGINE_NAMES[engineOf(id)];
 // 'both' is ready when either engine is (the server picks the one that can run)
 const engineReady=id=>{const e=engineOf(id);return e==='codex'?!!machine?.codex?.ready:e==='both'?!!(machine?.ready||machine?.codex?.ready):!!machine?.ready};
-function renderProfile(){const mine=allJobs().filter(j=>j.agent===selected.id),n=g=>mine.filter(j=>GROUP[j.status]===g).length;$('profile-status').innerHTML=(n('running')?'<span class="pulse"></span> Đang thực hiện nhiệm vụ':'<span class="pulse idle"></span> Sẵn sàng nhận việc')+(mine.length?`<em>${n('running')} đang xử lý · ${n('done')} xong · ${n('error')} lỗi</em>`:'')}
+function renderProfile(){const mine=allJobs().filter(j=>j.agent===selected.id),n=g=>mine.filter(j=>GROUP[j.status]===g).length;$('profile-status').innerHTML=(n('running')?'<span class="pulse"></span> Đang thực hiện nhiệm vụ':'<span class="pulse idle"></span> Sẵn sàng nhận việc')+(mine.length?`<em>${n('running')} đang xử lý · ${n('done')} xong · ${n('error')} lỗi</em>`:'')+profileQuota()}
+// The AI this agent runs on and what is left of its plan
+function profileQuota(){const q=quotaNow;if(!q)return '';const e=engineOf(selected.id),list=(e==='both'?['claude','codex']:[e]).map(x=>quotaLine(q,x)).filter(Boolean);return list.length?`<div class="pquota">🧠 ${list.join('<br>')}</div>`:''}
 function renderRunNote(){
   $('runOn').value=runOn;const m=machine,el=$('runNote'),pick=$('webSite'),keep=pick.value;
   $('webOpt').classList.toggle('hidden',runOn!=='machine');$('useWeb').checked=useWeb;pick.classList.toggle('hidden',!useWeb);
@@ -143,7 +149,7 @@ const todoTag=j=>{const l=(j.todos||[]).filter(x=>x.status!=='deleted');return l
 // Login asked by a web task: username/password go to this computer only (saved like the logins in Máy cá nhân)
 const SKIP_LOGIN='Không có tài khoản, hãy làm phần có thể làm được mà không cần đăng nhập rồi báo lại.';
 const loginBox=j=>{const a=agentOf(j.agent),q=j.question||{};return `<div class="qbox loginbox" data-qjob="${j.key}"><b>🔑 ${escapeHTML(a.name)} cần tài khoản đăng nhập</b><p>${escapeHTML(q.host||'')}${q.error?` · <span class="lerr">${escapeHTML(q.error)}</span>`:''}</p>
-  <div class="lgrid"><input data-keep="lu-${j.key}" data-login-user placeholder="Tên đăng nhập" autocomplete="off" value="${escapeHTML(q.username||'')}"><input data-keep="lp-${j.key}" data-login-pass type="password" placeholder="Mật khẩu" autocomplete="new-password"></div>
+  <div class="lgrid"><input data-keep="lu-${j.key}" data-login-user placeholder="Tên đăng nhập" autocomplete="off" value="${escapeHTML(q.username||'')}">${pwField(`data-keep="lp-${j.key}" data-login-pass placeholder="Mật khẩu"`)}</div>
   <label class="lsave"><input type="checkbox" data-keep="ls-${j.key}" data-login-save checked> Lưu tài khoản này để dùng lại cho ${escapeHTML(q.host||'trang này')}</label>
   <div class="qopts"><button class="qopt ok" data-login="${j.key}">🔑 Đăng nhập & làm tiếp</button><button class="qopt" data-answer="${j.key}" data-pv-answer="${escapeHTML(SKIP_LOGIN)}" data-text="${escapeHTML(SKIP_LOGIN)}">Bỏ qua</button></div><small class="lnote">Mật khẩu chỉ lưu trên máy này; Claude không nhìn thấy, trình duyệt tự điền khi đăng nhập.</small></div>`};
 async function submitLogin(box,j){
@@ -154,8 +160,11 @@ async function submitLogin(box,j){
   catch(e){box.classList.remove('busy');toast(e.message)}
 }
 const qbox=j=>{if(j.question?.kind==='login')return loginBox(j);const a=agentOf(j.agent),q=j.question||{};return `<div class="qbox" data-qjob="${j.key}"><b>❓ ${escapeHTML(a.name)} cần bạn trả lời</b><p>${escapeHTML(q.q||'')}</p>
-  ${(q.options||[]).length?`<div class="qopts">${q.options.map(o=>`<button class="qopt" data-answer="${j.key}" data-text="${escapeHTML(o)}">${escapeHTML(o)}</button>`).join('')}</div>`:''}
-  <div class="qfree"><input data-keep="ans-${j.key}" data-answer-input="${j.key}" maxlength="4000" placeholder="Hoặc tự nhập câu trả lời / thông tin bổ sung… (/ chọn skill)"><button data-answer-send="${j.key}">Gửi</button></div></div>`};
+  ${(q.options||[]).length?`<div class="qopts">${optionButtons(j.key,q.options,`data-answer="${j.key}" data-text`)}</div>`:''}
+  <div class="qfree${fillOf(j.key)?' filling':''}"><input data-keep="ans-${j.key}" data-answer-input="${j.key}" maxlength="4000" placeholder="${escapeHTML(fillPlaceholder(j.key,'Hoặc tự nhập câu trả lời / thông tin bổ sung… (/ chọn skill)'))}"><button data-answer-send="${j.key}">Gửi</button></div></div>`};
+// Send what was typed in a question box (with the picked "Nhập …" option in front, if any)
+function sendTyped(key){const j=allJobs().find(j=>j.key===key),el=document.querySelector(`[data-answer-input="${key}"]`),text=composeAnswer(key,el?.value);
+  if(text===null){toast('Nhập thông tin vào ô bên dưới rồi bấm Gửi');el?.focus();return}if(!text)return;answerJob(j,text)}
 function card(j){
   const a=agentOf(j.agent),live=GROUP[j.status]==='running',where=j.remote?`<span class="where" title="${escapeHTML(j.cwd||'')}">${j.web?'🌐':'💻'} ${escapeHTML(j.host||'Máy cá nhân')} · ${j.engine==='codex'?'Codex':'Claude'}</span>`:'<span class="where">🎲 Mô phỏng</span>';
   let mid='';
@@ -164,9 +173,9 @@ function card(j){
   else if(live&&j.asking&&j.result)mid=`<div class="jobresult"><b>Kết quả</b><div class="restext md">${md(j.result)}</div></div><div class="activity">💬 ${escapeHTML(j.activity||'Đang trả lời câu hỏi thêm…')}</div>${permBox(j)}<button class="ghost stop" data-cancel="${j.rid}">■ Dừng</button>`;
   else if(live&&j.remote)mid=`<div class="activity">${j.status==='queued'?'Đang chờ đến lượt…':`Bước ${j.steps}${todoTag(j)} · ${escapeHTML(j.activity||'Đang xử lý…')}`}</div>${permBox(j)}<div class="progress live"><i style="width:${j.progress}%"></i></div><button class="ghost stop" data-cancel="${j.rid}">■ Dừng</button>`;
   else if(live)mid=`<div class="progressrow"><span>${j.priority}</span><b>${j.progress}%</b></div><div class="progress"><i style="width:${j.progress}%"></i></div>`;
-  else if(j.status==='done')mid=`<div class="jobresult"><b>Kết quả</b><div class="restext md">${j.remote?md(j.result):escapeHTML(j.result)}</div></div>${j.remote&&j.kind!=='plan'?'<button class="ghost retry" data-ask>💬 Hỏi thêm</button>':''}`;
+  else if(j.status==='done')mid=`<div class="jobresult"><b>Kết quả</b><div class="restext md">${j.remote?linkFiles(md(j.result),j.rid,j.outFiles):escapeHTML(j.result)}</div></div>${j.remote?downloadList(j.rid,j.outFiles):''}${j.remote&&j.kind!=='plan'?'<button class="ghost retry" data-ask>💬 Hỏi thêm</button>':''}`;
   else mid=`<div class="joberr"><b>${j.status==='cancelled'?'Đã dừng':j.remote?'Lỗi':`Lỗi tại ${j.progress}%`}</b>${escapeHTML(j.error)}</div><button class="ghost retry" data-retry="${j.key}">⟲ Thử lại</button>`;
-  const stats=j.remote&&j.finished?[j.durationMs!=null&&`⏱ ${Math.round(j.durationMs/1000)}s`,j.turns!=null&&`${j.turns} lượt`,j.costUsd!=null&&`$${j.costUsd.toFixed(3)}`,j.asks&&`💬 ${j.asks} câu hỏi thêm`,j.designs?.length&&`🎨 ${j.designs.length} ảnh thiết kế (${j.designs.filter(d=>d.marked).length} cho dev)`,j.changesN&&`📝 ${j.changesN} file${j.undone?' (đã hoàn tác)':''}`].filter(Boolean).join(' · '):'';
+  const stats=j.remote&&j.finished?[j.durationMs!=null&&`⏱ ${Math.round(j.durationMs/1000)}s`,j.turns!=null&&`${j.turns} lượt`,j.costUsd!=null&&`$${j.costUsd.toFixed(3)}`,tokenTag(j.tokens),j.asks&&`💬 ${j.asks} câu hỏi thêm`,j.designs?.length&&`🎨 ${j.designs.length} ảnh thiết kế (${j.designs.filter(d=>d.marked).length} cho dev)`,j.changesN&&`📝 ${j.changesN} file${j.undone?' (đã hoàn tác)':''}`].filter(Boolean).join(' · '):'';
   return `<div class="job st-${j.status}" data-job="${j.key}"><div class="jobhead"><span class="tagdot" style="background:${hex(a.color)}"></span><b>${escapeHTML(a.name)}</b>${where}<span class="badge ${GROUP[j.status]==='running'?'running':j.status==='done'?'done':'error'}">${STATUS[j.status]}</span>${live?'':`<button class="delbtn" data-del="${j.key}" title="Xóa việc này">🗑</button>`}</div><div class="jobtext">${escapeHTML(j.text)}</div>${j.fileNames?.length?`<div class="jobfiles">📎 ${j.fileNames.map(escapeHTML).join(', ')}</div>`:''}${mid}<div class="jobmeta">${j.priority} · giao lúc ${clock(j.created)}${j.finished&&!live?` · ${j.status==='done'?'xong':'dừng'} lúc ${clock(j.finished)}`:''}${stats?` · ${stats}`:''}${modelTag(j)}</div></div>`;
 }
 // One card per workflow: its plan and steps in order, each row opens that step's progress
@@ -179,7 +188,7 @@ function wfCard(group){
   const last=[...steps].reverse().find(j=>j.status==='done'),allDone=steps.length&&done===steps.length;
   return `<div class="job wf st-${st}"><div class="jobhead"><span class="wficon">🔀</span><b>${escapeHTML(plan.wfTitle||'Luồng công việc')}</b><span class="where">${plan.remote?'💻 Máy':'🎲 Mô phỏng'}</span><span class="badge ${st}">${label}</span>${live?'':`<button class="delbtn" data-del="${plan.key}" title="Xóa cả luồng công việc">🗑</button>`}</div><div class="jobtext">${escapeHTML(plan.text)}</div>
     <div class="wfprog"><i style="width:${steps.length?Math.round(done/steps.length*100):5}%"></i></div><div class="wfsteps">${row(plan,0)}${steps.map((j,i)=>row(j,i+1)).join('')}</div>${group.filter(j=>j.status==='waiting').map(qbox).join('')}${group.map(permBox).join('')}
-    ${allDone&&last?`<div class="jobresult"><b>Kết quả cuối · ${escapeHTML(agentOf(last.agent).name)}</b><div class="restext md">${last.remote?md(last.result):escapeHTML(last.result)}</div></div>`:''}<div class="jobmeta">${plan.priority} · giao lúc ${clock(plan.created)}</div></div>`;
+    ${allDone&&last?`<div class="jobresult"><b>Kết quả cuối · ${escapeHTML(agentOf(last.agent).name)}</b><div class="restext md">${last.remote?linkFiles(md(last.result),last.rid,last.outFiles):escapeHTML(last.result)}</div></div>${steps.filter(s=>s.remote).map(s=>downloadList(s.rid,s.outFiles)).join('')}`:''}<div class="jobmeta">${plan.priority} · giao lúc ${clock(plan.created)}${(()=>{const T=sumTokens(group.map(j=>j.tokens));return T?` · ${tokenTag(T).replace('token</span>','token cả luồng</span>')}`:''})()}</div></div>`;
 }
 // Finished tasks can be deleted; a workflow only as a whole and only when none of its steps runs or waits
 const deletable=j=>GROUP[j.status]!=='running'&&!(j.wf&&allJobs().some(x=>x.wf===j.wf&&GROUP[x.status]==='running'));
@@ -370,7 +379,7 @@ var pv=createProgressView({toast,onPerm:permJob,loginBox,onLogin:(j,box)=>submit
   onDesignHandoff:j=>{const fe=agents.find(a=>teamOf(a)==='Frontend'&&levelOf(a)!=='leader'&&!busyAgent(a.id))||agents.find(a=>teamOf(a)==='Frontend')||selected;
     setDesignFrom(j);selectAgent(fe.id);if(!taskEl.value.trim())taskEl.value=`Code giao diện theo các ảnh thiết kế đã chọn (của ${agentOf(j.agent).name}): `;taskEl.focus();toast(`🎨 Việc tiếp theo sẽ code theo ${designFrom.n} ảnh thiết kế`)},onAssign:id=>{selectAgent(id);taskEl.focus()}});
 function openAgent(id){selectAgent(id);pv.open(id)}
-const machineUI=initMachineConnect({toast,onStatus:s=>{machine=s;renderRunNote()},getTeams:()=>[...new Set(agents.map(teamOf))],getAgents:()=>agents.map(a=>({id:a.id,name:a.name,team:teamOf(a),color:a.color}))});
+const machineUI=initMachineConnect({toast,onStatus:s=>{machine=s;renderRunNote()},getTeams:()=>[...new Set(agents.map(teamOf))],getAgents:()=>agents.map(a=>({id:a.id,name:a.name,team:teamOf(a),color:a.color,engine:engineOf(a.id)})),onQuota:q=>{quotaNow=q;renderProfile()}});
 $('useWeb').onchange=e=>{useWeb=e.target.checked;try{localStorage.setItem('office-use-web',useWeb?'1':'0')}catch{}renderRunNote()};
 $('useWf').onchange=e=>{useWf=e.target.checked;try{localStorage.setItem('office-use-wf',useWf?'1':'0')}catch{}renderRunNote()};
 $('runOn').onchange=e=>{runOn=e.target.value;try{localStorage.setItem('office-run-on',runOn)}catch{}renderRunNote()};
@@ -380,12 +389,12 @@ $('effort').onchange=e=>{effort=e.target.value;try{localStorage.setItem('office-
 $('runNote').onclick=async e=>{if(e.target.closest('[data-open-machine]'))machineUI.open();
   else if(e.target.closest('[data-pick-dir]'))try{const st=await pickWorkdir(machine?.config?.workdir);if(st){machine=st;renderRunNote();machineUI.refresh();toast('Thư mục làm việc: '+st.config.workdir)}}catch(err){toast(err.message)}};
 // --- Attachments: drop PDF / Word / images onto the task box so the AI processes them with the request ---
-const ATTACH_OK=/\.(pdf|docx|png|jpe?g|gif|webp|txt|md|csv)$/i;
+const ATTACH_OK=/\.(pdf|docx?|pptx|xlsx|xlsm|xls|mp3|m4a|wav|png|jpe?g|gif|webp|txt|md|csv|tsv|json|xml|html?|log|ya?ml|ini|sql)$/i;
 let attachments=[];// {id,name,size,kind,status:'up'|'ok'|'err'}
 const attachIds=()=>attachments.filter(a=>a.status==='ok'&&a.id).map(a=>({id:a.id,name:a.name}));
-const fileIcon=k=>k==='image'?'🖼️':k==='pdf'?'📕':'📄';
+const fileIcon=k=>k==='image'?'🖼️':k==='pdf'?'📕':k==='sheet'?'📊':k==='media'?'🎵':'📄';
 const attachBar=document.createElement('div');attachBar.className='attachbar';
-attachBar.innerHTML='<input type="file" id="fileInput" multiple accept=".pdf,.docx,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.csv" hidden><button type="button" class="attach-add" id="attachAdd">📎 Đính kèm tệp</button><button type="button" class="attach-add" id="skillAdd" title="Chọn skill (hoặc gõ / trong ô yêu cầu)">🧩 Skill</button><div class="attach-list" id="attachList"></div>';
+attachBar.innerHTML='<input type="file" id="fileInput" multiple accept=".pdf,.docx,.doc,.pptx,.xlsx,.xlsm,.xls,.mp3,.m4a,.wav,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.csv,.tsv,.json,.xml,.html,.htm,.log,.yaml,.yml,.ini,.sql" hidden><button type="button" class="attach-add" id="attachAdd">📎 Đính kèm tệp</button><button type="button" class="attach-add" id="skillAdd" title="Chọn skill (hoặc gõ / trong ô yêu cầu)">🧩 Skill</button><div class="attach-list" id="attachList"></div>';
 taskEl.insertAdjacentElement('afterend',attachBar);
 function renderAttach(){
   const el=$('attachList');
@@ -453,7 +462,7 @@ $('assign').onclick=async()=>{
   btn.disabled=true;
   try{if(designFrom&&runOn!=='machine')toast('Ảnh thiết kế chỉ dùng được khi chạy trên Máy cá nhân');
     await submitTask({text:taskEl.value,priority:$('priority').value,files:runOn==='machine'?attachIds():[],siteIds:useWeb&&$('webSite').value!=='auto'?[$('webSite').value]:[]});taskEl.value='';clearAttach();setDesignFrom(null);if(document.body.classList.contains('ph'))phSet('result')}
-  catch(e){toast(e.message);if(e.openMachine)machineUI.open();else if(!taskEl.value.trim())taskEl.focus()}
+  catch(e){toast(e.message);if(e.google)googleUI.open(e.message);else if(e.openMachine)machineUI.open();else if(!taskEl.value.trim())taskEl.focus()}
   finally{btn.disabled=false}
 };
 $('resultTabs').onclick=async e=>{if(e.target.closest('[data-clear]')){try{await clearFinished()}catch(err){toast(err.message)}return}const b=e.target.closest('[data-filter]');if(b){filter=b.dataset.filter;renderResults()}};
@@ -467,11 +476,12 @@ async function answerJob(j,text){
   }catch(e){toast(e.message)}
 }
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.matches?.('[data-login-user],[data-login-pass]')){e.preventDefault();const box=e.target.closest('.loginbox');return submitLogin(box,allJobs().find(j=>j.key===box?.dataset.qjob))}});
-document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.matches?.('[data-answer-input]')){e.preventDefault();answerJob(allJobs().find(j=>j.key===e.target.dataset.answerInput),e.target.value)}});
+document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.matches?.('[data-answer-input]')){e.preventDefault();sendTyped(e.target.dataset.answerInput)}});
 $('results').onclick=async e=>{
+  const qf=e.target.closest('[data-fill]');if(qf){const k=qf.dataset.fill;toggleFill(k,qf.dataset.text);renderResults();document.querySelector(`[data-answer-input="${k}"]`)?.focus();return}
   const qa=e.target.closest('[data-answer]'),qs=e.target.closest('[data-answer-send]');
   if(qa)return answerJob(allJobs().find(j=>j.key===qa.dataset.answer),qa.dataset.text);
-  if(qs)return answerJob(allJobs().find(j=>j.key===qs.dataset.answerSend),document.querySelector(`[data-answer-input="${qs.dataset.answerSend}"]`)?.value);
+  if(qs)return sendTyped(qs.dataset.answerSend);
   const lg=e.target.closest('[data-login]');if(lg)return submitLogin(lg.closest('.loginbox'),allJobs().find(j=>j.key===lg.dataset.login));
   const pm=e.target.closest('[data-perm]');if(pm){const [k,pid,mode]=pm.dataset.perm.split('|');pm.closest('.permbox')?.classList.add('busy');return permJob(allJobs().find(j=>j.key===k),pid,+mode)}
   if(e.target.closest('.qbox'))return;
@@ -481,7 +491,7 @@ $('results').onclick=async e=>{
     if(c){await cancelJob(remote.find(j=>j.rid===+c.dataset.cancel));return}
     if(r){await retryJob(allJobs().find(j=>j.key===r.dataset.retry));return}
   }catch(err){toast(err.message);return}
-  const k=e.target.closest('[data-job]');if(k&&!e.target.closest('.restext')){const j=allJobs().find(j=>j.key===k.dataset.job);selectAgent(j.agent);pv.open(j.agent,j.key);if(e.target.closest('[data-ask]'))setTimeout(()=>document.querySelector('.pv-ask textarea')?.focus(),500)}
+  const k=e.target.closest('[data-job]');if(k&&!e.target.closest('.restext,.dlfiles,.dlvideo')){const j=allJobs().find(j=>j.key===k.dataset.job);selectAgent(j.agent);pv.open(j.agent,j.key);if(e.target.closest('[data-ask]'))setTimeout(()=>document.querySelector('.pv-ask textarea')?.focus(),500)}
 };
 // Simulation of send-backs: QA or the Director, reviewing for the first time, sends its inputs back 40% of the time;
 // each input gets a fix step, then the reviewer checks again (round 2 always passes)
@@ -529,6 +539,7 @@ let savedScene='day';try{savedScene=new URLSearchParams(location.search).get('sc
 
 initClaudeConnect({toast});
 initCodexConnect({toast,onChange:()=>machineUI.refresh()});
+const googleUI=initGoogleConnect({toast});
 // ---------- Manage agents: add (up to 12 desks), edit name/role/description, delete (not the Director) ----------
 function freeSlot(){const used=new Set(agents.map(a=>a.slot));return SLOT_ORDER.find(i=>!used.has(i))??-1}
 const agentRecord=a=>({...(a.builtin?{id:a.id,builtin:true}:{id:a.id,color:a.color,preset:a.preset,slot:a.slot}),name:a.name,role:a.role,desc:a.desc,team:teamOf(a),level:levelOf(a)});

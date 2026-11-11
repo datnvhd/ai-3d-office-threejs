@@ -7,3 +7,5 @@ Thumbs.db
 .env
 .env.*
 release/
+__pycache__/
+*.pyc

@@ -8,7 +8,7 @@ import {existsSync,readFileSync,writeFileSync,mkdirSync,readdirSync} from 'node:
 import {join,dirname,resolve} from 'node:path';
 
 const SKIP=new Set(['.git','.svn','.hg','node_modules','.vs','.idea','bin','obj','dist','build','out','target','coverage','.next','.nuxt',
-  '.cache','__pycache__','.venv','venv','vendor','.angular','.turbo','.parcel-cache','.gradle','.terraform','.ai-office-files','$RECYCLE.BIN','System Volume Information',
+  '.cache','__pycache__','.venv','venv','vendor','.angular','.turbo','.parcel-cache','.gradle','.terraform','.ai-office-files','.mathvid','$RECYCLE.BIN','System Volume Information',
   'Pods','DerivedData','.expo','.cxx','.maestro-output','.Trash']);
 export const SNAP_SKIP=[...SKIP];
 const MAX_BLOB=1024*1024,MAX_FILES=120000,MAX_NEW_BYTES=600*1024*1024,BATCH=48;

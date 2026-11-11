@@ -1,0 +1,13 @@
+{
+  "voice": "nu",
+  "rate": "+20%",
+  "segments": [
+    {"id": "hook", "text": "Chín mươi phần trăm học sinh nhớ công thức Pytago, nhưng không biết vì sao nó đúng."},
+    {"id": "tam_giac", "text": "Lấy một tam giác vuông, hai cạnh góc vuông là a và b, cạnh huyền là c."},
+    {"id": "hinh_vuong", "text": "Dựng trên mỗi cạnh một hình vuông."},
+    {"id": "quiz", "text": "Đố bạn: hai hình vuông nhỏ cộng lại có bằng hình vuông lớn không?", "pause": 2.0},
+    {"id": "dap_an", "text": "Bằng nhau! Diện tích a bình cộng b bình, đúng bằng c bình."},
+    {"id": "vi_du", "text": "Ví dụ: ba bình cộng bốn bình bằng hai mươi lăm, vậy cạnh huyền bằng năm."},
+    {"id": "ket", "text": "Lưu lại để ôn thi, và theo dõi để xem thêm mẹo toán nhé!"}
+  ]
+}

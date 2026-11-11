@@ -48,7 +48,7 @@ const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 const PAGE_CSS=`body{font-family:system-ui,sans-serif;background:#eef0fb;color:#1d2140;display:grid;place-items:center;min-height:100vh;margin:0;padding:16px}
 form{box-sizing:border-box;background:#fff;padding:24px;border-radius:14px;box-shadow:0 8px 30px #0001;max-width:380px;width:100%}h1{font-size:18px;margin:0 0 8px}p{font-size:14px;color:#555;line-height:1.5}
 input{width:100%;box-sizing:border-box;padding:12px;border:1px solid #ccd;border-radius:10px;font-size:16px;margin:8px 0}button{width:100%;padding:12px 16px;border:0;border-radius:10px;background:#f08c5a;color:#fff;font-size:16px;font-weight:700;margin-top:6px}
-.err{color:#c33}`;
+.err{color:#c33}.pwf{position:relative}.pwf input{padding-right:48px}.pwf .eye{position:absolute;right:6px;top:50%;transform:translateY(-50%);width:38px;margin:0;padding:6px;background:transparent;font-size:18px}`;
 const head=`<!doctype html><html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex"><title>AI 3D Office</title><style>${PAGE_CSS}</style></head><body>`;
 const keyPage=(msg='')=>`${head}<form method="get" action="/"><h1>AI 3D Office · truy cập từ xa</h1>
 <p>Nhập mã truy cập hiển thị trong cửa sổ <b>Máy cá nhân → Truy cập từ xa</b> trên máy chạy app.</p>${msg?`<p class="err">${esc(msg)}</p>`:''}
@@ -57,7 +57,7 @@ const keyPage=(msg='')=>`${head}<form method="get" action="/"><h1>AI 3D Office �
 const loginPage=(key,msg='')=>`${head}<form method="post" action="/__login"><h1>AI 3D Office</h1>
 <p>Nhập mật khẩu truy cập đã đặt trên máy chạy app.</p>${msg?`<p class="err">${esc(msg)}</p>`:''}
 ${key?`<input type="hidden" name="key" value="${esc(key)}">`:'<input name="key" autocomplete="off" placeholder="Mã truy cập (trong link)">'}
-<input type="password" name="password" autocomplete="current-password" autofocus placeholder="Mật khẩu"><button>Mở văn phòng</button></form></body></html>`;
+<div class="pwf"><input type="password" id="pw" name="password" autocomplete="current-password" autofocus placeholder="Mật khẩu"><button type="button" class="eye" onclick="var i=document.getElementById('pw'),s=i.type==='password';i.type=s?'text':'password';this.textContent=s?'🙈':'👁';this.title=s?'Ẩn mật khẩu':'Hiện mật khẩu';i.focus()" title="Hiện mật khẩu" aria-label="Hiện / ẩn mật khẩu">👁</button></div><button>Mở văn phòng</button></form></body></html>`;
 
 // Addresses of this machine other devices on the same network can use (IPv4, not loopback). Adapters of VMs, WSL and
 // containers are left out: no phone or laptop can reach them.

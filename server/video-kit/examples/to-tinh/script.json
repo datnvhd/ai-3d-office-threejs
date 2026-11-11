@@ -1,0 +1,11 @@
+{
+  "voice": "none",
+  "music": "romantic",
+  "segments": [
+    {"id": "mo_dau", "text": "Gửi em, cô gái làm anh giỏi Toán hơn mỗi ngày", "duration": 2.6},
+    {"id": "hai_duong", "text": "Hai đường thẳng không song song thì sớm muộn cũng gặp nhau", "duration": 3.6},
+    {"id": "trai_tim", "text": "Anh đã giải một phương trình rất đặc biệt", "duration": 3.8},
+    {"id": "nghiem", "text": "Và nghiệm duy nhất của nó là em", "duration": 2.2},
+    {"id": "hoi", "text": "Làm người yêu anh nhé?", "duration": 4.0}
+  ]
+}

@@ -9,6 +9,7 @@ import {fileURLToPath} from 'node:url';
 import {dirname,join} from 'node:path';
 import {claudeBridge} from '../server/claude-bridge.js';
 import {codexBridge} from '../server/codex-bridge.js';
+import {googleBridge} from '../server/google-bridge.js';
 import {machineBridge} from '../server/machine-bridge.js';
 
 const ROOT=join(dirname(fileURLToPath(import.meta.url)),'..');
@@ -39,7 +40,7 @@ else{
   app.on('second-instance',()=>{if(win){if(win.isMinimized())win.restore();win.focus()}});
   app.whenReady().then(async()=>{
     try{
-      server=await preview({configFile:false,root:ROOT,logLevel:'warn',plugins:[claudeBridge(),codexBridge(),machineBridge()],
+      server=await preview({configFile:false,root:ROOT,logLevel:'warn',plugins:[claudeBridge(),codexBridge(),googleBridge(),machineBridge()],
         build:{outDir:'dist'},preview:{host:'127.0.0.1',port:PORT,open:false}});
     }catch(e){
       // a modal error box would block a CI self-test forever: print it instead

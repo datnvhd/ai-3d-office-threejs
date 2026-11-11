@@ -5,8 +5,11 @@
 // Web tasks also get a real Chrome through Playwright MCP; saved site passwords reach the browser as Playwright
 // "secrets" (the agent types the secret's name), so Claude never sees them.
 import {spawn,execFileSync} from 'node:child_process';
-import {existsSync,statSync,mkdirSync,readFileSync,writeFileSync,rmSync,readdirSync,copyFileSync} from 'node:fs';
-import {inflateRawSync} from 'node:zlib';
+import {existsSync,statSync,mkdirSync,readFileSync,writeFileSync,rmSync,readdirSync,copyFileSync,createReadStream} from 'node:fs';
+import {extractDocxText,extractPptxText,extractXlsx,toCsv,sheetPreview,makeZip} from './file-extract.js';
+import {fetchGoogleLinks} from './google-bridge.js';
+import {readQuota} from './ai-quota.js';
+import {ensureVideoKit,videoKitState,KIT_SRC} from './video-kit.js';
 import {createRequire} from 'node:module';
 import os from 'node:os';
 import {join,resolve,isAbsolute,dirname,basename,relative,extname,sep} from 'node:path';
@@ -28,44 +31,51 @@ const LEVEL_NOTE={leader:'Bạn là Leader của đội: chịu trách nhiệm c
 const AGENTS_FILE=join(STORE_DIR,'agents.json');// the office's agent list (src.js); null = the 7 built-in agents
 const CONFIG_FILE=join(STORE_DIR,'machine.json'),TASKS_FILE=join(STORE_DIR,'tasks.json'),SITES_FILE=join(STORE_DIR,'sites.json'),RUNS_DIR=join(STORE_DIR,'runs'),UPLOADS_DIR=join(STORE_DIR,'uploads');
 const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,MOBILE_TIMEOUT=45*60*1000,KEEP=200,URGENT_EXTRA=2,MAX_AGENTS=36;
-// Files droppable on the task box: images and PDF are read by the agent from disk; text/Word are extracted and inlined
-const FILE_KINDS={pdf:'pdf',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',docx:'text',txt:'text',md:'text',csv:'text'};
-const MAX_FILE=25*1024*1024,MAX_FILES=6,ATTACH_SUBDIR='.ai-office-files';
+// Files droppable on the task box: images and PDF are read by the agent from disk; text/Word/PowerPoint are extracted
+// and inlined; Excel is split into one CSV per sheet; old binary formats (.xls/.doc) are passed as files to convert
+const FILE_KINDS={pdf:'pdf',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',docx:'text',pptx:'text',xlsx:'sheet',xlsm:'sheet',xls:'file',doc:'file',mp3:'media',m4a:'media',wav:'media',
+  ...Object.fromEntries('txt md csv tsv json xml html htm log yaml yml ini sql'.split(' ').map(e=>[e,'text']))};
+// results the page may play or show itself (?inline=1)
+const PLAY_TYPES={mp4:'video/mp4',webm:'video/webm',mp3:'audio/mpeg',m4a:'audio/mp4',wav:'audio/wav',png:'image/png',jpg:'image/jpeg',jpeg:'image/jpeg',gif:'image/gif',webp:'image/webp'};
+const MAX_FILE=25*1024*1024,MAX_FILES=6,MAX_GOOGLE=5,ATTACH_SUBDIR='.ai-office-files';
 
-// Minimal reader for one entry of a .docx (a zip): find it in the central directory and inflate it
-function readZipEntry(buf,name){
-  let eocd=-1;for(let i=buf.length-22;i>=0;i--)if(buf.readUInt32LE(i)===0x06054b50){eocd=i;break}
-  if(eocd<0)return null;
-  let p=buf.readUInt32LE(eocd+16);const count=buf.readUInt16LE(eocd+10);
-  for(let i=0;i<count&&buf.readUInt32LE(p)===0x02014b50;i++){
-    const method=buf.readUInt16LE(p+10),compSize=buf.readUInt32LE(p+20),nameLen=buf.readUInt16LE(p+28),extraLen=buf.readUInt16LE(p+30),commLen=buf.readUInt16LE(p+32),lho=buf.readUInt32LE(p+42);
-    if(buf.toString('utf8',p+46,p+46+nameLen)===name){
-      const lNameLen=buf.readUInt16LE(lho+26),lExtra=buf.readUInt16LE(lho+28),start=lho+30+lNameLen+lExtra,data=buf.subarray(start,start+compSize);
-      return method===0?data:method===8?inflateRawSync(data):null;
-    }
-    p+=46+nameLen+extraLen+commLen;
-  }
-  return null;
-}
-export function extractDocxText(buf){
-  try{const xml=readZipEntry(buf,'word/document.xml');if(!xml)return null;
-    return xml.toString('utf8').replace(/<w:tab[^>]*\/>/g,'\t').replace(/<\/w:p>/g,'\n').replace(/<[^>]+>/g,'')
-      .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"').replace(/&#3[49];|&apos;/g,"'").replace(/\n{3,}/g,'\n\n').trim();
-  }catch{return null}
-}
-// Plain text for a dropped file by kind: docx is unzipped, other text read directly (bounded)
+// Plain text for a dropped file by kind: docx/pptx are unzipped, other text read directly (bounded)
 function fileText(path,kind,ext){
   try{if(ext==='docx')return (extractDocxText(readFileSync(path))||'').slice(0,20000);
+    if(ext==='pptx')return (extractPptxText(readFileSync(path))||'').slice(0,20000);
     if(kind==='text')return readFileSync(path,'utf8').slice(0,20000);
   }catch{}
   return null;
 }
+// Excel: every sheet is written next to the file as <file>.sheets/<sheet name>.csv so the agent picks a sheet by name
+const safeName=s=>(String(s).replace(/[\/:*?"<>|\x00-\x1f]+/g,'_').trim().slice(0,80))||'sheet';
+function splitSheets(abs,rel){
+  const ws=extractXlsx(readFileSync(abs)),dir=abs+'.sheets',used=new Set();mkdirSync(dir,{recursive:true});
+  return ws.map(w=>{
+    let f=safeName(w.name);while(used.has(f.toLowerCase()))f+='_';used.add(f.toLowerCase());
+    writeFileSync(join(dir,f+'.csv'),'\ufeff'+toCsv(w.rows));
+    return {name:w.name,hidden:w.hidden,rows:w.rows.length,cols:Math.max(0,...w.rows.map(r=>r.length)),rel:`${rel}.sheets/${f}.csv`,preview:sheetPreview(w.rows)};
+  });
+}
+const OLD_FMT='Tệp định dạng cũ: đọc bằng công cụ sẵn có trên máy (ví dụ Python pandas/xlrd, LibreOffice --convert-to) nếu cần.';
+function sheetPrompt(f){
+  const head=`### Tệp Excel: ${f.name}${f.src?` (tải từ Google: ${f.src})`:''} — ${f.sheets.length} sheet\nTệp gốc: ${f.rel}\nMỗi sheet đã được xuất ra một file CSV (UTF-8) riêng. Khi người dùng nhắc tới một sheet theo tên, đọc đúng file CSV của sheet đó (so tên không phân biệt hoa thường, dấu cách thừa); nếu không nhắc, chọn sheet hợp với yêu cầu. Cần tính toán thì xử lý trên file CSV (ví dụ bằng script), đừng đoán từ phần xem trước.${f.sheet?`\nLink người dùng gửi đang mở sheet "${f.sheet}".`:''}`;
+  let budget=8000;
+  const list=f.sheets.map(s=>{
+    let line=`- Sheet "${s.name}"${s.hidden?' (ẩn)':''}: ${s.rows} dòng × ${s.cols} cột → ${s.rel}`;
+    if(s.preview&&s.rows&&budget>0){const p=s.preview.slice(0,budget);budget-=p.length;line+=`\n  Xem trước:\n\`\`\`\n${p}\n\`\`\``}
+    return line;
+  });
+  return head+'\n'+list.join('\n');
+}
 // Prompt section describing the task's attachments (inline text for docs, path to read for images/PDF)
 export function attachPrompt(t){
   if(!t.files?.length)return '';
-  const parts=t.files.map(f=>f.text!=null&&f.text.trim()
-    ? `### Tệp đính kèm: ${f.name}\n\`\`\`\n${f.text.slice(0,6000)}\n\`\`\``
-    : `### Tệp đính kèm: ${f.name} (${f.kind==='image'?'ảnh':f.kind==='pdf'?'tài liệu PDF':'tệp'})\nĐọc nội dung tệp này bằng công cụ đọc tệp. Đường dẫn: ${f.rel}`);
+  const from=f=>f.src?` (tải từ Google: ${f.src})`:'';
+  const parts=t.files.map(f=>f.sheets?.length?sheetPrompt(f)
+    : f.text!=null&&f.text.trim()
+    ? `### Tệp đính kèm: ${f.name}${from(f)}\nĐường dẫn: ${f.rel}\n\`\`\`\n${f.text.slice(0,6000)}\n\`\`\`${f.text.length>6000?'\n(Nội dung dài, phần trên đã rút gọn: đọc đủ trong tệp gốc nếu cần.)':''}`
+    : `### Tệp đính kèm: ${f.name}${from(f)} (${f.kind==='image'?'ảnh':f.kind==='pdf'?'tài liệu PDF':f.kind==='sheet'?'bảng tính':f.kind==='media'?'âm thanh (có thể dùng làm nhạc nền video)':'tệp'})\n${f.kind==='file'?OLD_FMT:f.kind==='media'?'Dùng trực tiếp tệp này nếu cần.':'Đọc nội dung tệp này bằng công cụ đọc tệp.'} Đường dẫn: ${f.rel}`);
   return `\nTỆP ĐÍNH KÈM: Người dùng gửi kèm ${t.files.length} tệp cho yêu cầu này. Hãy sử dụng nội dung của chúng khi thực hiện.\n${parts.join('\n')}\n`;
 }
 // MCP server Claude Code asks for permission through (--permission-prompt-tool); the user answers in the page
@@ -95,6 +105,55 @@ const designDir=t=>join(t.cwd,'.ai-office-design',String(t.id));
 // read-only mode (Claude: an Edit rule for that folder only; Codex: workspace-write with that folder as workspace)
 const designOnly=t=>isDesign(t)&&!!t.cwd&&t.mode!=='acceptEdits';
 const designRel=t=>`.ai-office-design/${t.id}/**`;
+// Math video tasks (team "Video", or a role about video): the agent writes a script and a Manim scene and renders an
+// MP4 with `mathvid`. Like design, its folder may be written even in read-only mode; a workflow's steps share it.
+const isVideo=t=>/^video/i.test(t.team||'')||/video|clip/i.test(t.role||'');
+const videoRel=t=>`video-toan/viec-${t.wf??t.id}`;
+const videoDir=t=>join(t.cwd,'video-toan',`viec-${t.wf??t.id}`);
+const videoOnly=t=>isVideo(t)&&!!t.cwd&&t.mode!=='acceptEdits';
+const videoGuide=t=>`
+VIDEO TOÁN HỌC NGẮN — bạn là biên tập viên video toán cho học sinh phổ thông.
+Mục tiêu: một video dọc 9:16 (1080×1920, MP4, 20–40 giây) giải thích TRỰC QUAN một ý toán học (hình học, đồ thị, hàm số, đại số, xác suất…), sinh động, dễ nhớ, theo phong cách TikTok / YouTube Shorts / Reels.
+Thư mục của video này: ${videoRel(t)} (ĐÃ TẠO SẴN; mọi file đặt trong đó${t.mode!=='acceptEdits'?'; đây là nơi DUY NHẤT bạn được ghi file':''}). Công cụ: lệnh \`mathvid\` (đã cài sẵn, \`mathvid -h\` để xem).
+CÁCH LÀM ĐỂ KHÔNG PHẢI CHỜ XIN PHÉP: tạo/sửa file bằng công cụ ghi file (Write/Edit), KHÔNG dùng lệnh shell như mkdir, cat >, echo >, heredoc; chạy mathvid từ thư mục làm việc với đường dẫn đầy đủ, mỗi lệnh một mình (không cd, không nối bằng && hay |). Ví dụ: \`mathvid build ${videoRel(t)}/script.json ${videoRel(t)}/scene.py --out ten-ngan.mp4 --draft\` (file ra nằm trong thư mục video).
+TRƯỚC KHI VIẾT, đọc: ${join(KIT_SRC,'mathvid_style.py')} và ${join(KIT_SRC,'mathvid_fx.py')} (các khối dựng sẵn, hiệu ứng), rồi video mẫu hợp với loại video bên dưới (scene.py + script.json): bài học ${join(KIT_SRC,'examples','pytago')}, sáng tạo/cảm xúc ${join(KIT_SRC,'examples','to-tinh')}.
+
+XÁC ĐỊNH LOẠI VIDEO TRƯỚC:
+A. BÀI HỌC (mặc định): giải thích kiến thức cho học sinh → làm theo QUY TRÌNH và XU HƯỚNG bên dưới (giọng đọc, đố vui, thẻ GHI NHỚ).
+B. SÁNG TẠO / CẢM XÚC bằng toán học: tỏ tình, crush, Valentine, kỷ niệm yêu nhau, sinh nhật, chúc mừng, tri ân thầy cô 20/11, 8/3, cảm ơn, động viên thi cử… Khi đó:
+   - class Video(Short) đặt theme = "romantic" (tỏ tình, yêu), "birthday" (sinh nhật, chúc mừng), "galaxy" (mơ mộng, vô tận), "sunset" (tri ân, ấm áp); progress = False.
+   - Âm thanh: mặc định KHÔNG lời, chỉ nhạc: script.json {"voice":"none","music":"romantic"|"dreamy"|"happy"|"upbeat","segments":[{"id":…,"text":…,"duration":giây}]} (text chỉ để ghi chú, chữ hiện trên hình do scene vẽ). Nhạc do mathvid tự sáng tác, không bản quyền. Người dùng muốn có lời thì dùng giọng như bài học, "music" vẫn thêm được (tự nhỏ lại khi có lời). Người dùng gửi nhạc riêng thì "music": đường dẫn tệp.
+   - 12–25 giây, mỗi khoảnh khắc 2–4 giây; chữ hiện bằng self.typewrite(), ngắn, tình cảm, tự nhiên (không sến quá, không thô).
+   - Hiệu ứng có sẵn: starfield, glow, draw_heart (phương trình trái tim vẽ bằng bút sáng), heartbeat, gather(heart_points()) (hạt bay tụ thành tim), sparkle, firework, float_hearts, graph_reveal, end_title. Kết bằng end_title + firework/float_hearts.
+   - Ẩn dụ toán học hay (vẫn phải ĐÚNG toán): hai đường thẳng không song song thì cắt nhau; phương trình trái tim x = 16sin³t, y = 13cos t − 5cos 2t − 2cos 3t − cos 4t; đường cardioid r = 1 − sin θ; giới hạn → ∞ ("thương em đến vô cùng"); số π không bao giờ kết thúc; giao của hai tập hợp; đồ thị sin như nhịp tim; tiếp tuyến chạm đúng một điểm; "nghiệm duy nhất"; tuổi mới = n + 1; vector cùng hướng.
+   - Video mẫu chỉ để HỌC CÁCH VIẾT CODE, không phải để chép: mỗi video mới phải có ý tưởng, ẩn dụ, bố cục và hiệu ứng riêng hợp với người nhận và dịp (ví dụ sinh nhật: tuổi mới n + 1 và pháo hoa; tri ân: đồ thị đi lên như sự tiến bộ, giới hạn → ∞; tỏ tình: cardioid, π vô tận, tiếp tuyến…). Chỉ dùng lại "hai đường thẳng + trái tim" khi người dùng muốn đúng như vậy.
+   - Cá nhân hóa bằng tên, ngày, lời nhắn người dùng đưa; không có thì dùng "anh/em" hoặc "bạn" chung chung và ghi trong kết quả rằng có thể gửi tên để làm lại. Không dùng ảnh người thật, nội dung nhạy cảm hay chế giễu.
+   - Bỏ đố vui, thẻ GHI NHỚ, phụ đề; kiểm tra khung hình vẫn bắt buộc (bước 3 bên dưới).
+
+
+QUY TRÌNH
+1. Kịch bản → ${videoRel(t)}/script.json: {"voice":"nu" hoặc "nam","rate":"+20%","segments":[{"id":"hook","text":"…"},…]}
+   - Chỉ MỘT ý chính. 5–8 đoạn, mỗi đoạn MỘT câu ngắn (≤ 14 từ), cắt hết chữ thừa ("chúng ta hãy cùng", "như các bạn đã biết"…), giọng nói tự nhiên, xưng "bạn".
+   - Đoạn "hook" ≤ 3 giây, gây tò mò ngay: câu hỏi lạ, sai lầm phổ biến, con số bất ngờ, "Mẹo 5 giây…".
+   - Lời đọc viết như khi NÓI: "x bình", "căn hai", "a mũ n", "pi", "lớn hơn hoặc bằng", "phần trăm"; không để ký hiệu toán trong text đọc.
+   - Đoạn đố thêm "pause": 2.0 để chừa thời gian đếm ngược (quiz mặc định 3 nhịp, mỗi nhịp 0,75 giây). Đoạn cuối: chốt ý + "Lưu lại để ôn thi" hoặc "Theo dõi để xem phần 2".
+   - Nếu bước trước (Research…) đã soạn nội dung/kịch bản thì dùng lại, nhưng tự kiểm tra lại tính đúng.
+2. Cảnh → ${videoRel(t)}/scene.py: \`from mathvid_style import *\`, \`class Video(Short)\` với \`def build(self)\`.
+   - Khớp lời và hình: self.at("id") chờ đoạn đó bắt đầu, self.hold("id") giữ tới khi đọc xong, self.left("id") = số giây còn lại (dùng cho run_time).
+   - Khối có sẵn: hook, title, pop, stress, quiz, reveal, wrong, recap, axes; T() chữ tiếng Việt, M() công thức (x^2 → x², sqrt → √), card(), fit().
+   - Vẽ THẬT bằng Manim: Axes().plot, Polygon, Circle, Angle, Dot, NumberLine, ValueTracker + always_redraw để thấy tham số thay đổi, Transform để biến đổi hình/biểu thức. Không làm video toàn chữ.
+   - NHỊP NHANH kiểu TikTok: cứ 1,5–2,5 giây có thay đổi mới trên hình; hiệu ứng phụ 0,2–0,5 giây, vẽ hình chính ≤ 1,5 giây; không để màn hình đứng yên quá 1 giây, không khoảng lặng giữa các câu; cảnh sau vào ngay khi cảnh trước xong. Một màu = một đối tượng xuyên suốt. Chữ trên hình ≤ 8 từ một lúc; lời đọc lo phần giải thích.
+   - Khung 9×16 đơn vị (x −4.5…4.5, y −8…8); nội dung chỉ trong y −3.6…6.4 (dưới là phụ đề và nút của TikTok). Máy chưa có LaTeX: dùng M("…"), không dùng MathTex/Tex.
+3. Nháp: \`mathvid build ${videoRel(t)}/script.json ${videoRel(t)}/scene.py --out <ten-ngan>.mp4 --draft\`. Lỗi Python thì đọc lỗi và sửa scene.py.
+   Sau đó ĐỌC ẢNH <ten-ngan>_frames.png (12 khung hình) để tự kiểm tra: chữ tràn/bị che, hình chồng lên nhau, hình vẽ đúng toán, khớp với lời, phụ đề dễ đọc. Sửa và dựng lại tới khi đạt (tối đa 3 vòng).
+4. Bản cuối: chạy lại lệnh build KHÔNG có --draft. Người dùng gửi nhạc (mp3/m4a/wav trong tệp đính kèm) thì thêm --music <đường dẫn> (nhạc tự nhỏ lại khi có lời). Xóa file nháp không cần thiết.
+5. Kiểm tra: \`mathvid probe ${videoRel(t)}/<ten-ngan>.mp4\`: dài 12–50 giây, 1080×1920, có tiếng.
+TỐC ĐỘ: người dùng thấy video chậm hoặc muốn nhanh hơn thì đặt "speed": 1.1–1.3 trong script.json (tăng tốc cả hình và tiếng, giọng không méo) và/hoặc "rate" giọng lên "+25%"–"+35%", rồi dựng lại; muốn chậm hơn thì ngược lại.
+
+XU HƯỚNG cho video BÀI HỌC (chọn một khung hợp với nội dung): "Sai lầm 90% học sinh mắc phải" (wrong rồi sửa) · "Mẹo giải nhanh trong 5 giây" · "Đố bạn 3 giây" (quiz rồi reveal) · "Toán trong đời thực" (tình huống quen thuộc → mô hình toán) · "Hình học thỏa mãn / chứng minh không lời" (biến đổi hình mượt) · "Cách dài vs cách nhanh" · chuỗi "Phần 1/2/3". Luôn có hook 1–2 giây đầu, nhịp nhanh, phụ đề chạy chữ to (mathvid tự làm), thanh tiến độ, kết bằng thẻ GHI NHỚ. Không dùng nhân vật, nhạc, hình hay meme có bản quyền của người khác.
+KIẾN THỨC: đúng chương trình GDPT 2018 và thuật ngữ SGK tiếng Việt; tính lại mọi con số (có thể dùng python). Sai kiến thức là lỗi nặng nhất (cả với video sáng tạo: đồ thị và phương trình phải đúng).
+KẾT QUẢ trả lời: đường dẫn file MP4, thời lượng, loại video và kịch bản tóm tắt theo đoạn, gợi ý caption đăng bài + 5 hashtag (bài học: #hoctoan #toan10 #meohoctap; sáng tạo: #totinh #toanhoc #valentine…), và gợi ý phần tiếp theo hoặc biến thể.
+`;
 // Building and running a mobile app in a simulator takes longer than a web task
 const taskTimeout=t=>rnProject(t.cwd)&&t.mode==='acceptEdits'?MOBILE_TIMEOUT:TASK_TIMEOUT;
 const browserExe=()=>BROWSERS.flatMap(([,paths])=>paths).find(p=>existsSync(p)&&!/\.app$/.test(p))||null;
@@ -151,10 +210,11 @@ const TOOLKITS={
   gh:{short:'GitHub CLI',label:'GitHub CLI: xem issue, PR, CI (bình luận/tạo issue khi được sửa file)',cmds:['gh issue view','gh issue list','gh pr view','gh pr list','gh pr diff','gh pr checks','gh run list','gh run view'],writeCmds:['gh issue create','gh issue comment','gh pr comment']},
   docs:{short:'Tài liệu & sơ đồ',label:'Tài liệu & sơ đồ: Mermaid CLI (mmdc), pandoc',write:true,cmds:['npx -y @mermaid-js/mermaid-cli','mmdc','pandoc']},
   mobile:MOBILE_KIT,// its commands are only given when the working folder is a React Native app (mobile.js)
-  browser:{short:'Trình duyệt',label:'Trình duyệt tự động (Playwright) bật sẵn cho mọi việc của đội',web:true}
+  browser:{short:'Trình duyệt',label:'Trình duyệt tự động (Playwright) bật sẵn cho mọi việc của đội',web:true},
+  mathvideo:{short:'Video toán',label:'Video toán học: lệnh mathvid (Manim, giọng đọc tiếng Việt, ffmpeg), tự cài lần đầu',cmds:['mathvid']}
 };
 const DEFAULT_TEAM_KITS={Frontend:['files','git','node','test','gh','mobile'],Backend:['files','git','node','python','test','gh'],QA:['files','git','test','browser','mobile'],BA:['files','docs'],
-  Design:['files','browser'],Data:['files','python'],Research:['files'],'Ban điều hành':['files','git'],'*':['files']};
+  Design:['files','browser'],Data:['files','python'],Video:['files','python','mathvideo'],Research:['files'],'Ban điều hành':['files','git'],'*':['files']};
 // never allowed, whatever the kits say
 const DENY_CMDS=['git push','git reset --hard','git clean','rm -rf','npm publish','gh repo delete','gh release create',
   'svn commit','svn ci','svn update','svn up','svn switch','svn revert','svn delete','svn rm','svn import','svn merge','svn lock','svn unlock'];
@@ -243,7 +303,7 @@ export function machineBridge(){
     const rn=rnProject(t.cwd);
     for(const k of kitsFor(t.team||'')){const kit=TOOLKITS[k];if(!kit||kit.web||kit.write&&!write||k==='mobile'&&!rn)continue;cmds.push(...kit.cmds,...(write?kit.writeCmds||[]:[]))}
     const list=[...new Set(cmds)];
-    return {cmds:list,allow:[...list.map(c=>`Bash(${c}:*)`),...(designOnly(t)?[`Edit(${designRel(t)})`]:[])],deny:DENY_CMDS.map(c=>`Bash(${c}:*)`)};
+    return {cmds:list,allow:[...list.map(c=>`Bash(${c}:*)`),...(designOnly(t)?[`Edit(${designRel(t)})`]:[]),...(videoOnly(t)?[`Edit(${videoRel(t)}/**)`]:[])],deny:DENY_CMDS.map(c=>`Bash(${c}:*)`)};
   }
   let codexBin=null,codexChecked=false,codexVersion=null,codexAuthCache=null,codexGen=-1;
   let lastCheck=readJson(CONFIG_FILE,{}).lastCheck||null;
@@ -357,31 +417,34 @@ export function machineBridge(){
   function dropPerms(t,why='Việc đã dừng.'){for(const p of t.perms||[])permDecisions.set(p.id,{decision:'deny',message:why});t.perms=[]}
   // Files uploaded but not yet attached to a task: id -> {path,name,kind,ext,at}. Dropped after an hour if unused.
   const uploads=new Map();
-  function stageUpload(name,buf){
+  function stageUpload(name,buf,meta={}){
     const ext=(name.split('.').pop()||'').toLowerCase(),kind=FILE_KINDS[ext];
     if(!kind)throw Object.assign(new Error(`Định dạng không hỗ trợ: .${ext}`),{code:400});
     for(const [id,u] of uploads)if(Date.now()-u.at>36e5){rmSync(u.path,{force:true});uploads.delete(id)}
     mkdirSync(UPLOADS_DIR,{recursive:true});
     const id='u'+Date.now().toString(36)+Math.random().toString(36).slice(2,7);
     const safe=(name.replace(/[^\w.() -]+/g,'_').slice(0,120))||('tep.'+ext),path=join(UPLOADS_DIR,id+'__'+safe);
-    writeFileSync(path,buf);uploads.set(id,{path,name:safe,kind,ext,at:Date.now()});
+    writeFileSync(path,buf);uploads.set(id,{path,name:safe,kind,ext,at:Date.now(),...meta});
     return {id,name:safe,size:buf.length,kind};
   }
   // Move the picked uploads into the task's folder inside the working dir and read text where we can
   function consumeFiles(ids,rootId,cwd){
     const dir=join(cwd,ATTACH_SUBDIR,String(rootId)),out=[];
-    for(const id of (Array.isArray(ids)?ids:[]).slice(0,MAX_FILES)){
+    for(const id of (Array.isArray(ids)?ids:[]).slice(0,MAX_FILES+MAX_GOOGLE)){
       const u=uploads.get(id);if(!u||!existsSync(u.path))continue;
       mkdirSync(dir,{recursive:true});const dest=join(dir,u.name);
       try{copyFileSync(u.path,dest)}catch{continue}
       rmSync(u.path,{force:true});uploads.delete(id);
-      out.push({name:u.name,kind:u.kind,rel:`${ATTACH_SUBDIR}/${rootId}/${u.name}`,abs:dest,text:fileText(dest,u.kind,u.ext)});
+      const rel=`${ATTACH_SUBDIR}/${rootId}/${u.name}`,f={name:u.name,kind:u.kind,rel,abs:dest,src:u.src,sheet:u.sheet};
+      if(u.kind==='sheet')try{f.sheets=splitSheets(dest,rel)}catch{}// unreadable workbook: the agent gets the file path only
+      else f.text=fileText(dest,u.kind,u.ext);
+      out.push(f);
     }
     return out;
   }
   let saveTimer=null;
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
-  const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel})=>({name,kind,rel}))}:t;
+  const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel,src,sheet,sheets})=>({name,kind,rel,src,sheet,sheets:sheets?.map(({preview,...s})=>s)}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
   const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,agentAI:config.agentAI,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,aiUpdate:config.aiUpdate,aiUpdateSkip:config.aiUpdateSkip,agentAuto:config.agentAuto,lastCheck});
 
@@ -518,7 +581,7 @@ Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?(designOnly(t)?` Khô
 ${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. ${autoOf(t)==='ask'?'Lệnh khác cần người dùng bấm cho phép và có thể bị từ chối (khi bị từ chối thì tìm cách khác hoặc giải thích, không thử lại cùng lệnh)':'Người dùng cho phép bạn tự chạy các lệnh khác khi cần (lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; khi bị từ chối thì tìm cách khác)'}; không bao giờ push code hay svn commit/update.
 `:autoOf(t)!=='ask'?`Bạn được tự chạy lệnh dòng lệnh khi cần (qua Bash); lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; không bao giờ push code hay svn commit/update.
 `:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
-${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${CHECKLIST_GUIDE}${attachPrompt(t)}${skillPrompt(t.skills,t.cwd)}${skillsAvailablePrompt(t.engine,t.cwd,t.skills)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
+${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${isVideo(t)?videoGuide(t):''}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${CHECKLIST_GUIDE}${attachPrompt(t)}${skillPrompt(t.skills,t.cwd)}${skillsAvailablePrompt(t.engine,t.cwd,t.skills)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
 GIỮ DỰ ÁN SẠCH: người dùng không muốn file thừa trong dự án. Chỉ tạo/sửa trong thư mục làm việc những file là một phần của kết quả được yêu cầu (code, cấu hình, dữ liệu hay tài liệu người dùng cần). File phụ để làm việc (script chạy thử, test tạm, dữ liệu trung gian, log, ảnh chụp kiểm tra, ghi chú) phải đặt tên bắt đầu bằng _ai_tmp (ví dụ _ai_tmp_check.py) hoặc để trong thư mục _ai_tmp/; hệ thống tự xóa chúng khi xong việc, cùng các file tạm/log/cache mới sinh ra. Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. Trong phần kết quả, liệt kê các file đã tạo hoặc sửa trong dự án.
 Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
@@ -645,6 +708,25 @@ Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
     if(t.asking){Object.assign(t.thread.at(-1),{error:msg,finished:now});Object.assign(t,{status:'done',asking:false,activity:null})}
     else Object.assign(t,{status:'error',error:msg,finished:now});
     save();
+  }
+  // Tokens a run used, added to the task (every run counts: answers to questions, follow-ups, retries, the plan).
+  // Claude: result.modelUsage per model (main model + helpers such as Haiku), else result.usage; input excludes cache.
+  // Codex: turn usage, where input_tokens includes the cached part.
+  function addTokens(t,engine,{usage,modelUsage}={}){
+    const runs=[];
+    // dated / suffixed ids (claude-haiku-4-5-20251001, …[1m]) get their family's name
+    const nice=m=>modelLabel(m)||modelLabel(String(m).replace(/\[.*\]$/,'').replace(/-\d{8}$/,''))||m;
+    if(engine==='codex'){if(usage){const c=usage.cached_input_tokens||0;runs.push([modelLabel(sameTier(t.model,'codex'))||'Codex',{input:Math.max(0,(usage.input_tokens||0)-c),cacheRead:c,cacheWrite:0,output:usage.output_tokens||0}])}}
+    else if(modelUsage&&Object.keys(modelUsage).length)for(const [m,u] of Object.entries(modelUsage))runs.push([nice(m),{input:u.inputTokens||0,cacheRead:u.cacheReadInputTokens||0,cacheWrite:u.cacheCreationInputTokens||0,output:u.outputTokens||0}]);
+    else if(usage)runs.push([modelLabel(t.model)||'Claude',{input:usage.input_tokens||0,cacheRead:usage.cache_read_input_tokens||0,cacheWrite:usage.cache_creation_input_tokens||0,output:usage.output_tokens||0}]);
+    let added=0;
+    for(const [name,u] of runs){
+      const n=u.input+u.cacheRead+u.cacheWrite+u.output;if(!n)continue;added+=n;
+      const T=t.tokens||={input:0,cacheRead:0,cacheWrite:0,output:0,total:0,runs:0,models:{}};
+      for(const k of ['input','cacheRead','cacheWrite','output'])T[k]+=u[k];T.total+=n;T.models[name]=(T.models[name]||0)+n;
+    }
+    if(added)t.tokens.runs++;
+    return added;
   }
   // Ends a follow-up run: answer or error on the question, the task back to done, cost and turns added up
   function endAsk(t,ask,{answer,error,cost,turns,question}){
@@ -831,6 +913,12 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(t.kind==='plan'){if(rn)mobileEnv().catch(()=>{});return start(t)}// the plan uses what is already known
     booting.add(t.id);
     Object.assign(t,{status:'running',activity:'Đang ghi lại trạng thái thư mục trước khi chạy…'});save();
+    if(isVideo(t)){
+      t.activity='Đang kiểm tra bộ công cụ video…';
+      const k=await ensureVideoKit(msg=>{t.activity=msg});
+      if(!k.ok){booting.delete(t.id);fail(t,k.error);pump();return}
+      try{mkdirSync(videoDir(t),{recursive:true})}catch{}
+    }
     // an RN app: look at the simulators/emulators now, so the prompt says what this machine can test
     if(rn){t.activity='Đang kiểm tra máy ảo iOS/Android trên máy…';await mobileEnv().catch(()=>{});try{mkdirSync(join(RUNS_DIR,String(t.id)),{recursive:true})}catch{}}
     try{if(t.cwd&&existsSync(t.cwd))snapOf.set(t.id,await snaps.scan(t.cwd,(i,n)=>{t.activity=`Đang ghi lại trạng thái thư mục trước khi chạy… ${i}/${n} file`}))}
@@ -880,12 +968,12 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
     const outText=c=>Array.isArray(c)?c.map(x=>x.type==='text'?x.text:x.type==='image'?'[hình ảnh]':'').join(' '):String(c??'');
-    const turns=String(t.web?WEB_TURNS:MAX_TURNS);
+    const turns=String(t.web||isVideo(t)?WEB_TURNS:MAX_TURNS);
     // Claude's AskUserQuestion tool has no one to answer it in `claude -p`, so the run would carry on guessing.
     // Stop the run there instead and let the task wait for the user's answer, like the question block does.
     let toolQ=null;const said=[];const canAsk=ask||(t.clarifies||0)<MAX_CLARIFY;
     // Browser tools loaded up front: saves the opening ToolSearch turn
-    const {child,done,extend}=claude([...(resume||replyResume?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...permArgs,...(web?.args||['--allowedTools','WebSearch','WebFetch',...kit.allow,'--disallowedTools',...kit.deny])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),timeout:taskTimeout(t),env:{MCP_TOOL_TIMEOUT:'86400000',...(web?{ENABLE_TOOL_SEARCH:'false'}:{})},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
+    const {child,done,extend}=claude([...(resume||replyResume?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...(isVideo(t)?['--add-dir',KIT_SRC]:[]),...permArgs,...(web?.args||['--allowedTools','WebSearch','WebFetch',...kit.allow,'--disallowedTools',...kit.deny])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),timeout:taskTimeout(t),env:{MCP_TOOL_TIMEOUT:'86400000',...(web?{ENABLE_TOOL_SEARCH:'false'}:{})},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
       if(ev.type==='system'&&ev.subtype==='init'&&web){const b=(ev.mcp_servers||[]).find(s=>s.name==='browser');if(b&&b.status!=='connected')note('denied',`Trình duyệt chưa sẵn sàng (${b.status})`,false)}
       if(ev.type==='system'&&ev.subtype==='init')note('init',`Đã khởi động Claude Code · model ${ev.model||'?'}${t.effort?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`);
       if(ev.type==='assistant')for(const c of ev.message?.content||[]){
@@ -907,6 +995,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       await shootDesigns(t,note);
       await finishSnap(t,note);
       const r=out.result,cancelled=t.status==='cancelled',ok=!cancelled&&r&&!r.is_error&&r.subtype==='success';
+      if(r)addTokens(t,'claude',r);
       if(toolQ&&!cancelled){
         const text=redact(said.join('\n\n').slice(0,20000));
         if(ask)return endAsk(t,ask,{answer:text||'Mình cần thêm thông tin trước khi trả lời.',question:toolQ,cost:r?.total_cost_usd,turns:r?.num_turns});
@@ -958,12 +1047,13 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     else if(planner==='codex'){
       const c=codexExec(codexBin,{cwd:t.cwd,input,extra:['--ephemeral',...codexModelArgs(t)],timeout:180000});
       // same shape as a Claude result for the code below; out.limitText lets a used-up Codex plan be noticed
-      run={child:c.child,done:c.done.then(o=>({result:o.message&&!o.error?{is_error:false,subtype:'success',result:o.message,num_turns:1,total_cost_usd:null}:null,stderr:o.stderr,limitText:`${o.error||''}\n${o.stderr}`}))};
+      run={child:c.child,done:c.done.then(o=>({result:o.message&&!o.error?{is_error:false,subtype:'success',result:o.message,num_turns:1,total_cost_usd:null}:null,usage:o.usage,stderr:o.stderr,limitText:`${o.error||''}\n${o.stderr}`}))};
     }
     if(run){child=run.child;procs.set(t.id,child)}
     save();
     (run?run.done:Promise.resolve(null)).then(out=>{
       procs.delete(t.id);
+      if(out)addTokens(t,planner,planner==='codex'?{usage:out.usage}:out.result||{});
       if(t.status==='cancelled'){Object.assign(t,{error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString(),activity:null});save();pump();return}
       // the planner's plan hit its usage limit: plan again on the other engine (or with keywords if both are used up)
       if(planner&&!(out?.result&&!out.result.is_error)&&limitRetry(t,planner,{text:out?.limitText??`${out?.result?.result||''}\n${out?.stderr||''}`,status:out?.result?.api_error_status??null},note))return;
@@ -1016,7 +1106,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     let turns=0;
     // read-only design task: its design folder is the (only writable) workspace; the project is read by its full path
     const dOnly=designOnly(t);if(dOnly)mkdirSync(designDir(t),{recursive:true});
-    const {child,done}=codexExec(codexBin,{cwd:dOnly?designDir(t):t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'||dOnly?'workspace-write':'read-only',extra,timeout:taskTimeout(t),onEvent:ev=>{
+    const vOnly=videoOnly(t);if(isVideo(t))extra.push('-c','sandbox_workspace_write.network_access=true');// mathvid reads the voice from the Internet
+    const {child,done}=codexExec(codexBin,{cwd:dOnly?designDir(t):vOnly?videoDir(t):t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'||dOnly||vOnly?'workspace-write':'read-only',extra,timeout:taskTimeout(t),onEvent:ev=>{
       const it=ev.item||{};
       if(it.type==='todo_list'&&Array.isArray(it.items))t.todos=it.items.slice(0,60).map(x=>({text:short(x.text,200),status:x.completed?'completed':'pending'}));
       if(ev.type==='thread.started'){if(ev.thread_id)t.codexThread=ev.thread_id;note('init','Đã khởi động Codex (ChatGPT)')}
@@ -1040,6 +1131,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       await shootDesigns(t,note);
       await finishSnap(t,note);
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
+      addTokens(t,'codex',{usage:out.usage});
       // The ChatGPT plan's usage limit: back in the queue, to run on Claude Code (or stop if Claude is used up too)
       if(!ok&&!cancelled&&!out.timedOut&&limitRetry(t,'codex',{text:`${out.error||''}\n${out.stderr}`},note))return;
       const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?`Quá thời gian cho phép (${Math.round(taskTimeout(t)/60000)} phút).`:/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
@@ -1136,6 +1228,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       remote:await remoteInfo(viewer),
       auto:{levels:AUTO_LEVELS,agents:config.agentAuto||{}},
       updates:(updater.check().catch(()=>{}),updater.view()),
+      video:videoKitState(),
       limits:{autoSwitch:config.autoSwitch!==false,both:bothLimited(),claude:limitOf('claude'),codex:limitOf('codex')},
       workdir:wd,lastCheck,vcs:wd.exists?await vcsInfo(config.workdir):{kind:null},recentDirs:(config.recentDirs||[]).filter(d=>existsSync(d)),
       running:tasks.filter(t=>t.status==='running').length,queued:tasks.filter(t=>t.status==='queued').length,
@@ -1148,8 +1241,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
   const isLocal=a=>a==='127.0.0.1'||a==='::1'||a==='::ffff:127.0.0.1';
   // Never send the attachments' absolute paths or extracted text to the browser; the names are enough
   // the permission token and rules stay on the server; the list view sends only how many files changed
-  const view=t=>({...t,files:undefined,log:(t.log||[]).slice(-8),thread:undefined,asks:t.thread?.length||0,permToken:undefined,permAlways:undefined,changes:undefined,changesN:t.changes?.length||0});
-  const full=t=>({...t,files:undefined,permToken:undefined,permAlways:undefined});
+  // Files a task created or edited that can be downloaded (still there, task not undone)
+  const outFiles=t=>t.undone||!t.cwd?[]:(t.changes||[]).filter(c=>c.a).map(c=>c.path);
+  const view=t=>({...t,outFiles:outFiles(t).slice(0,20),files:undefined,log:(t.log||[]).slice(-8),thread:undefined,asks:t.thread?.length||0,permToken:undefined,permAlways:undefined,changes:undefined,changesN:t.changes?.length||0});
+  const full=t=>({...t,outFiles:outFiles(t),files:undefined,permToken:undefined,permAlways:undefined});
   // the skill list, read in the background (server/skills.js); never waits more than 3s (e.g. a macOS privacy prompt)
   const skillsNow=async(cwd,maxAge)=>{await Promise.race([loadSkills(cwd,maxAge),new Promise(r=>setTimeout(r,3000))]);return publicSkills(cwd)};
   const permCaller=(req,t)=>t?.permToken&&req.headers['x-perm-token']===t.permToken;
@@ -1189,6 +1284,12 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             }
           }
           if(req.method==='GET'&&path==='/status')return json(res,200,await status(req));
+          // What is left of each AI plan's usage windows (?fresh=1 re-reads instead of the few-minutes cache)
+          if(req.method==='GET'&&path==='/quota'){
+            const fresh=/[?&]fresh=1/.test(req.url||'');await ensureCodex();
+            const [claude,codex]=await Promise.all([readQuota('claude',{fresh,token:getSavedClaudeToken()}),codexBin?readQuota('codex',{fresh,bin:codexBin}):{ok:false,error:'Chưa cài Codex CLI.'}]);
+            return json(res,200,{claude,codex});
+          }
           // Claude Code / Codex update: {engine} installs it (hidden window), {skip:engine} stops asking for this version, {check:true} looks again
           if(req.method==='POST'&&path==='/update'){
             const b=await readBody(req);await ensureBin();await ensureCodex();
@@ -1283,6 +1384,35 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             const t=tasks.find(t=>t.id===+diffM[1]);if(!t)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
             return json(res,200,{files:await snaps.diff(t.changes||[]),undone:t.undone||null,cwd:t.cwd});
           }
+          // ---- download what a task produced: one file (?path=) or all of them as a zip ----
+          const dlM=req.method==='GET'&&path.match(/^\/tasks\/(\d+)\/(file|files\.zip)$/);
+          if(dlM){
+            const t=tasks.find(t=>t.id===+dlM[1]);if(!t)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
+            const root=resolve(t.cwd||'.'),inRoot=p=>{const a=resolve(root,...String(p).split('/'));return a.startsWith(root+sep)&&existsSync(a)&&statSync(a).isFile()?a:null};
+            const disp=n=>`attachment; filename="${n.replace(/[^ -~]|["\\]/g,'_')}"; filename*=UTF-8''${encodeURIComponent(n)}`;
+            res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Cache-Control','no-store');
+            if(dlM[2]==='file'){
+              const p=new URL(req.url,'http://x').searchParams.get('path')||'',abs=outFiles(t).includes(p)&&inRoot(p);// only files this task changed
+              if(!abs)return json(res,404,{error:'File không còn hoặc không thuộc kết quả của việc này.'});
+              const size=statSync(abs).size,inline=/[?&]inline=1/.test(req.url||'')&&PLAY_TYPES[extname(abs).slice(1).toLowerCase()];
+              res.setHeader('Content-Type',inline||'application/octet-stream');res.setHeader('Accept-Ranges','bytes');
+              if(!inline)res.setHeader('Content-Disposition',disp(basename(abs)));
+              const range=inline&&String(req.headers.range||'').match(/^bytes=(\d*)-(\d*)$/);
+              if(range&&(range[1]||range[2])){
+                const start=range[1]?+range[1]:Math.max(0,size-+range[2]),end=range[1]&&range[2]?Math.min(+range[2],size-1):size-1;
+                if(start>=size||start>end){res.statusCode=416;res.setHeader('Content-Range',`bytes */${size}`);return res.end()}
+                res.statusCode=206;res.setHeader('Content-Range',`bytes ${start}-${end}/${size}`);res.setHeader('Content-Length',end-start+1);
+                return createReadStream(abs,{start,end}).pipe(res);
+              }
+              res.setHeader('Content-Length',size);
+              return createReadStream(abs).pipe(res);
+            }
+            let total=0;const list=[];
+            for(const p of outFiles(t)){const abs=inRoot(p);if(!abs)continue;const st=statSync(abs);if((total+=st.size)>300*1024*1024)break;list.push({name:p,buf:readFileSync(abs),mtime:st.mtime})}
+            if(!list.length)return json(res,404,{error:'Việc này không còn file kết quả nào.'});
+            const z=makeZip(list);res.setHeader('Content-Type','application/zip');res.setHeader('Content-Length',z.length);res.setHeader('Content-Disposition',disp(`ket-qua-viec-${t.id}.zip`));
+            return res.end(z);
+          }
           const undoM=req.method==='POST'&&path.match(/^\/tasks\/(\d+)\/undo$/);
           if(undoM){
             const t=tasks.find(t=>t.id===+undoM[1]);if(!t)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
@@ -1362,7 +1492,11 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             const buf=await new Promise((ok,bad)=>{const c=[];let n=0;req.on('data',d=>{n+=d.length;if(n>MAX_FILE){bad(Object.assign(new Error('Tệp quá lớn (tối đa 25MB).'),{code:400}));req.destroy()}else c.push(d)});req.on('end',()=>ok(Buffer.concat(c)));req.on('error',bad)});
             return json(res,200,stageUpload(name,buf));
           }
-          if(req.method==='POST'&&path==='/tasks'){await ensureBin();await ensureCodex();const body=await readBody(req);await skillsNow(config.workdir);return json(res,200,{task:view(add(body))})}
+          if(req.method==='POST'&&path==='/tasks'){await ensureBin();await ensureCodex();const body=await readBody(req);
+            // Google links in the request (Sheets/Docs/Drive) are downloaded now and attached like dropped files;
+            // a file that needs an account stops here with a 409 the page turns into "sign in to Google"
+            const g=await fetchGoogleLinks(body.text);
+            if(g.length)body.files=[...(Array.isArray(body.files)?body.files.slice(0,MAX_FILES):[]),...g.map(f=>({id:stageUpload(f.name,f.buf,{src:f.src,sheet:f.sheet}).id}))];await skillsNow(config.workdir);return json(res,200,{task:view(add(body))})}
           // Delete finished tasks. A workflow goes as a whole, and only once none of its steps is running or waiting
           // (its later steps need the earlier results).
           const active=t=>t.status==='running'||t.status==='queued';
@@ -1462,7 +1596,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             return res.end(readFileSync(file));
           }
           json(res,404,{error:'Not found'});
-        }catch(e){json(res,e.code===400?400:500,{error:String(e?.message||e)})}
+        }catch(e){json(res,e.status||(e.code===400?400:500),{error:String(e?.message||e),...e.extra})}
       });
       server.httpServer?.once('close',()=>{for(const p of procs.values())killTree(p)});
     }

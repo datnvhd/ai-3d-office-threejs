@@ -89,11 +89,21 @@ export function ruleSteps(text,owner,team){
   const research=/(nghien cuu|tim hieu|so sanh|khao sat|research|thi truong)/.test(t);
   const design=/(thiet ke|logo|icon|banner|mockup|wireframe|prototype)/.test(t);
   const testOnly=/(test|kiem thu|kiem tra)/.test(t)&&!bug&&!/(tao|xay|lam|viet|dung|phat trien)/.test(t);
+  // a video request goes to the team's video agent (team "Video"), with the facts and script first and a check after
+  const vid=team.find(a=>/^video/i.test(teamOf(a)));
+  const video=!!vid&&/(video|clip|tiktok|reels|shorts|\bmp4\b)/.test(t);
   // Step tasks repeat the whole request, so only coding steps may climb to Opus on its keywords
   const modelFor=(agent,task)=>{const m=pickModel(task);return m.model===LATEST.opus&&!['frontend','backend'].includes(agent)?{model:LATEST.sonnet,effort:null}:m};
   const s=[];const add=(agent,title,task,after=[])=>{if(has(agent))s.push({key:'s'+(s.length+1),agent,title,task,...modelFor(agent,task),why:'Chọn theo từ khóa',after:after.filter(k=>s.some(x=>x.key===k))});return 's'+s.length};
 
-  if(testOnly&&owner==='qa'){add('qa','Kiểm thử',text)}
+  const creative=/(to tinh|lang man|valentine|crush|nguoi yeu|ky niem|sinh nhat|chuc mung|tri an|20\/11|8\/3|cam on|dong vien|tang (ban|em|anh|co|thay|me|bo))/.test(t);
+  if(video&&creative){add(vid.id,'Dựng video',text)}
+  else if(video){
+    const r=add('research','Kiến thức & kịch bản',`Soạn nội dung cho một video toán ngắn (30–60 giây, học sinh phổ thông): một ý chính, kiến thức đúng SGK, ví dụ số đã tính lại, sai lầm hay gặp, và kịch bản lời đọc 6–9 đoạn ngắn có câu mở đầu gây tò mò. Yêu cầu: ${text}`);
+    const v=add(vid.id,'Dựng video',text,[r]);
+    add('qa','Kiểm tra video','Kiểm tra video vừa dựng: đọc ảnh khung hình (_frames.png) và kịch bản trong thư mục video-toan của việc này; soát kiến thức toán, chính tả, chữ bị tràn/che, độ khớp lời–hình. Chưa đạt thì trả lại bước dựng video kèm danh sách cần sửa.',[v]);
+  }
+  else if(testOnly&&owner==='qa'){add('qa','Kiểm thử',text)}
   else if(bug){
     const devs=[];
     if(ui||owner==='frontend'||!be)devs.push(add('frontend','Sửa lỗi giao diện',`Tìm nguyên nhân và sửa lỗi phía giao diện: ${text}`));
@@ -142,6 +152,7 @@ Quy tắc:
 - Ví dụ: "Tạo trang đăng nhập" → designer thiết kế → director duyệt thiết kế → frontend dựng giao diện + backend làm API (song song) → qa kiểm thử.
 - Designer tạo ẢNH thiết kế (mockup) cho từng màn hình; các bước sau (duyệt, dev, QA) tự nhận các ảnh người dùng đã chọn, nên việc có giao diện nên có bước designer trước bước dev.
 - Ví dụ: "Sửa lỗi không đăng nhập được" → frontend/backend sửa lỗi → qa kiểm thử lại.
+- Ví dụ: "Làm video TikTok giải thích hàm số bậc hai" → research soạn kiến thức & kịch bản lời đọc → agent đội Video dựng video MP4 (chỉ agent đội Video làm được video) → qa xem khung hình, soát kiến thức và chính tả (có thể trả lại để sửa). Có agent Marketing thì có thể thêm bước viết caption/hashtag song song với QA. Video sáng tạo/cảm xúc bằng toán (tỏ tình, sinh nhật, tri ân thầy cô…) chỉ cần agent đội Video (1 bước), không cần research.
 - Ví dụ: "Phân tích doanh thu quý" → analyst phân tích → director tổng hợp & duyệt.
 - Bước nào cũng được TRẢ LẠI bước trước để sửa khi chưa đạt (hệ thống tự lặp: sửa → kiểm tra lại, tối đa ${MAX_REWORK} lần mỗi bước). Vì vậy với việc cần chất lượng, đặt bước qa kiểm thử hoặc director duyệt sau bước làm, và ghi rõ tiêu chí đạt trong "task" của bước kiểm tra đó.
 - Chọn "model" và "effort" cho TỪNG bước: tổ hợp rẻ nhất mà vẫn làm tốt bước đó. Mỗi agent dùng Claude, Codex hoặc cả hai (xem "AI" và "model được dùng" của agent): CHỈ chọn model trong danh sách được dùng của agent nhận bước đó và không vượt "effort tối đa". Agent dùng cả hai thì chọn bên hợp việc hơn (ví dụ Codex cho code/thiết kế ảnh, Claude cho phân tích/viết), hoặc chia các bước song song cho cả hai để giảm tải hạn mức.
@@ -246,7 +257,7 @@ THIẾU THÔNG TIN: nếu thiếu thông tin quan trọng mà không thể tự 
 \`\`\`question
 {"question":"câu hỏi ngắn, rõ ràng","options":["lựa chọn 1","lựa chọn 2","lựa chọn 3"]}
 \`\`\`
-2–5 lựa chọn ngắn, cụ thể (người dùng cũng có thể tự nhập câu trả lời khác). Gộp mọi điều cần hỏi vào một câu hỏi. Nếu có thể tự giả định hợp lý thì cứ làm và ghi rõ giả định trong phần kết quả, không hỏi.
+2–5 lựa chọn ngắn, cụ thể (người dùng cũng có thể tự nhập câu trả lời khác). Lựa chọn nào cần người dùng gõ thêm thông tin (URL, tài khoản, số liệu, đường dẫn…) thì viết bắt đầu bằng "Nhập …" (ví dụ "Nhập URL môi trường UAT"): giao diện sẽ mở ô cho họ nhập giá trị đó; các lựa chọn khác phải là câu trả lời hoàn chỉnh dùng được ngay. Gộp mọi điều cần hỏi vào một câu hỏi. Nếu có thể tự giả định hợp lý thì cứ làm và ghi rõ giả định trong phần kết quả, không hỏi.
 Bạn đang chạy không tương tác: chỉ khối question ở trên mới hiện ô cho người dùng trả lời, và việc sẽ dừng chờ đến khi họ trả lời. Khi đã làm xong thì đừng kết thúc bằng câu hỏi (kể cả câu gợi ý kiểu "Bạn có muốn tôi… không?"), vì câu hỏi ở cuối sẽ được coi là cần người dùng trả lời.
 `;
 // Fallback when the agent asks in plain text instead of a question block: the answer ends with a question

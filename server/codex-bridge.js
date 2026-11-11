@@ -67,6 +67,8 @@ const versionKey=v=>v.split(/[.-]/).map(n=>n.padStart(6,'0')).join('.');
 // [command, args] for spawning the binary
 const cmd=(bin,args)=>bin.endsWith('.js')?[process.execPath,[bin,...args]]:[bin,args];
 // a native binary from an npm install gets the env codex.js would give it (Codex uses it to say how to update)
+// for other modules that start Codex themselves (server/ai-quota.js)
+export const codexSpawn=(bin,args)=>[...cmd(bin,args),envFor(bin)];
 const envFor=bin=>bin.endsWith('.js')?{...process.env,...NODE_ENV}:nativeRoot.has(bin)?{...process.env,CODEX_MANAGED_PACKAGE_ROOT:nativeRoot.get(bin),CODEX_MANAGED_BY_NPM:'1'}:process.env;
 
 export function codexRun(bin,args,timeout=30000){
@@ -103,7 +105,7 @@ export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,ti
     const timer=setTimeout(()=>{timedOut=true;killTree(child)},timeout);
     child.stdout.on('data',d=>{buf+=d;let i;while((i=buf.indexOf('\n'))>=0){const line=buf.slice(0,i).trim();buf=buf.slice(i+1);if(!line)continue;let ev;try{ev=JSON.parse(line)}catch{continue}
       if(ev.type==='item.completed'&&ev.item?.type==='agent_message')message=ev.item.text;
-      if(ev.type==='turn.completed')usage=ev.usage||null;
+      if(ev.type==='turn.completed'&&ev.usage){usage||={};for(const [k,v] of Object.entries(ev.usage))if(typeof v==='number')usage[k]=(usage[k]||0)+v}
       if(ev.type==='turn.failed')error=ev.error?.message||'Codex báo lỗi.';
       if(ev.type==='error')error=ev.message||'Codex báo lỗi.';
       onEvent?.(ev)}});

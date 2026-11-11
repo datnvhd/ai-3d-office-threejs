@@ -2,7 +2,8 @@
 // Only the AI list, the task box and the results, on the same machine API as the full office (/api/machine/…).
 // Lean on purpose: no three.js, polls slowly when nothing runs and stops while the page is hidden.
 import './mobile.css';
-import {escapeHTML as esc,md} from './ui-text.js';
+import {tokenTag} from './ui-text.js';
+import {escapeHTML as esc,md,downloadList,linkFiles,needsInput,toggleFill,fillOf,fillPlaceholder,composeAnswer} from './ui-text.js';
 import {initSkillMenu} from './skill-menu.js';
 import {MODELS,EFFORTS,modelId,sameTier,BUILTIN_TEAM,teamOf,levelOf,LEVELS} from './workflow-plan.js';
 
@@ -122,7 +123,7 @@ function renderTasks(){
       <div class="th"><i style="background:${hex(a.color)}"></i><b>${esc(a.name)}</b><span class="badge ${GROUP[t.status]}">${(t.perms||[]).length?'Xin phép':STATUS[t.status]||t.status}</span></div>
       ${t.stepTitle?`<div class="step">${esc(t.stepTitle)}</div>`:''}
       <div class="tx">${esc(String(t.text||'').slice(0,160))}</div>
-      <div class="tm">${GROUP[t.status]==='running'&&t.activity?`<span class="act">${esc(t.activity)}</span>`:`<span>${ago(t.finished||t.created)}</span>`}${modelTag(t)}</div>
+      <div class="tm">${GROUP[t.status]==='running'&&t.activity?`<span class="act">${esc(t.activity)}</span>`:`<span>${ago(t.finished||t.created)}</span>`}${modelTag(t)}${tokenTag(t.tokens)}</div>
     </button>`}).join(''):'<p class="empty">Chưa có việc nào. Giao việc ở trên, kết quả sẽ hiện ở đây.</p>';
 }
 $('mTabs').onclick=e=>{const b=e.target.closest('[data-f]');if(!b)return;S.filter=b.dataset.f;renderTasks()};
@@ -156,10 +157,10 @@ function renderSheet(){
     ${perms.map(p=>`<div class="perm"><b>🔐 Xin phép: ${esc(p.desc||p.tool)}</b>${p.detail?`<pre>${esc(String(p.detail).slice(0,600))}</pre>`:''}
       <div class="btns"><button data-perm="${p.id}" data-m="1" class="ok">Cho phép</button><button data-perm="${p.id}" data-m="2">Luôn cho phép${p.ruleLabel?` (${esc(p.ruleLabel)})`:''}</button><button data-perm="${p.id}" data-m="0" class="no">Từ chối</button></div></div>`).join('')}
     ${t.status==='waiting'&&t.question?.kind==='login'?'<div class="q"><b>🔑 Việc này cần đăng nhập một trang web.</b><p>Hãy nhập tài khoản trên máy tính chạy app (vì lý do an toàn, không nhập được từ xa).</p></div>':''}
-    ${q?`<div class="q"><b>❓ ${esc(q.q)}</b>${(q.options||[]).map(o=>`<button class="opt" data-ans="${esc(o)}">${esc(o)}</button>`).join('')}
-      <textarea id="sAns" rows="2" placeholder="Hoặc tự nhập câu trả lời… (gõ / để dùng skill)">${esc(typed.ans)}</textarea><button class="send sm" data-x="answer">Gửi câu trả lời</button></div>`:''}
+    ${q?`<div class="q"><b>❓ ${esc(q.q)}</b>${(q.options||[]).map(o=>needsInput(o)?`<button class="opt fill${fillOf('m'+t.id)===o?' on':''}" data-fill="${esc(o)}">✎ ${esc(o)}</button>`:`<button class="opt" data-ans="${esc(o)}">${esc(o)}</button>`).join('')}
+      <textarea id="sAns" rows="2" placeholder="${esc(fillPlaceholder('m'+t.id,'Hoặc tự nhập câu trả lời… (gõ / để dùng skill)'))}">${esc(typed.ans)}</textarea><button class="send sm" data-x="answer">Gửi câu trả lời</button></div>`:''}
     ${t.error&&GROUP[t.status]==='error'?`<div class="err">${esc(t.error)}</div>`:''}
-    ${t.result?`<div class="res md">${md(t.result)}</div>`:''}
+    ${t.result?`<div class="res md">${linkFiles(md(t.result),t.id,t.outFiles)}</div>`:''}${downloadList(t.id,t.outFiles)}
     ${(t.thread||[]).map(x=>`<div class="thread"><div class="tq">Bạn hỏi: ${esc(x.q)}</div>${x.answer?`<div class="md">${md(x.answer)}</div>`:x.error?`<div class="err">${esc(x.error)}</div>`:`<div class="act live"><span class="spin"></span>${esc(asking&&t.activity?t.activity:'Đang trả lời…')}</div>`}</div>`).join('')}
     <div class="acts">
       ${run?'<button data-x="cancel" class="no">Dừng việc</button>':''}
@@ -178,7 +179,8 @@ $('mSheet').onclick=async e=>{
   try{
     if(x==='close'){history.back();return}
     if(perm){await api(`/tasks/${t.id}/perm/${perm.dataset.perm}/answer`,{method:'POST',body:JSON.stringify({allow:perm.dataset.m!=='0',always:perm.dataset.m==='2'})});toast(perm.dataset.m==='0'?'⛔ Đã từ chối':'✓ Đã cho phép')}
-    else if(opt||x==='answer'){const text=opt?opt.dataset.ans:$('mSheet').querySelector('#sAns').value.trim();if(!text){toast('Nhập câu trả lời');return}
+    else if(e.target.closest('[data-fill]')){toggleFill('m'+t.id,e.target.closest('[data-fill]').dataset.fill);renderSheet();$('mSheet').querySelector('#sAns')?.focus()}
+    else if(opt||x==='answer'){const text=opt?opt.dataset.ans:composeAnswer('m'+t.id,$('mSheet').querySelector('#sAns').value);if(!text){toast('Nhập câu trả lời');$('mSheet').querySelector('#sAns')?.focus();return}
       await api(`/tasks/${t.id}/answer`,{method:'POST',body:JSON.stringify({text})});toast('Đã gửi câu trả lời');$('mSheet').querySelector('#sAns')&&($('mSheet').querySelector('#sAns').value='')}
     else if(x==='ask'){const el=$('mSheet').querySelector('#sAsk'),text=el.value.trim();if(!text){toast('Nhập câu hỏi');return}
       await api(`/tasks/${t.id}/ask`,{method:'POST',body:JSON.stringify({text})});el.value='';S.toBottom=true;toast(`${agentOf(t.agent).name} đang trả lời`)}

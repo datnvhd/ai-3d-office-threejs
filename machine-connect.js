@@ -4,6 +4,7 @@ const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const fmt=d=>d?new Date(d).toLocaleString('vi-VN'):'—';
 const gb=b=>(b/1073741824).toFixed(1)+' GB';
 import {openFolderPicker} from './folder-picker.js';
+import {pwField} from './pw-field.js';
 import qrcode from 'qrcode-generator';
 // QR code of a link as an inline SVG (dark modules on white, with the quiet zone phones need to read it)
 const qrSvg=text=>{const q=qrcode(0,'M');q.addData(text);q.make();return q.createSvgTag({cellSize:4,margin:4,scalable:true})};
@@ -12,6 +13,28 @@ export const vcsBadge=v=>!v?.kind?'<span class="vcsb none">Không VCS</span>':`<
 export const vcsText=v=>!v?.kind?'Không quản lý phiên bản (diff/hoàn tác vẫn dùng bản chụp của app)'
   :v.kind==='git'?`Git · nhánh ${esc(v.branch||'?')}${v.rev?` @${esc(v.rev)}`:''} · ${v.remote?`đẩy lên <code>${esc(v.remote)}</code>`:'chưa có remote'}${v.dirty?` · ${v.dirty} file đang sửa`:''}`
   :`SVN${v.cli?`${v.rev?` · r${esc(v.rev)}`:''}${v.remote?` · <code>${esc(v.remote)}</code>`:''}`:' · <em class="bad">máy chưa có lệnh svn</em>: chạy lại bộ cài TortoiseSVN → Modify → chọn "command line client tools"'}`;
+// ---- what is left of each AI plan (GET /api/machine/quota, server/ai-quota.js) ----
+const QNAME={claude:'Claude',codex:'Codex (ChatGPT)'};
+const when=ms=>{if(!ms)return '';const d=new Date(ms),now=new Date();return d.toDateString()===now.toDateString()?d.toLocaleTimeString('vi-VN',{hour:'2-digit',minute:'2-digit'}):d.toLocaleString('vi-VN',{hour:'2-digit',minute:'2-digit',day:'2-digit',month:'2-digit'})};
+const lvl=left=>left<=10?'low':left<=30?'mid':'ok';
+// One line for an engine: "Claude: còn 87% (5 giờ) · 93% (Tuần)"
+export function quotaLine(q,engine){
+  const x=q?.[engine];if(!x)return '';
+  if(!x.ok)return `<span class="qline"><b>${QNAME[engine]}</b> <em title="${esc(x.error||'')}">chưa đọc được quota</em></span>`;
+  return `<span class="qline"><b>${QNAME[engine]}</b> ${x.windows.map(w=>`<span class="qpct ${lvl(w.left)}" title="${esc(w.label)}: đã dùng ${w.used}%${w.resetsAt?`, mở lại ${when(w.resetsAt)}`:''}">còn ${w.left}% <small>${esc(w.label)}</small></span>`).join(' · ')}</span>`;
+}
+// Bars per usage window, plus the agents that run on that engine
+export function quotaHtml(q,agents=[],{loading=false}={}){
+  const block=e=>{
+    const x=q?.[e],who=agents.filter(a=>a.engine===e||a.engine==='both');
+    const bars=!x?`<p class="claude-note">${loading?'<span class="spinner"></span> Đang đọc quota…':'Chưa đọc.'}</p>`
+      :!x.ok?`<p class="claude-err">${esc(x.error||'Không đọc được quota.')}</p>`
+      :x.windows.map(w=>`<div class="qbar ${lvl(w.left)}"><span>${esc(w.label)}</span><i><b style="width:${w.used}%"></b></i><em>còn <b>${w.left}%</b>${w.resetsAt?` · mở lại ${esc(when(w.resetsAt))}`:''}</em></div>`).join('');
+    return `<div class="qblock"><div class="qhead"><b>${QNAME[e]}</b>${x?.plan?`<span class="qplan">gói ${esc(String(x.plan).toUpperCase())}</span>`:''}${x?.limited?'<span class="qplan bad">đang hết hạn mức</span>':''}${x?.resetCredits?`<span class="qplan" title="Lượt làm mới hạn mức miễn phí của ChatGPT (dùng trong Codex)">${x.resetCredits} lượt reset</span>`:''}</div>
+      ${bars}<div class="qwho">${who.length?`Agent dùng: ${who.map(a=>`<span class="qagent"><span class="tagdot" style="background:#${(a.color??0x9aa3b5).toString(16).padStart(6,'0')}"></span>${esc(a.name)}</span>`).join('')}`:'<em>Chưa agent nào dùng</em>'}</div></div>`;
+  };
+  return `<div class="qgrid">${block('claude')}${block('codex')}</div>${q?.claude?.at||q?.codex?.at?`<p class="claude-note">Đọc lúc ${when(Math.max(q.claude?.at||0,q.codex?.at||0))}. Claude được đọc bằng một yêu cầu rất nhỏ (Haiku, 1 token); Codex do chính Codex CLI báo.</p>`:''}`;
+}
 // Pick a folder and make it the working folder; returns the new status or null
 export async function pickWorkdir(start){
   const dir=await openFolderPicker({start});if(!dir)return null;
@@ -20,20 +43,26 @@ export async function pickWorkdir(start){
 export async function machineApi(path,opt={}){
   const r=await fetch('/api/machine'+path,{...opt,headers:{'X-AI-Office':'1','Content-Type':'application/json'}});
   const d=await r.json().catch(()=>({}));
-  if(!r.ok)throw new Error(d.error||`HTTP ${r.status}`);
+  if(!r.ok)throw Object.assign(new Error(d.error||`HTTP ${r.status}`),{google:d.google});
   return d;
 }
 
-export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAgents=()=>[]}){
+export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAgents=()=>[],onQuota=()=>{}}){
   const chip=document.createElement('button');chip.id='machineChip';chip.className='claude-chip';chip.innerHTML='<span class="cdot checking"></span><span class="mtext">Máy cá nhân…</span>';
   document.querySelector('.actions').prepend(chip);
   const modal=document.createElement('div');modal.className='modal hidden';
   modal.innerHTML='<div class="guide claude-box machine-box"><button class="close">✕</button><div class="panel-kicker">KẾT NỐI · MÁY CÁ NHÂN</div><div class="mbody"></div></div>';
   document.getElementById('app').appendChild(modal);
   const body=modal.querySelector('.mbody');
-  let st=null,busy=false,checking=false,editing=null,showQr=null;
+  let st=null,busy=false,checking=false,editing=null,showQr=null,quota=null,quotaLoading=false;
+  async function loadQuota(fresh=false){
+    quotaLoading=true;if(!modal.classList.contains('hidden'))render();
+    try{quota=await machineApi('/quota'+(fresh?'?fresh=1':''));onQuota(quota)}catch(e){if(fresh)toast(e.message)}
+    finally{quotaLoading=false;if(!modal.classList.contains('hidden'))render()}
+    return quota;
+  }
 
-  const open=()=>{modal.classList.remove('hidden');render();refresh()};
+  const open=()=>{modal.classList.remove('hidden');render();refresh();loadQuota()};
   chip.onclick=open;
   modal.querySelector('.close').onclick=()=>modal.classList.add('hidden');
 
@@ -102,7 +131,8 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
   const limitsHtml=L=>{
     if(!L)return '';
     const row=(e,name,ready)=>{const l=L[e];return [name,l?`<em class="bad">hết hạn mức đến ${l.known?'':'khoảng '}${esc(fmtLimit(l))}</em> <button class="linkbtn" data-act="clearLimit" data-engine="${e}" title="${esc(l.message||'')}">Dùng lại ngay</button>`:ready?'Còn dùng được':'<em>chưa sẵn sàng</em>']};
-    return `<div class="section-title">HẠN MỨC GÓI AI</div>
+    return `<div class="section-title">HẠN MỨC GÓI AI <span><button class="linkbtn" data-act="quota"${quotaLoading?' disabled':''}>⟲ Kiểm tra quota</button></span></div>
+      ${quotaHtml(quota,getAgents(),{loading:quotaLoading})}
       ${rows([row('claude','Claude (gói Claude)',st.claude.found&&st.claude.auth),row('codex','Codex (gói ChatGPT)',st.codex.ready)])}
       ${L.both?'<p class="claude-err">Đã hết hạn mức của cả hai gói AI. Việc mới sẽ dừng và báo lại cho tới giờ mở lại, hoặc khi bạn nâng cấp gói (bấm "Dùng lại ngay").</p>':''}
       <label class="mcheck"><input type="checkbox" id="mAutoSwitch" ${L.autoSwitch?'checked':''}> Tự chuyển sang AI còn hạn mức: Claude hết thì làm bằng Codex, Codex hết thì làm bằng Claude</label>
@@ -136,7 +166,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
       ${r.error?`<p class="claude-err">${esc(r.error)}</p>`:''}
       ${r.on?links:''}
       <label class="mcheck"><input type="checkbox" id="mPublic" ${P.wanted?'checked':''} ${P.hasPassword?'':'disabled'}> Mọi mạng: tạo link công khai HTTPS (Cloudflare Tunnel) để mở từ điện thoại dùng 4G hoặc mạng khác</label>
-      <div class="rpass"><input type="password" id="mPubPass" autocomplete="new-password" placeholder="${P.hasPassword?'Đổi mật khẩu truy cập':`Đặt mật khẩu truy cập (từ ${P.minPassword||8} ký tự)`}"><button class="ghost" data-act="pubPass">${P.hasPassword?'Đổi mật khẩu':'Lưu mật khẩu'}</button></div>
+      <div class="rpass">${pwField(`id="mPubPass" placeholder="${P.hasPassword?'Đổi mật khẩu truy cập':`Đặt mật khẩu truy cập (từ ${P.minPassword||8} ký tự)`}"`)}<button class="ghost" data-act="pubPass">${P.hasPassword?'Đổi mật khẩu':'Lưu mật khẩu'}</button></div>
       ${P.hasPassword?'':'<p class="claude-note">Link công khai nằm trên Internet nên cần mật khẩu riêng: đặt mật khẩu trước rồi mới bật được.</p>'}
       ${P.wanted?pubState:''}
       ${r.on||P.wanted?`<p class="claude-note">Mã truy cập nằm sau <code>?key=</code>. Ai có link cùng mạng đều điều khiển được agent trên máy này; link công khai còn cần mật khẩu. Chỉ gửi cho người tin cậy. Link công khai đổi mỗi lần app khởi động lại hoặc mất mạng: mở lại cửa sổ này để lấy link mới. Lần đầu Windows/macOS có thể hỏi cho phép kết nối: hãy cho phép.</p>
@@ -162,11 +192,12 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
       <p class="claude-note">Lệnh dòng lệnh mỗi đội được phép chạy. Ở chế độ <b>Chỉ đọc</b> chỉ các lệnh xem (git status/diff/log, ls, cat…) được dùng; các bộ có dấu ✎ cần chế độ được sửa file. Không bao giờ cho phép git push, xóa hàng loạt hay publish.</p>
       <div class="mkits">${getTeams().map(team=>{const on=new Set(config.teamKits[team]??config.defaultKits[team]??config.defaultKits['*']);
         return `<div class="mkit"><b>${esc(team)}</b><div>${Object.entries(config.toolkits).map(([k,v])=>`<label class="kchip ${on.has(k)?'on':''}" title="${esc(v.label)}"><input type="checkbox" data-kit="${k}" data-team="${esc(team)}" ${on.has(k)?'checked':''}>${esc(v.short)}${v.write?' ✎':''}</label>`).join('')}</div></div>`}).join('')}</div>
+      ${st.video?`<p class="claude-note">🎬 Bộ công cụ <b>Video toán</b> (Manim, giọng đọc tiếng Việt, ffmpeg): ${st.video.ready?`đã sẵn sàng · Manim ${esc(st.video.manim||'')}${st.video.latex?' · có LaTeX':''}`:st.video.installing?'<span class="spinner"></span> đang cài…':st.video.error?`<em class="bad">${esc(st.video.error)}</em>`:'tự cài khi agent đội Video nhận việc đầu tiên (khoảng 1 phút, cần Internet).'}</p>`:''}
       <div class="section-title">TRÌNH DUYỆT & TÀI KHOẢN WEB</div>
       ${rows([['Công cụ trình duyệt',st.browser.mcp?'Playwright MCP đã cài':'<em class="bad">chưa cài @playwright/mcp</em>'],['Trình duyệt dùng',st.browser.channel?esc(st.browser.channel==='chrome'?'Google Chrome':'Microsoft Edge'):'<em class="bad">không tìm thấy Chrome/Edge</em>']])}
       <label class="mcheck"><input type="checkbox" id="mVisible" ${config.browserVisible?'checked':''}> Hiện cửa sổ trình duyệt khi agent thao tác (bỏ chọn để chạy ẩn)</label>
       <div class="msites">${st.browser.sites.length?st.browser.sites.map(s=>`<div class="msite"><div><b>${esc(s.label)}</b><span>${esc(s.url)}</span><span>👤 ${esc(s.username||'—')} · 🔑 ••••••</span></div><button class="linkbtn" data-act="editSite" data-id="${s.id}">Sửa</button><button class="linkbtn" data-act="delSite" data-id="${s.id}">Xóa</button></div>`).join(''):'<p class="claude-note">Chưa lưu tài khoản nào.</p>'}</div>
-      <div class="msite-form" data-id="${esc(editing?.id||'')}"><div class="msite-grid"><input id="sLabel" placeholder="Tên (ví dụ Jira Trí Nam)" value="${esc(editing?.label||'')}"><input id="sUrl" placeholder="Link (ví dụ http://pm.trinam.vn)" value="${esc(editing?.url||'')}"><input id="sUser" placeholder="Tên đăng nhập" autocomplete="off" value="${esc(editing?.username||'')}"><input id="sPass" type="password" placeholder="${editing?'Mật khẩu (để trống = giữ nguyên)':'Mật khẩu'}" autocomplete="new-password"></div>
+      <div class="msite-form" data-id="${esc(editing?.id||'')}"><div class="msite-grid"><input id="sLabel" placeholder="Tên (ví dụ Jira Trí Nam)" value="${esc(editing?.label||'')}"><input id="sUrl" placeholder="Link (ví dụ http://pm.trinam.vn)" value="${esc(editing?.url||'')}"><input id="sUser" placeholder="Tên đăng nhập" autocomplete="off" value="${esc(editing?.username||'')}">${pwField(`id="sPass" placeholder="${editing?'Mật khẩu (để trống = giữ nguyên)':'Mật khẩu'}"`)}</div>
         <div class="claude-actions"><button class="assign" data-act="saveSite">${editing?'Lưu thay đổi':'＋ Lưu tài khoản'}</button>${editing?'<button class="ghost" data-act="cancelSite">Hủy</button>':''}</div></div>
       <p class="claude-note">Mật khẩu chỉ lưu trên máy này (<code>~/.ai-3d-office/sites.json</code>), không gửi xuống trình duyệt và không gửi cho Claude: agent gõ tên biến bí mật, Playwright tự thay bằng mật khẩu thật và che mật khẩu trong mọi nội dung trả về.</p>
       ${autoHtml(st.auto)}
@@ -187,6 +218,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
     if(busy)return;busy=true;
     try{
       if(name==='refresh')await refresh();
+      else if(name==='quota'){busy=false;await loadQuota(true);return}
       else if(name==='check'){checking=true;render();const r=await machineApi('/check',{method:'POST'});st=r.status;onStatus(st);toast(r.check.ok?'✓ Máy cá nhân hoạt động tốt, sẵn sàng chạy việc':'✗ Kiểm tra máy chưa đạt, xem chi tiết trong cửa sổ')}
       else if(name==='browse'){const s=await pickWorkdir(body.querySelector('#mWorkdir').value);if(s){st=s;onStatus(st);toast('Đã chọn thư mục làm việc')}}
       else if(name==='recent'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({workdir:el.dataset.dir})});onStatus(st);toast('Đã chuyển thư mục làm việc')}
@@ -231,5 +263,6 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
 
   refresh();
   setInterval(()=>{if(!busy&&modal.classList.contains('hidden'))machineApi('/status').then(s=>{st=s;onStatus(s);setChip()}).catch(()=>{})},15000);
-  return {open,refresh,status:()=>st};
+  loadQuota();setInterval(()=>loadQuota(),10*60e3);// numbers stay roughly current; the server caches them too
+  return {open,refresh,status:()=>st,quota:()=>quota,loadQuota};
 }
