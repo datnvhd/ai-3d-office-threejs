@@ -156,6 +156,7 @@
 #task.dropping{border-color:#f4966b;background:#fff6f0;box-shadow:0 0 0 3px #f4966b33}
 .attachbar{margin-top:9px}
 .attach-add{background:#f4f5fc;border:1px dashed #c3c9de;color:#59627a;border-radius:9px;padding:7px 11px;font-size:11px;font-weight:650}
+#skillAdd{margin-left:6px}
 .attach-add:hover{background:#eceffa;border-color:#f4966b;color:#d2652f}
 .attach-list{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px}
 .attach-list .chip{display:inline-flex;align-items:center;gap:6px;max-width:100%;background:#eef0f8;border:1px solid #dfe3f1;border-radius:9px;padding:4px 6px 4px 8px;font-size:11px;color:#2c3350}
@@ -180,6 +181,8 @@
 .pv-ask{display:flex;gap:8px;align-items:flex-end;margin-top:10px}
 .pv-ask textarea{flex:1;min-height:44px;max-height:180px;resize:vertical;padding:9px 11px;border:1px solid #dfe2f0;border-radius:10px;background:#f8f9fd;color:#1f2540;font:inherit;font-size:13px}
 .pv-ask textarea:focus{outline:none;border-color:#7b8cf0;box-shadow:0 0 0 3px #7b8cf033}
+.pv-ask .pv-skill{width:auto;margin:0;padding:9px 11px;font-size:15px;line-height:1;background:#fff;border:1px solid #dfe2f0;border-radius:10px}
+.pv-ask .pv-skill:hover{background:#f4f5fc;border-color:#f4966b}
 .pv-ask .assign{width:auto;margin:0;padding:10px 16px}
 
 /* Steps that sent work back for rework */

@@ -54,7 +54,7 @@ select{flex:1;min-width:0;height:44px;border:1px solid var(--line);background:va
 @keyframes up{from{transform:translateY(24px);opacity:0}}
 .sh-top{display:flex;align-items:center;justify-content:space-between;padding:calc(8px + env(safe-area-inset-top)) 12px 8px;border-bottom:1px solid var(--line);background:var(--card)}
 .back{font-size:16px;font-weight:600;color:var(--accent);height:40px;padding:0 6px}
-.sh-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px calc(28px + env(safe-area-inset-bottom));display:grid;grid-template-columns:minmax(0,1fr);gap:12px;align-content:start}
+.sh-body{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:14px 16px calc(28px + env(safe-area-inset-bottom));display:grid;grid-template-columns:minmax(0,1fr);grid-auto-rows:max-content;gap:12px;align-content:start}
 .req{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;white-space:pre-wrap;word-break:break-word}
 .act.live{display:flex;gap:8px;align-items:center;white-space:normal;color:var(--run);font-size:14px}
 .spin{flex:none;width:14px;height:14px;border-radius:50%;border:2px solid currentColor;border-right-color:transparent;animation:rot .8s linear infinite}@keyframes rot{to{transform:rotate(360deg)}}

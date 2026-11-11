@@ -3,6 +3,7 @@
 // Lean on purpose: no three.js, polls slowly when nothing runs and stops while the page is hidden.
 import './mobile.css';
 import {escapeHTML as esc,md} from './ui-text.js';
+import {initSkillMenu} from './skill-menu.js';
 import {MODELS,EFFORTS,modelId,sameTier,BUILTIN_TEAM,teamOf,levelOf,LEVELS} from './workflow-plan.js';
 
 // The built-in staff (names and colours as in the office); saved agents (agents.json) override names, roles and teams
@@ -31,7 +32,7 @@ root.innerHTML=`
     <h2>Giao việc</h2>
     <div id="mAgents" class="agents"></div>
     <div id="mWho" class="who"></div>
-    <textarea id="mText" rows="3" placeholder="Nhập yêu cầu công việc…"></textarea>
+    <textarea id="mText" rows="3" placeholder="Nhập yêu cầu công việc… (gõ / để dùng skill)"></textarea>
     <label class="wf" id="mWfRow"><input type="checkbox" id="mWf"> Director lập kế hoạch và chia việc cho cả đội</label>
     <div class="row"><select id="mPrio">${PRIORITIES.map(p=>`<option>${p}</option>`).join('')}</select><select id="mModel"></select></div>
     <button id="mSend" class="send">Giao việc</button>
@@ -48,6 +49,8 @@ const $=id=>document.getElementById(id);
 
 // ---------- toast ----------
 let toastT;function toast(s){const t=$('mToast');t.textContent=s;t.classList.add('show');clearTimeout(toastT);toastT=setTimeout(()=>t.classList.remove('show'),3200)}
+// skills: type / in the request or follow-up box to pick one (skill-menu.js)
+initSkillMenu({api,selector:'#mText, #sAsk, #sAns',toast});
 
 // ---------- agents ----------
 async function loadAgents(){
@@ -139,29 +142,35 @@ function renderSheet(){
   const t=S.detail,sh=$('mSheet');if(!t){sh.hidden=true;return}
   const a=agentOf(t.agent),run=GROUP[t.status]==='running',perms=t.perms||[],q=t.status==='waiting'&&t.question&&t.question.kind!=='login'?t.question:null;
   // keep what the user is typing when the sheet refreshes
-  const typed={ans:sh.querySelector('#sAns')?.value||'',ask:sh.querySelector('#sAsk')?.value||''};
+  const typed={ans:sh.querySelector('#sAns')?.value||'',ask:sh.querySelector('#sAsk')?.value||''},focus=document.activeElement?.id,caret=document.activeElement?.selectionStart;
+  // and where they scrolled: the sheet is rebuilt on every refresh, which would jump back to the top
+  const body=sh.querySelector('.sh-body'),same=sh.dataset.id===String(t.id),top=body?.scrollTop||0,atEnd=body&&top>0&&body.scrollHeight-top-body.clientHeight<48;
+  const asking=!!t.asking&&run;// answering a follow-up: result and conversation stay, the ask box waits
   sh.hidden=false;document.body.classList.add('locked');
   sh.innerHTML=`<div class="sh-top"><button class="back" data-x="close">‹ Quay lại</button><span class="badge ${GROUP[t.status]}">${STATUS[t.status]||t.status}</span></div>
   <div class="sh-body">
     <div class="th big"><i style="background:${hex(a.color)}"></i><b>${esc(a.name)}</b>${modelTag(t)}</div>
     ${t.stepTitle?`<div class="step">${esc(t.wfTitle?`${t.wfTitle} · `:'')}${esc(t.stepTitle)}</div>`:''}
     <div class="req">${esc(t.text||'')}</div>
-    ${run&&t.activity?`<div class="act live"><span class="spin"></span>${esc(t.activity)}</div>`:''}
+    ${run&&!asking&&t.activity?`<div class="act live"><span class="spin"></span>${esc(t.activity)}</div>`:''}
     ${perms.map(p=>`<div class="perm"><b>🔐 Xin phép: ${esc(p.desc||p.tool)}</b>${p.detail?`<pre>${esc(String(p.detail).slice(0,600))}</pre>`:''}
       <div class="btns"><button data-perm="${p.id}" data-m="1" class="ok">Cho phép</button><button data-perm="${p.id}" data-m="2">Luôn cho phép${p.ruleLabel?` (${esc(p.ruleLabel)})`:''}</button><button data-perm="${p.id}" data-m="0" class="no">Từ chối</button></div></div>`).join('')}
     ${t.status==='waiting'&&t.question?.kind==='login'?'<div class="q"><b>🔑 Việc này cần đăng nhập một trang web.</b><p>Hãy nhập tài khoản trên máy tính chạy app (vì lý do an toàn, không nhập được từ xa).</p></div>':''}
     ${q?`<div class="q"><b>❓ ${esc(q.q)}</b>${(q.options||[]).map(o=>`<button class="opt" data-ans="${esc(o)}">${esc(o)}</button>`).join('')}
-      <textarea id="sAns" rows="2" placeholder="Hoặc tự nhập câu trả lời…">${esc(typed.ans)}</textarea><button class="send sm" data-x="answer">Gửi câu trả lời</button></div>`:''}
+      <textarea id="sAns" rows="2" placeholder="Hoặc tự nhập câu trả lời… (gõ / để dùng skill)">${esc(typed.ans)}</textarea><button class="send sm" data-x="answer">Gửi câu trả lời</button></div>`:''}
     ${t.error&&GROUP[t.status]==='error'?`<div class="err">${esc(t.error)}</div>`:''}
     ${t.result?`<div class="res md">${md(t.result)}</div>`:''}
-    ${(t.thread||[]).map(x=>`<div class="thread"><div class="tq">Bạn hỏi: ${esc(x.q)}</div>${x.answer?`<div class="md">${md(x.answer)}</div>`:x.error?`<div class="err">${esc(x.error)}</div>`:'<div class="act live"><span class="spin"></span>Đang trả lời…</div>'}</div>`).join('')}
+    ${(t.thread||[]).map(x=>`<div class="thread"><div class="tq">Bạn hỏi: ${esc(x.q)}</div>${x.answer?`<div class="md">${md(x.answer)}</div>`:x.error?`<div class="err">${esc(x.error)}</div>`:`<div class="act live"><span class="spin"></span>${esc(asking&&t.activity?t.activity:'Đang trả lời…')}</div>`}</div>`).join('')}
     <div class="acts">
       ${run?'<button data-x="cancel" class="no">Dừng việc</button>':''}
       ${['error','cancelled'].includes(t.status)?'<button data-x="retry">Thử lại</button>':''}
     </div>
-    ${t.status==='done'?`<div class="q"><textarea id="sAsk" rows="2" placeholder="Hỏi thêm về kết quả này…">${esc(typed.ask)}</textarea><button class="send sm" data-x="ask">Hỏi thêm</button></div>`:''}
-    ${(t.log||[]).length?`<details class="log"><summary>Nhật ký (${t.log.length})</summary>${t.log.slice(-30).map(l=>`<div>${esc(l.text)}</div>`).join('')}</details>`:''}
+    ${t.status==='done'||asking?`<div class="q"><textarea id="sAsk" rows="2" placeholder="Hỏi thêm về kết quả này… (gõ / để dùng skill)">${esc(typed.ask)}</textarea><button class="send sm" data-x="ask"${asking?' disabled':''}>${asking?'Đang trả lời…':'Hỏi thêm'}</button></div>`:''}
+    ${(t.log||[]).length?`<details class="log"${same&&sh.querySelector('details.log')?.open?' open':''}><summary>Nhật ký (${t.log.length})</summary>${t.log.slice(-30).map(l=>`<div>${esc(l.text)}</div>`).join('')}</details>`:''}
   </div>`;
+  sh.dataset.id=t.id;
+  const nb=sh.querySelector('.sh-body');if(same&&nb)nb.scrollTop=S.toBottom||atEnd?nb.scrollHeight:top;S.toBottom=false;
+  const f=same&&focus&&sh.querySelector('#'+focus);if(f){f.focus({preventScroll:true});try{f.setSelectionRange(caret,caret)}catch{}}
 }
 $('mSheet').onclick=async e=>{
   const t=S.detail;if(!t)return;
@@ -172,7 +181,7 @@ $('mSheet').onclick=async e=>{
     else if(opt||x==='answer'){const text=opt?opt.dataset.ans:$('mSheet').querySelector('#sAns').value.trim();if(!text){toast('Nhập câu trả lời');return}
       await api(`/tasks/${t.id}/answer`,{method:'POST',body:JSON.stringify({text})});toast('Đã gửi câu trả lời');$('mSheet').querySelector('#sAns')&&($('mSheet').querySelector('#sAns').value='')}
     else if(x==='ask'){const el=$('mSheet').querySelector('#sAsk'),text=el.value.trim();if(!text){toast('Nhập câu hỏi');return}
-      await api(`/tasks/${t.id}/ask`,{method:'POST',body:JSON.stringify({text})});el.value='';toast(`${agentOf(t.agent).name} đang trả lời`)}
+      await api(`/tasks/${t.id}/ask`,{method:'POST',body:JSON.stringify({text})});el.value='';S.toBottom=true;toast(`${agentOf(t.agent).name} đang trả lời`)}
     else if(x==='cancel'){if(!confirm('Dừng việc này?'))return;await api(`/tasks/${t.id}/cancel`,{method:'POST'});toast('Đã yêu cầu dừng')}
     else if(x==='retry'){await api(`/tasks/${t.id}/retry`,{method:'POST'});toast('Đang thử lại')}
     else return;
@@ -190,7 +199,7 @@ async function tick(){
   if(document.visibilityState==='visible'){
     await loadTasks();
     if(Date.now()-statusAt>15000){statusAt=Date.now();loadStatus()}
-    if(S.open!=null&&GROUP[S.detail?.status]==='running'||S.detail?.thread?.some(x=>!x.answer&&!x.error))await loadDetail();
+    if(S.open!=null&&(GROUP[S.detail?.status]==='running'||S.detail?.thread?.some(x=>!x.answer&&!x.error)||S.tasks.find(x=>x.id===S.open)?.status!==S.detail?.status))await loadDetail();
   }
   const running=S.tasks.some(t=>GROUP[t.status]==='running');
   pollT=setTimeout(tick,running?2000:7000);

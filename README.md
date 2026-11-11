@@ -105,6 +105,16 @@ Drop files on the task box — or use **📎 Đính kèm tệp** — to send the
 
 A finished task on **Máy cá nhân** can be asked more without explaining it again: **💬 Hỏi thêm** on the result card, or the box under **HỎI THÊM** in the progress popup (Enter sends, Shift+Enter adds a line). The question continues the task's own conversation: Claude Code tasks keep their session id and run `claude -p --resume <id>`; Codex tasks keep their thread id and run `codex exec resume <id>`. Both use the task's original folder, permissions, model and web tools. If the session can no longer be opened, the question is sent once more with a recap of the task, its result and earlier questions. Answers are shown as a thread under the result (up to 30 per task) and their cost and turns are added to the task's totals; a failed or stopped question leaves the task done with the error on that question. Not available for simulated tasks or the Director's planning step (ask the steps it created instead). `POST /api/machine/tasks/:id/ask {text}` is the API.
 
+## Skills (gõ /)
+
+Agents use the skills on the machine (folders with a `SKILL.md`): personal Claude Code skills in `~/.claude/skills`, Codex skills in `~/.codex/skills` and `~/.agents/skills`, and the working folder's `.claude/skills` (`server/skills.js`).
+
+- **Automatic:** Claude Code loads `~/.claude/skills` and the project's skills itself; every prompt also lists the skills the running CLI does not load on its own (name, description, path), so a Codex task can use a Claude skill and the other way round when it fits.
+- **On request:** type `/` in the task box, the **HỎI THÊM** box, the answer box when an agent asks you something (or the phone page's boxes) to get the list; ↑↓ to move, Enter/Tab to insert `/name`, Esc to close. **🧩 Skill** under the task box and 🧩 next to **Gửi** in the follow-up and answer boxes open the same list. A `/name` in a request, a follow-up or an answer puts that skill's whole `SKILL.md` into the prompt (Claude Code and Codex alike) and is passed to every step of a workflow.
+- **Import:** the last row of the list imports a `.zip` / `.skill` (one or more folders with a `SKILL.md`) or a single `SKILL.md` (needs `name:` in its front matter) into `~/.claude/skills/<name>`, replacing a skill of the same name. ✕ on a personal skill removes its folder. Import and remove only work on the computer running the app, not through remote access.
+
+API: `GET /api/machine/skills`, `POST /api/machine/skills/import` (raw body, file name in `X-Filename`), `DELETE /api/machine/skills/:name`.
+
 ## Opening local files in web tasks
 
 Playwright MCP blocks `file://` URLs (allowing them would open the whole disk to the agent's browser). Instead, a web task opens files from its working folder over http: `http://localhost:<port>/api/machine/preview/<task id>/<relative path>`, e.g. `.../preview/39/sungroup-landing/index.html`. The prompt tells the agent this; CSS, JS and images load normally. Only files inside that task's folder are served (paths outside get 403) and, like the rest of `/api/machine`, only to this computer.

@@ -18,6 +18,7 @@ import {rnProject,mobileEnv,mobileEnvCached,mobileSummary,MOBILE_KIT,mobilePromp
 import {detectLimit,ENGINE_NAME} from './ai-limits.js';
 import {createRemoteServer,isRemoteReq,newRemoteKey,lanAddresses,hashPassword,MIN_PASSWORD,DEFAULT_REMOTE_PORT} from './remote-access.js';
 import {createTunnel} from './tunnel.js';
+import {publicSkills,skillRefs,skillPrompt,skillsAvailablePrompt,importSkills,removeSkill,PERSONAL_DIR} from './skills.js';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
 import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion,fitModel,TIER,sameTier,engineOfModel,enginesOf,ENGINE_NAMES} from '../workflow-plan.js';
@@ -517,7 +518,7 @@ Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?(designOnly(t)?` Khô
 ${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. ${autoOf(t)==='ask'?'Lệnh khác cần người dùng bấm cho phép và có thể bị từ chối (khi bị từ chối thì tìm cách khác hoặc giải thích, không thử lại cùng lệnh)':'Người dùng cho phép bạn tự chạy các lệnh khác khi cần (lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; khi bị từ chối thì tìm cách khác)'}; không bao giờ push code hay svn commit/update.
 `:autoOf(t)!=='ask'?`Bạn được tự chạy lệnh dòng lệnh khi cần (qua Bash); lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; không bao giờ push code hay svn commit/update.
 `:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
-${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${CHECKLIST_GUIDE}${attachPrompt(t)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
+${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${CHECKLIST_GUIDE}${attachPrompt(t)}${skillPrompt(t.skills,t.cwd)}${skillsAvailablePrompt(t.engine,t.cwd,t.skills)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
 GIỮ DỰ ÁN SẠCH: người dùng không muốn file thừa trong dự án. Chỉ tạo/sửa trong thư mục làm việc những file là một phần của kết quả được yêu cầu (code, cấu hình, dữ liệu hay tài liệu người dùng cần). File phụ để làm việc (script chạy thử, test tạm, dữ liệu trung gian, log, ảnh chụp kiểm tra, ghi chú) phải đặt tên bắt đầu bằng _ai_tmp (ví dụ _ai_tmp_check.py) hoặc để trong thư mục _ai_tmp/; hệ thống tự xóa chúng khi xong việc, cùng các file tạm/log/cache mới sinh ra. Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. Trong phần kết quả, liệt kê các file đã tạo hoặc sửa trong dự án.
 Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
@@ -583,7 +584,7 @@ ${t.text}`;
 ${QUESTION_GUIDE}${t.kind==='step'&&t.wf!=null&&backTo(t)?`
 Nếu người dùng bảo kiểm tra lại: kiểm tra thật trên trạng thái HIỆN TẠI của thư mục làm việc (đọc file, chạy lệnh được phép), không dựa vào kết quả cũ. Còn lỗi phải sửa thì trả lại bước liên quan bằng khối rework như hướng dẫn${resumed?' dưới đây':' ở trên'}; hệ thống sẽ cho agent đó sửa rồi giao lại cho bạn kiểm tra.${resumed?backTo(t):''}`:''}
 Câu hỏi thêm:
-${ask.q}`;
+${ask.q}`+skillPrompt(ask.skills,t.cwd);
     // design images made after this session began (e.g. the designer was asked again) are listed again
     if(resumed)return q+modeNote(t)+(isDesign(t)?'':designNote(t));
     const prev=t.thread.slice(0,-1).filter(x=>x.answer);
@@ -602,7 +603,7 @@ ${q}`;
   function replyPrompt(t,resumed){
     const c=t.clarify.at(-1),more=(t.clarifies||0)<MAX_CLARIFY?'':' Không hỏi thêm nữa; nếu vẫn còn thiếu thì tự giả định hợp lý và ghi rõ giả định.';
     if(resumed)return `Người dùng trả lời câu hỏi "${c.q}" của bạn: ${c.answer}
-Tiếp tục làm nhiệm vụ với thông tin này.${more}${t.web?`\n${accountsText(t)}`:''}${modeNote(t)}`;
+Tiếp tục làm nhiệm vụ với thông tin này.${more}${t.web?`\n${accountsText(t)}`:''}${modeNote(t)}${skillPrompt(c.skills,t.cwd)}`;
     return `${prompt(t)}
 
 TRAO ĐỔI TRƯỚC ĐÓ VỚI NGƯỜI DÙNG:
@@ -979,7 +980,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         tasks.unshift({id,kind:'step',wf:t.id,wfTitle:t.wfTitle,stepTitle:s.title,request:t.text,deps:s.after.map(k=>ids[k]).filter(Boolean),planDeps:s.after.map(k=>ids[k]).filter(Boolean),
           agent:s.agent,name:a.name,role:a.role,desc:a.desc,team:a.team,level:a.level,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
           model:t.forcedModel||s.model,effort:t.forcedEffort||(t.forcedModel?null:s.effort),modelWhy:t.forcedModel||t.forcedEffort?'Chọn thủ công':s.why||'Director chọn',
-          cwd:t.cwd,mode:t.mode,host:t.host,web:t.web||kitsFor(a.team||'').includes('browser'),siteIds:t.siteIds,engine:engineOfModel(t.forcedModel||s.model)||engineOf(s.agent),files:t.files,fileNames:t.fileNames});
+          cwd:t.cwd,mode:t.mode,host:t.host,web:t.web||kitsFor(a.team||'').includes('browser'),siteIds:t.siteIds,engine:engineOfModel(t.forcedModel||s.model)||engineOf(s.agent),files:t.files,fileNames:t.fileNames,skills:t.skills});
       }
       const name=id=>t.team.find(a=>a.id===id)?.name||id;
       t.result=`**Luồng công việc: ${t.wfTitle}** (${plan.steps.length} bước${ai?'':' · chia theo từ khóa'})\n\n${plan.steps.map((s,i)=>`${i+1}. **${name(s.agent)}** · ${s.title} · _${modelLabel(t.forcedModel||s.model)}${(t.forcedEffort||(!t.forcedModel&&s.effort))?`, suy luận ${EFFORTS[t.forcedEffort||s.effort].toLowerCase()}`:''}${!t.forcedModel&&!t.forcedEffort&&s.why?`: ${s.why}`:''}_${s.after.length?` _(sau bước ${s.after.map(k=>plan.steps.findIndex(x=>x.key===k)+1).join(', ')})_`:''}`).join('\n')}`;
@@ -1073,6 +1074,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // Dropped files (docx/pdf/images): move them into the task folder and remember them on the task
     const files=consumeFiles(body.files?.map(f=>f?.id),t.wf??t.id,t.cwd);
     if(files.length){t.files=files;t.fileNames=files.map(f=>f.name)}
+    // skills typed as /name: their instructions go into the prompt (and to every step of a workflow)
+    {const sk=skillRefs(text,t.cwd);if(sk.length)t.skills=sk}
     {const v=vcsCache.get(t.cwd)?.v||vcsKind(t.cwd);t.vcs={kind:v.kind,branch:v.branch||null,rev:v.rev||null}}
     tasks.unshift(t);if(tasks.length>KEEP)tasks.length=KEEP;save();pump();return t;
   }
@@ -1163,7 +1166,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
         if(req.method!=='GET'&&req.headers['x-ai-office']!=='1')return json(res,403,{error:'Thiếu header bảo vệ CSRF.'});
         const path=(req.url||'/').split('?')[0],m=path.match(/^\/tasks\/(\d+)\/(cancel|retry)$/);
         // through remote access (also blocked in remote-access.js): no remote settings, saved passwords or login forms
-        if(isRemoteReq(req)&&(path.startsWith('/remote')||path==='/update'||path.startsWith('/sites')&&req.method!=='GET'||/^\/tasks\/\d+\/login$/.test(path)))
+        if(isRemoteReq(req)&&(path.startsWith('/remote')||path==='/update'||path.startsWith('/sites')&&req.method!=='GET'||path.startsWith('/skills')&&req.method!=='GET'||/^\/tasks\/\d+\/login$/.test(path)))
           return json(res,403,{error:'Việc này chỉ làm được trên chính máy chạy app.'});
         try{
           if(path==='/remote'){
@@ -1290,6 +1293,16 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             save();return json(res,200,{task:full(t),...r});
           }
           // agent list of the office: built-in ones by id (with the user's name/role/description), custom ones in full
+          // Skills: list (for the / menu), import a .zip/.skill/SKILL.md (raw body, name in X-Filename), remove a personal one
+          if(req.method==='GET'&&path==='/skills')return json(res,200,{skills:publicSkills(config.workdir),dir:PERSONAL_DIR});
+          if(req.method==='POST'&&path==='/skills/import'){
+            const name=(()=>{try{return decodeURIComponent(req.headers['x-filename']||'')}catch{return String(req.headers['x-filename']||'')}})();
+            if(!name)return json(res,400,{error:'Thiếu tên tệp.'});
+            const buf=await new Promise((ok,bad)=>{const c=[];let n=0;req.on('data',d=>{n+=d.length;if(n>MAX_FILE){bad(Object.assign(new Error('Tệp quá lớn (tối đa 25MB).'),{code:400}));req.destroy()}else c.push(d)});req.on('end',()=>ok(Buffer.concat(c)));req.on('error',bad)});
+            return json(res,200,{imported:importSkills(name,buf),skills:publicSkills(config.workdir)});
+          }
+          const skDel=req.method==='DELETE'&&path.match(/^\/skills\/([\w.-]{1,64})$/);
+          if(skDel){removeSkill(skDel[1],config.workdir);return json(res,200,{skills:publicSkills(config.workdir)})}
           if(req.method==='GET'&&path==='/agents')return json(res,200,{agents:readJson(AGENTS_FILE,null)});
           if(req.method==='POST'&&path==='/agents'){
             const list=(await readBody(req)).agents;
@@ -1376,7 +1389,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             if(!q||q.length>8000)return json(res,400,{error:'Câu hỏi trống hoặc quá dài (tối đa 8000 ký tự).'});
             if(t.status!=='done'||t.kind==='plan')return json(res,409,{error:'Chỉ hỏi thêm được việc đã hoàn thành.'});
             await ensureBin();await ensureCodex();
-            (t.thread||=[]).push({q,at:new Date().toISOString()});if(t.thread.length>30)t.thread.shift();
+            (t.thread||=[]).push({q,at:new Date().toISOString(),...(k=>k.length?{skills:k}:{})(skillRefs(q,t.cwd))});if(t.thread.length>30)t.thread.shift();
             Object.assign(t,{asking:true,status:'queued',activity:'Chờ đến lượt trả lời câu hỏi thêm'});save();pump();
             return json(res,200,{task:full(t)});
           }
@@ -1408,7 +1421,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             const text=String((await readBody(req)).text||'').trim();
             if(!text||text.length>4000)return json(res,400,{error:'Câu trả lời trống hoặc quá dài (tối đa 4000 ký tự).'});
             if(t.status!=='waiting'||!t.question)return json(res,409,{error:'Việc này không còn chờ câu trả lời.'});
-            (t.clarify||=[]).push({q:t.question.q,options:t.question.options,answer:text,at:new Date().toISOString()});
+            // /name in the answer: that skill's instructions go with it (and stay with the task from now on)
+            const sk=skillRefs(text,t.cwd);if(sk.length)t.skills=[...new Set([...(t.skills||[]),...sk])];
+            (t.clarify||=[]).push({q:t.question.q,options:t.question.options,answer:text,at:new Date().toISOString(),...(sk.length?{skills:sk}:{})});
             t.clarifies=(t.clarifies||0)+1;
             if(t.kind==='plan')t.text+=`\n\nThông tin bổ sung (trả lời câu hỏi "${t.question.q}"): ${text}`;else t.reply=text;
             Object.assign(t,{question:null,status:'queued',urgent:true,activity:'Chờ đến lượt tiếp tục'});save();pump();

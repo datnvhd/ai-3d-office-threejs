@@ -37,6 +37,7 @@ const BLOCKED=[
   [/^\/api\/(claude|codex)\//,req=>!(req.method==='GET'&&/^\/api\/(claude|codex)\/status(\?|$)/.test(req.url))],// sign-in: status only
   [/^\/api\/machine\/remote(\/|\?|$)/,()=>true],
   [/^\/api\/machine\/sites(\/|\?|$)/,req=>req.method!=='GET'],
+  [/^\/api\/machine\/skills(\/|\?|$)/,req=>req.method!=='GET'],
   [/^\/api\/machine\/tasks\/\d+\/login(\?|$)/,()=>true],
 ];
 const blockedMsg='Việc này chỉ làm được trên chính máy chạy app (đăng nhập tài khoản, mật khẩu web, bật/tắt truy cập từ xa).';
