@@ -14,6 +14,8 @@ const CSS=`.skm{position:fixed;z-index:60;background:#fff;color:#1f2540;border:1
 .skm-src.project{color:#2f7a55;background:#e7f6ee}.skm-src.codex,.skm-src.agents{color:#8a5a12;background:#fbf1de}
 .skm-del{flex:none;border:0;background:none;color:#a0a7c0;cursor:pointer;font-size:12px;padding:1px 4px;border-radius:5px;visibility:hidden}
 .skm-it:hover .skm-del{visibility:visible}.skm-del:hover{color:#c2453a;background:#fde8e6}
+.skm-head span:first-child{flex:1}.skm-head{align-items:center}
+.skm-x{flex:none;border:0;background:none;color:#8a92ad;cursor:pointer;font-size:13px;line-height:1;padding:3px 5px;border-radius:6px;margin:-3px -6px -3px 0}.skm-x:hover{background:#f1f2f8;color:#3c4460}
 .skm-empty{padding:12px;color:#6b7390;font-size:12px;line-height:1.5}
 .skm-foot{border-top:1px solid #eef0f7;padding:6px}
 .skm-imp{width:100%;text-align:left;background:none;border:0;padding:7px 9px;border-radius:8px;color:#d2652f;font-weight:650;font-size:12px;cursor:pointer}
@@ -26,6 +28,8 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
   const box=document.createElement('div');box.className='skm';box.hidden=true;document.body.appendChild(box);
   const file=document.createElement('input');file.type='file';file.accept='.zip,.skill,.md';file.multiple=true;file.hidden=true;document.body.appendChild(file);
   let skills=null,loadedAt=0,loading=null,target=null,start=-1,query='',items=[],idx=0;
+  // the "/" the user closed the menu on (Esc, ✕, click away): typing on after it does not reopen it, a new "/" does
+  let dismissed=null;
 
   async function load(force){
     if(!force&&skills&&Date.now()-loadedAt<10000)return skills;
@@ -46,7 +50,7 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
   function render(){
     items=filter();if(idx>items.length)idx=0;// idx === items.length is the import row
     const n=(skills||[]).length;
-    box.innerHTML=`<div class="skm-head"><span>SKILL${query?` · “${esc(query)}”`:''}</span><span>${skills?`${n} skill`:'Đang tải…'} · ↑↓ chọn · Enter</span></div>
+    box.innerHTML=`<div class="skm-head"><span>SKILL${query?` · “${esc(query)}”`:''}</span><span>${skills?`${n} skill`:'Đang tải…'} · ↑↓ · Enter · Esc</span><button class="skm-x" data-close title="Đóng (Esc)">✕</button></div>
       ${items.length?`<div class="skm-list">${items.map((s,i)=>`<div class="skm-it${i===idx?' on':''}" data-i="${i}"><div class="skm-t"><b>/${esc(s.name)}</b>${s.description?`<p>${esc(s.description)}</p>`:''}</div><span class="skm-src ${esc(s.source)}" title="Nguồn: ${esc(s.label)}">${esc(s.label)}</span>${s.source==='claude'?`<button class="skm-del" data-del="${esc(s.name)}" title="Xóa skill này khỏi ~/.claude/skills">✕</button>`:''}</div>`).join('')}</div>`
         :`<div class="skm-empty">${!skills?'Đang tải danh sách skill…':n?`Không có skill nào khớp “${esc(query)}”.`:'Chưa có skill nào. Import tệp .zip / .skill / SKILL.md bên dưới, hoặc đặt thư mục skill (có SKILL.md) vào <code>~/.claude/skills</code>.'}</div>`}
       <div class="skm-foot"><button class="skm-imp${idx===items.length?' on':''}" data-imp>＋ Import skill (.zip, .skill, SKILL.md)</button></div>`;
@@ -64,7 +68,7 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
     box.hidden=false;render();
     if(fresh||!skills){await load(fresh);if(target===el&&!box.hidden)render()}
   }
-  function close(){box.hidden=true;target=null}
+  function close(byUser){if(byUser&&target)dismissed={el:target,start};box.hidden=true;target=null}
   function pick(s){
     const el=target;if(!el)return;
     const end=el.selectionStart,before=el.value.slice(0,start),after=el.value.slice(end).replace(/^[\w.-]*/,'');
@@ -85,24 +89,30 @@ export function initSkillMenu({api,selector,toast=()=>{}}){
   }
   const matches=el=>el?.matches?.(selector);
 
-  document.addEventListener('input',e=>{if(!matches(e.target))return;const t=trigger(e.target);t?open(e.target,t):e.target===target&&close()},true);
+  document.addEventListener('input',e=>{
+    if(!matches(e.target))return;const t=trigger(e.target);
+    if(dismissed&&(!t||dismissed.el!==e.target||dismissed.start!==t.start))dismissed=null;
+    if(t&&!dismissed)open(e.target,t);else if(e.target===target)close();
+  },true);
   document.addEventListener('keydown',e=>{
-    if(box.hidden||e.target!==target||e.isComposing)return;
+    if(box.hidden||e.isComposing)return;
+    if(e.target!==target){if(target&&!target.isConnected&&matches(e.target))target=e.target;else return}// the box was re-rendered
     const n=items.length+1;// + the import row
     if(e.key==='ArrowDown'||e.key==='ArrowUp'){idx=(idx+(e.key==='ArrowDown'?1:n-1))%n;render()}
     else if(e.key==='Enter'||e.key==='Tab'){if(idx<items.length)pick(items[idx]);else{close();file.click()}}
-    else if(e.key==='Escape')close();
+    else if(e.key==='Escape')close(true);
     else return;
     e.preventDefault();e.stopImmediatePropagation();
   },true);
   // the caret left the "/word" (click, arrow keys) or the box lost focus
   document.addEventListener('selectionchange',()=>{if(!target||box.hidden)return;if(document.activeElement!==target)return;const t=trigger(target);if(!t)close();else if(t.query!==query){query=t.query;start=t.start;idx=0;render()}});
-  document.addEventListener('focusout',e=>{if(e.target===target)setTimeout(()=>{if(document.activeElement!==target&&!box.matches(':hover'))close()},150)},true);
-  document.addEventListener('pointerdown',e=>{if(!box.hidden&&!box.contains(e.target)&&e.target!==target)close()},true);
+  document.addEventListener('focusout',e=>{if(e.target===target)setTimeout(()=>{if(document.activeElement!==target&&!box.matches(':hover'))close(true)},150)},true);
+  document.addEventListener('pointerdown',e=>{if(!box.hidden&&!box.contains(e.target)&&e.target!==target)close(true)},true);
   addEventListener('resize',()=>{if(!box.hidden)place()});
   document.addEventListener('scroll',()=>{if(!box.hidden){if(target?.isConnected)place();else close()}},true);
   box.addEventListener('pointerdown',e=>e.preventDefault());// keep the cursor in the text box
   box.addEventListener('click',async e=>{
+    if(e.target.closest('[data-close]')){const el=target;close(true);el?.focus();return}
     const d=e.target.closest('[data-del]');
     if(d){
       if(!confirm(`Xóa skill /${d.dataset.del} khỏi ~/.claude/skills?\n\nThư mục của skill trên máy sẽ bị xóa.`))return;
