@@ -32,14 +32,18 @@ jobs:
       - name: Install with apt
         timeout-minutes: 20
         run: |
-          # the runner's Azure mirror sometimes fails DNS: try the main Ubuntu archive first, keep Azure as fallback,
-          # and retry so a short network outage does not fail the build
+          # the runner's DNS sometimes cannot resolve the Ubuntu archives ("Temporary failure resolving"): use public DNS
+          # first, keep the runner's own resolver as the last fallback; try the main archive before the Azure mirror
+          sudo rm -f /etc/resolv.conf
+          printf 'nameserver 1.1.1.1\nnameserver 8.8.8.8\nnameserver 127.0.0.53\noptions timeout:2 attempts:2\n' | sudo tee /etc/resolv.conf
+          getent hosts archive.ubuntu.com || echo "chưa phân giải được archive.ubuntu.com"
           if [ -f /etc/apt/apt-mirrors.txt ]; then
             printf 'http://archive.ubuntu.com/ubuntu/\nhttp://azure.archive.ubuntu.com/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt
           fi
+          APT='-o Acquire::Retries=3 -o Acquire::http::Timeout=20'
           for i in 1 2 3; do
-            sudo apt-get -o Acquire::Retries=3 update -qq &&
-              sudo apt-get -o Acquire::Retries=3 install -y -qq ./ai-3d-office_*_ubuntu_amd64.deb xvfb && exit 0
+            sudo apt-get $APT update -qq &&
+              sudo apt-get $APT install -y -qq ./ai-3d-office_*_ubuntu_amd64.deb xvfb && exit 0
             echo "apt lỗi (lần $i), thử lại sau 30 giây"; sleep 30
           done
           exit 1
