@@ -147,6 +147,7 @@ function renderSheet(){
   // and where they scrolled: the sheet is rebuilt on every refresh, which would jump back to the top
   const body=sh.querySelector('.sh-body'),same=sh.dataset.id===String(t.id),top=body?.scrollTop||0,atEnd=body&&top>0&&body.scrollHeight-top-body.clientHeight<48;
   const asking=!!t.asking&&run;// answering a follow-up: result and conversation stay, the ask box waits
+  const playing=sh.querySelector('video[data-keep]');// the same video node goes back in, so playback is not restarted
   sh.hidden=false;document.body.classList.add('locked');
   sh.innerHTML=`<div class="sh-top"><button class="back" data-x="close">‹ Quay lại</button><span class="badge ${GROUP[t.status]}">${STATUS[t.status]||t.status}</span></div>
   <div class="sh-body">
@@ -170,6 +171,7 @@ function renderSheet(){
     ${(t.log||[]).length?`<details class="log"${same&&sh.querySelector('details.log')?.open?' open':''}><summary>Nhật ký (${t.log.length})</summary>${t.log.slice(-30).map(l=>`<div>${esc(l.text)}</div>`).join('')}</details>`:''}
   </div>`;
   sh.dataset.id=t.id;
+  const nv=playing&&sh.querySelector('video[data-keep]');if(nv&&nv.dataset.keep===playing.dataset.keep)nv.replaceWith(playing);
   const nb=sh.querySelector('.sh-body');if(same&&nb)nb.scrollTop=S.toBottom||atEnd?nb.scrollHeight:top;S.toBottom=false;
   const f=same&&focus&&sh.querySelector('#'+focus);if(f){f.focus({preventScroll:true});try{f.setSelectionRange(caret,caret)}catch{}}
 }

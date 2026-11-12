@@ -21,6 +21,8 @@ export function md(src){
   return out.join('');
 }
 // ---- downloads of the files a task produced (GET /api/machine/tasks/:id/file?path= and /files.zip) ----
+// The agent's checklist as shown: agents often skip ticking the last step, so a finished task shows every step done
+export const todosOf=(todos,status)=>{const l=(todos||[]).filter(x=>x.status!=='deleted');return status==='done'?l.map(x=>({...x,status:'completed'})):l};
 export const fileUrl=(rid,p)=>`/api/machine/tasks/${rid}/file?path=${encodeURIComponent(p)}`;
 const FILE_ICON=[[/\.(mp4|webm|mov)$/i,'🎬'],[/\.(mp3|m4a|wav)$/i,'🎵'],[/\.(xlsx|xlsm|xls|csv|tsv)$/i,'📊'],[/\.(docx?|md|txt|rtf)$/i,'📝'],[/\.pdf$/i,'📕'],[/\.(pptx?|key)$/i,'📽️'],[/\.(png|jpe?g|gif|webp|svg)$/i,'🖼️'],[/\.(zip|rar|7z|gz)$/i,'🗜️']];
 const iconOf=p=>FILE_ICON.find(([r])=>r.test(p))?.[1]||'📄';
@@ -28,7 +30,7 @@ const iconOf=p=>FILE_ICON.find(([r])=>r.test(p))?.[1]||'📄';
 export function downloadList(rid,paths){
   if(rid==null||!paths?.length)return '';
   const vid=paths.find(p=>/\.(mp4|webm)$/i.test(p));
-  return `${vid?`<div class="dlvideo"><video controls playsinline preload="metadata" src="${fileUrl(rid,vid)}&inline=1" title="${escapeHTML(vid)}"></video></div>`:''}<div class="dlfiles"><div class="dlhead">⬇ File kết quả <span>bấm tên file để tải về</span></div>${paths.map(p=>`<a class="dlfile" href="${fileUrl(rid,p)}" download title="Tải về: ${escapeHTML(p)}">${iconOf(p)} <b>${escapeHTML(p.split('/').pop())}</b>${p.includes('/')?`<em>${escapeHTML(p.slice(0,p.lastIndexOf('/')))}</em>`:''}</a>`).join('')}${paths.length>1?`<a class="dlfile all" href="/api/machine/tasks/${rid}/files.zip" download>🗜️ <b>Tải tất cả (.zip)</b></a>`:''}</div>`;
+  return `${vid?`<div class="dlvideo"><video data-keep="${escapeHTML(`video:${rid}:${vid}`)}" controls playsinline preload="metadata" src="${fileUrl(rid,vid)}&inline=1" title="${escapeHTML(vid)}"></video></div>`:''}<div class="dlfiles"><div class="dlhead">⬇ File kết quả <span>bấm tên file để tải về</span></div>${paths.map(p=>`<a class="dlfile" href="${fileUrl(rid,p)}" download title="Tải về: ${escapeHTML(p)}">${iconOf(p)} <b>${escapeHTML(p.split('/').pop())}</b>${p.includes('/')?`<em>${escapeHTML(p.slice(0,p.lastIndexOf('/')))}</em>`:''}</a>`).join('')}${paths.length>1?`<a class="dlfile all" href="/api/machine/tasks/${rid}/files.zip" download>🗜️ <b>Tải tất cả (.zip)</b></a>`:''}</div>`;
 }
 // In an answer rendered by md(): a `path` naming a file the task produced becomes a download link
 export function linkFiles(html,rid,paths){

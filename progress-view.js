@@ -2,7 +2,7 @@
 // (request, machine/folder/permissions, elapsed time, step-by-step log, result or error). Real tasks refresh from
 // /api/machine/tasks/:id while running; simulated ones only show their progress bar.
 import {setHTML} from './dom-keep.js';
-import {downloadList,linkFiles,fileUrl,optionButtons,toggleFill,fillPlaceholder,composeAnswer} from './ui-text.js';
+import {downloadList,linkFiles,fileUrl,todosOf,optionButtons,toggleFill,fillPlaceholder,composeAnswer} from './ui-text.js';
 const ICON={init:'🚀',tool:'🔧',out:'↳',denied:'⛔',text:'💬',ask:'❓'};
 const KIND={init:'Khởi động',tool:'Công cụ',out:'Đầu ra',denied:'Bị chặn',text:'AI',ask:'Hỏi thêm'};
 const pad=n=>String(n).padStart(2,'0');
@@ -27,8 +27,8 @@ export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS
     lastDetail='';render();
   }
   // Agent's checklist (TodoWrite / TaskCreate) with done count
-  function todoBlock(todos){
-    const list=(todos||[]).filter(x=>x.status!=='deleted');if(!list.length)return '';
+  function todoBlock(todos,status){
+    const list=todosOf(todos,status);if(!list.length)return '';
     const done=list.filter(x=>x.status==='completed').length;
     return `<div class="section-title">DANH SÁCH VIỆC CỦA AGENT <span>${done}/${list.length} xong</span></div><div class="pv-todos">${list.map(x=>`<div class="todo t-${x.status}"><i>${TODO_ICON[x.status]||'○'}</i><span>${esc(x.status==='in_progress'&&x.active?x.active:x.text)}</span></div>`).join('')}</div>`;
   }
@@ -93,7 +93,7 @@ export function createProgressView({agentOf,allJobs,machineApi,md,esc,hex,STATUS
       <div class="pv-task">${esc(j.text)}</div>
       <div class="pv-chips">${chips.map(c=>`<span>${c}</span>`).join('')}</div>
       ${j.status==='waiting'?`<div class="pv-now pv-waitq">❓ ${esc(a.name)} đang chờ bạn trả lời câu hỏi bên dưới và sẽ không làm tiếp cho đến khi bạn trả lời.</div>`:live&&!isAsk?`<div class="pv-now">${j.status==='queued'?'⏳ Đang chờ đến lượt chạy…':`<span class="spinner"></span> ${esc(j.remote?j.activity||'Đang xử lý…':'Đang xử lý (mô phỏng)…')}`}</div><div class="progress ${j.remote?'live':''}"><i style="width:${j.progress}%"></i></div>`:''}
-      ${live&&!isAsk?permBlock(a,t?.perms||j.perms):''}${todoBlock(t?.todos||j.todos)}
+      ${live&&!isAsk?permBlock(a,t?.perms||j.perms):''}${todoBlock(t?.todos||j.todos,j.status)}
       ${j.remote?`<div class="section-title">NHẬT KÝ THỰC HIỆN <span>${log.length} mục</span></div><div class="pv-log">${log.length?log.map(e=>`<div class="pv-row k-${e.kind}"><time>+${dur(e.at-t0)}</time><i title="${KIND[e.kind]||''}">${ICON[e.kind]||'•'}</i><div>${e.kind==='text'?md(e.text):esc(e.text)}</div></div>`).join(''):`<p class="empty">${t?'Chưa có bước nào.':'Đang tải nhật ký…'}</p>`}${live&&j.status!=='queued'&&j.status!=='waiting'?'<div class="pv-row k-wait"><time></time><i><span class="spinner"></span></i><div>Đang chờ bước tiếp theo…</div></div>':''}</div>`:'<p class="claude-note">Việc mô phỏng không có nhật ký thật. Chọn nơi thực thi “Máy cá nhân” để xem từng bước Claude Code thực hiện.</p>'}
       ${j.web?`<div class="section-title">ẢNH CHỤP TRÌNH DUYỆT <span>${shots.length} ảnh</span></div>${shots.length?`<div class="pv-shots">${shots.map(s=>{const u=`/api/machine/tasks/${j.rid}/shots/${encodeURIComponent(s.name)}`;return `<a href="${u}" target="_blank" rel="noopener" title="${esc(new Date(s.at).toLocaleTimeString('vi-VN'))}"><img src="${u}" alt="Ảnh chụp" loading="lazy"><span>${esc(new Date(s.at).toLocaleTimeString('vi-VN'))}</span></a>`}).join('')}</div>`:'<p class="claude-note">Chưa có ảnh chụp nào.</p>'}`:''}
       ${j.status==='waiting'&&(t?.question||j.question)?.kind==='login'&&loginBox?`<div class="section-title">CẦN TÀI KHOẢN ĐĂNG NHẬP</div>${loginBox({...j,question:t?.question||j.question})}`:j.status==='waiting'?`<div class="section-title">CẦN BẠN TRẢ LỜI</div><div class="qbox pv-q-box"><p>${esc((t?.question||j.question)?.q||'')}</p>${((t?.question||j.question)?.options||[]).length?`<div class="qopts">${optionButtons(j.key,(t?.question||j.question).options,'data-pv-answer',esc)}</div>`:''}<form class="pv-ask pv-answer"><textarea data-keep="ans-${j.key}" rows="2" maxlength="4000" placeholder="${esc(fillPlaceholder(j.key,'Hoặc tự nhập câu trả lời / thông tin bổ sung… (Enter gửi, / chọn skill)'))}"></textarea><button type="button" class="ghost pv-skill" data-pv-skill title="Chọn skill (hoặc gõ / trong ô)">🧩</button><button class="assign" type="submit">Gửi</button></form></div>`:''}

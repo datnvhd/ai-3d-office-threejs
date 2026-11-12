@@ -15,7 +15,7 @@ import {ruleSteps,MODELS,EFFORTS,modelId,sameTier,ENGINE_NAMES,enginesOf,LEVELS,
 import {initWebMCP} from './webmcp.js';
 import {initSkillMenu} from './skill-menu.js';
 import {pwField} from './pw-field.js';
-import {tokenTag,sumTokens} from './ui-text.js';
+import {tokenTag,sumTokens,todosOf} from './ui-text.js';
 import {escapeHTML,md,downloadList,linkFiles,optionButtons,toggleFill,fillPlaceholder,composeAnswer,fillOf} from './ui-text.js';
 let quotaNow=null;// what is left of each AI plan (machine-connect.js loads it)
 const app=document.querySelector('#app');
@@ -145,7 +145,7 @@ function renderRunNote(){
 // The agent's question with its options and a box for the user's own answer
 // Tool calls waiting for the user's permission (Claude Code asks through the page)
 const permBox=j=>(j.perms||[]).map(p=>`<div class="qbox permbox"><b>🔐 ${escapeHTML(agentOf(j.agent).name)} xin phép: ${escapeHTML(p.desc)}</b>${p.detail?`<pre>${escapeHTML(p.detail)}</pre>`:''}<div class="qopts"><button class="qopt ok" data-perm="${j.key}|${p.id}|1">✓ Cho phép</button><button class="qopt" data-perm="${j.key}|${p.id}|2" title="Không hỏi lại ${escapeHTML(p.ruleLabel)} trong việc này">✓ Luôn cho phép</button><button class="qopt no" data-perm="${j.key}|${p.id}|0">✕ Từ chối</button></div></div>`).join('');
-const todoTag=j=>{const l=(j.todos||[]).filter(x=>x.status!=='deleted');return l.length?` · ☑ ${l.filter(x=>x.status==='completed').length}/${l.length}`:''};
+const todoTag=j=>{const l=todosOf(j.todos,j.status);return l.length?` · ☑ ${l.filter(x=>x.status==='completed').length}/${l.length}`:''};
 // Login asked by a web task: username/password go to this computer only (saved like the logins in Máy cá nhân)
 const SKIP_LOGIN='Không có tài khoản, hãy làm phần có thể làm được mà không cần đăng nhập rồi báo lại.';
 const loginBox=j=>{const a=agentOf(j.agent),q=j.question||{};return `<div class="qbox loginbox" data-qjob="${j.key}"><b>🔑 ${escapeHTML(a.name)} cần tài khoản đăng nhập</b><p>${escapeHTML(q.host||'')}${q.error?` · <span class="lerr">${escapeHTML(q.error)}</span>`:''}</p>
