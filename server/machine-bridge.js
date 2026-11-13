@@ -30,7 +30,7 @@ const LEVEL_NOTE={leader:'Bạn là Leader của đội: chịu trách nhiệm c
 
 const AGENTS_FILE=join(STORE_DIR,'agents.json');// the office's agent list (src.js); null = the 7 built-in agents
 const CONFIG_FILE=join(STORE_DIR,'machine.json'),TASKS_FILE=join(STORE_DIR,'tasks.json'),SITES_FILE=join(STORE_DIR,'sites.json'),RUNS_DIR=join(STORE_DIR,'runs'),UPLOADS_DIR=join(STORE_DIR,'uploads');
-const MAX_PARALLEL=2,MAX_TURNS=30,WEB_TURNS=60,TASK_TIMEOUT=20*60*1000,MOBILE_TIMEOUT=45*60*1000,KEEP=200,URGENT_EXTRA=2,MAX_AGENTS=36;
+const MAX_PARALLEL=2,MAX_TURNS=80,WEB_TURNS=100,TASK_TIMEOUT=20*60*1000,WEB_TIMEOUT=60*60*1000,MOBILE_TIMEOUT=45*60*1000,KEEP=200,URGENT_EXTRA=2,MAX_AGENTS=36;
 // Files droppable on the task box: images and PDF are read by the agent from disk; text/Word/PowerPoint are extracted
 // and inlined; Excel is split into one CSV per sheet; old binary formats (.xls/.doc) are passed as files to convert
 const FILE_KINDS={pdf:'pdf',png:'image',jpg:'image',jpeg:'image',gif:'image',webp:'image',docx:'text',pptx:'text',xlsx:'sheet',xlsm:'sheet',xls:'file',doc:'file',mp3:'media',m4a:'media',wav:'media',
@@ -155,8 +155,53 @@ KIẾN THỨC: đúng chương trình GDPT 2018 và thuật ngữ SGK tiếng Vi
 KẾT QUẢ trả lời: đường dẫn file MP4, thời lượng, loại video và kịch bản tóm tắt theo đoạn, gợi ý caption đăng bài + 5 hashtag (bài học: #hoctoan #toan10 #meohoctap; sáng tạo: #totinh #toanhoc #valentine…), và gợi ý phần tiếp theo hoặc biến thể.
 `;
 // Building and running a mobile app in a simulator takes longer than a web task
-const taskTimeout=t=>rnProject(t.cwd)&&t.mode==='acceptEdits'?MOBILE_TIMEOUT:TASK_TIMEOUT;
-const browserExe=()=>BROWSERS.flatMap(([,paths])=>paths).find(p=>existsSync(p)&&!/\.app$/.test(p))||null;
+// testing a site through the browser (test cases, UI checks) takes longer than a code task
+const taskTimeout=t=>Math.max(rnProject(t.cwd)&&t.mode==='acceptEdits'?MOBILE_TIMEOUT:TASK_TIMEOUT,t.web?WEB_TIMEOUT:0);
+const browserExe=name=>BROWSERS.filter(([n])=>!name||n===name).flatMap(([,paths])=>paths).find(p=>existsSync(p)&&!/\.app$/.test(p))||null;
+// Browsers the agents may use: Chrome and Edge installed on the machine, or Playwright's own Firefox (downloaded on first use)
+const BROWSER_NAMES={chrome:'Google Chrome',msedge:'Microsoft Edge',firefox:'Firefox',mychrome:'Chrome của tôi (đã đăng nhập sẵn)',myedge:'Edge của tôi (đã đăng nhập sẵn)'};
+// "Chrome/Edge của tôi": the agent drives the user's own running browser, with its logged-in accounts, through the
+// official Playwright Extension (Playwright MCP --extension), instead of a fresh automated browser
+const EXT_ID='mmlmfjhmonkocbjadbfplnigmagldckm',EXT_URL=`https://chromewebstore.google.com/detail/playwright-extension/${EXT_ID}`;
+const OWN={mychrome:'chrome',myedge:'msedge'};
+const userDataDir=ch=>{const h=os.homedir(),la=process.env.LOCALAPPDATA||join(h,'AppData','Local');
+  if(process.platform==='win32')return ch==='chrome'?join(la,'Google','Chrome','User Data'):join(la,'Microsoft','Edge','User Data');
+  if(process.platform==='darwin')return join(h,'Library','Application Support',ch==='chrome'?'Google/Chrome':'Microsoft Edge');
+  return join(h,'.config',ch==='chrome'?'google-chrome':'microsoft-edge')};
+const extInstalled=ch=>{try{const d=userDataDir(ch);return readdirSync(d).some(p=>existsSync(join(d,p,'Extensions',EXT_ID)))}catch{return false}};
+const firefoxExe=()=>{try{const p=createRequire(import.meta.url)('playwright-core').firefox.executablePath();return p&&existsSync(p)?p:null}catch{return null}};
+const browserReady=n=>n==='firefox'?!!firefoxExe():OWN[n]?!!browserExe(OWN[n])&&extInstalled(OWN[n]):!!browserExe(n);
+let ffInstall=null;// null, {state:'installing'} or {state:'error',error}
+function installFirefox(){
+  if(firefoxExe()||ffInstall?.state==='installing')return;
+  ffInstall={state:'installing'};
+  const cli=join(dirname(createRequire(import.meta.url).resolve('playwright-core/package.json')),'cli.js');
+  const p=spawn(process.execPath,[cli,'install','firefox'],{env:{...process.env,...(process.versions.electron?{ELECTRON_RUN_AS_NODE:'1'}:{})},windowsHide:true});
+  let err='';p.stderr.on('data',d=>err+=d);p.stdout.on('data',()=>{});
+  p.on('close',c=>{ffInstall=firefoxExe()?null:{state:'error',error:(err.trim().split('\n').pop()||`mã lỗi ${c}`).slice(0,200)}});
+  p.on('error',e=>{ffInstall={state:'error',error:e.message}});
+}
+// The browser picked in the settings when it is available, else the first one installed: {name, exe, own}
+// (own: the user's browser through the extension; `uitest` still starts its own copy of that browser)
+const pickBrowser=want=>{
+  if(want&&OWN[want]&&browserReady(want))return {name:OWN[want],exe:browserExe(OWN[want]),own:want};
+  if(want&&want!=='auto'&&browserReady(want))return {name:want,exe:want==='firefox'?firefoxExe():browserExe(want)};
+  const n=findBrowser();return {name:n,exe:n?browserExe(n):null};
+};
+// `uitest` for the agents' shell: server/ui-test-runner.mjs on the app's own Node and Playwright, with this machine's
+// Chrome/Edge. Written when a browser task starts; the folder is put on PATH, which every agent inherits.
+const UITEST_RUNNER=join(dirname(fileURLToPath(import.meta.url)),'ui-test-runner.mjs'),TOOL_BIN=join(STORE_DIR,'bin');
+function installUiTest(pick=pickBrowser()){
+  try{
+    mkdirSync(TOOL_BIN,{recursive:true});
+    const exe=pick.exe||'',engine=pick.name==='firefox'?'firefox':'chromium',node=process.execPath,asNode=!!process.versions.electron,sh=p=>p.replace(/\\/g,'/');
+    if(process.platform==='win32')writeFileSync(join(TOOL_BIN,'uitest.cmd'),`@echo off\r\n${asNode?'set ELECTRON_RUN_AS_NODE=1\r\n':''}set "UITEST_BROWSER=${exe}"\r\nset "UITEST_ENGINE=${engine}"\r\n"${node}" "${UITEST_RUNNER}" %*\r\n`);
+    writeFileSync(join(TOOL_BIN,'uitest'),`#!/bin/sh\n${asNode?'export ELECTRON_RUN_AS_NODE=1\n':''}export UITEST_BROWSER="${sh(exe)}"\nexport UITEST_ENGINE=${engine}\nexec "${sh(node)}" "${sh(UITEST_RUNNER)}" "$@"\n`,{mode:0o755});
+    const d=process.platform==='win32'?';':':';
+    if(!(process.env.PATH||'').split(d).includes(TOOL_BIN))process.env.PATH=TOOL_BIN+d+(process.env.PATH||'');
+  }catch{}
+}
+installUiTest();
 const designGuide=t=>`
 ẢNH THIẾT KẾ CHO DEV: kết quả thiết kế phải là ẢNH để dev code theo. Với mỗi màn hình, trạng thái hoặc thành phần quan trọng, tạo MỘT file HTML độc lập (CSS viết ngay trong file, không cần JavaScript; tài nguyên ngoài chỉ được dùng Google Fonts) trong thư mục:
 ${designDir(t)}
@@ -206,7 +251,7 @@ const TOOLKITS={
     writeCmds:['git add','git commit','git checkout','git switch','git stash','git restore','svn add']},
   node:{short:'Node.js',label:'Node.js: npm, pnpm, yarn, npx, node, tsc, eslint, prettier',write:true,cmds:['npm','pnpm','yarn','npx','node','tsc','eslint','prettier']},
   python:{short:'Python',label:'Python: python, pip, pytest',write:true,cmds:['python','python3','py','pip','pytest']},
-  test:{short:'Chạy test',label:'Chạy test tự động: npm test, vitest, jest, playwright test, pytest',write:true,cmds:['npm test','npm run test','npx vitest','npx jest','npx playwright test','pytest']},
+  test:{short:'Chạy test',label:'Chạy test tự động: npm test, vitest, jest, playwright test, pytest, uitest (kịch bản giao diện có chụp ảnh từng bước)',write:true,cmds:['npm test','npm run test','npx vitest','npx jest','npx playwright test','pytest','uitest']},
   gh:{short:'GitHub CLI',label:'GitHub CLI: xem issue, PR, CI (bình luận/tạo issue khi được sửa file)',cmds:['gh issue view','gh issue list','gh pr view','gh pr list','gh pr diff','gh pr checks','gh run list','gh run view'],writeCmds:['gh issue create','gh issue comment','gh pr comment']},
   docs:{short:'Tài liệu & sơ đồ',label:'Tài liệu & sơ đồ: Mermaid CLI (mmdc), pandoc',write:true,cmds:['npx -y @mermaid-js/mermaid-cli','mmdc','pandoc']},
   mobile:MOBILE_KIT,// its commands are only given when the working folder is a React Native app (mobile.js)
@@ -260,6 +305,8 @@ function trackChecklist(t,text){
   if(!items.some(x=>x.status==='in_progress')){const next=items.find(x=>x.status==='pending');if(next&&items.some(x=>x.status==='completed'))next.status='in_progress'}
   t.todos=items.slice(0,60);
 }
+// Sent in the same session when the last run used up its steps
+const CONT_PROMPT=`Lượt trước đã bị dừng vì hết số bước hoặc hết thời gian cho phép, nhiệm vụ chưa xong. Làm tiếp từ chỗ đang dở (đừng đọc lại những gì đã đọc, đừng làm lại phần đã xong), ưu tiên phần còn thiếu quan trọng nhất và hoàn thành gọn. Khi xong, kết thúc bằng phần "Kết quả:" tóm tắt toàn bộ những gì đã làm trong cả nhiệm vụ.`;
 const CHECKLIST_GUIDE=`
 DANH SÁCH VIỆC: nếu nhiệm vụ có từ 3 bước trở lên, ngay đầu tiên viết danh sách các bước dạng checklist markdown, mỗi dòng "- [ ] tên bước" (ngắn gọn). Mỗi khi xong một bước, viết lại cả danh sách: bước xong là "- [x]", bước đang làm là "- [~]". Người dùng theo dõi tiến độ qua danh sách này. Việc đơn giản thì không cần.
 `;
@@ -446,7 +493,7 @@ export function machineBridge(){
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
   const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel,src,sheet,sheets})=>({name,kind,rel,src,sheet,sheets:sheets?.map(({preview,...s})=>s)}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
-  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,agentEngines:config.agentEngines,agentAI:config.agentAI,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,aiUpdate:config.aiUpdate,aiUpdateSkip:config.aiUpdateSkip,agentAuto:config.agentAuto,lastCheck});
+  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,browser:config.browser,extToken:config.extToken,agentEngines:config.agentEngines,agentAI:config.agentAI,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,aiUpdate:config.aiUpdate,aiUpdateSkip:config.aiUpdateSkip,agentAuto:config.agentAuto,lastCheck});
 
   // ---------- saved web logins (passwords stay in this file and are never sent to the page or to Claude) ----------
   let sites=readJson(SITES_FILE,[]);
@@ -528,10 +575,10 @@ export function machineBridge(){
     child.stdin.on('error',()=>{});child.stdin.end(input);
     return {child,done,extend:ms=>{deadline+=ms}};
   }
-  function resultError(r,{stderr,timedOut},cancelled,timeoutMs){
+  function resultError(r,{stderr,timedOut},cancelled,timeoutMs,maxTurns=MAX_TURNS){
     if(cancelled)return 'Đã dừng theo yêu cầu.';
     if(timedOut)return `Quá thời gian cho phép (${Math.round((timeoutMs||TASK_TIMEOUT)/60000)} phút).`;
-    if(r?.subtype==='error_max_turns')return `Đã dùng hết ${MAX_TURNS} bước mà chưa hoàn thành. Hãy chia nhỏ yêu cầu.`;
+    if(r?.subtype==='error_max_turns')return `Đã dùng hết ${maxTurns} bước mà chưa hoàn thành. Hãy chia nhỏ yêu cầu hoặc bấm Thử lại.`;
     if(r?.api_error_status===401)return 'Xác thực Claude Code thất bại (401): token không hợp lệ hoặc đã bị thu hồi.';
     if(r?.is_error)return short(r.result||'Claude Code báo lỗi khi xử lý.',600);
     return short(stderr||'Claude Code dừng mà không trả kết quả.',600);
@@ -618,7 +665,8 @@ ${t.text}`;
   const runsIn=new Map();// cwd → {before:Set, ids:Set, keepMd, keepShots}
   function leftStart(t){
     if(!t.cwd)return;hideAppDirs(t.cwd);
-    let r=runsIn.get(t.cwd);if(!r||![...r.ids].some(id=>procs.has(id)&&id!==t.id)){r={before:listTree(t.cwd),ids:new Set(),keepMd:false,keepShots:false};runsIn.set(t.cwd,r)}
+    // a fresh picture of the folder, unless another task still works there or this task carries on after running out of steps
+    let r=runsIn.get(t.cwd);if(!r||![...r.ids].some(id=>procs.has(id)&&id!==t.id||id===t.id&&t.cont)){r={before:listTree(t.cwd),ids:new Set(),keepMd:false,keepShots:false};runsIn.set(t.cwd,r)}
     r.ids.add(t.id);
   }
   function leftEnd(t,note){
@@ -627,8 +675,9 @@ ${t.text}`;
     if([...r.ids].some(id=>procs.has(id)))return;// another task still works here: clean when it ends
     runsIn.delete(t.cwd);
     const added=[...listTree(t.cwd)].filter(p=>!r.before.has(p)),gone=[],kept=[];
-    const junk=p=>{const dir=p.endsWith(sep),name=basename(dir?p.slice(0,-1):p);
-      return TMP_NAME.test(name)||(dir?JUNK_DIRS.has(name):JUNK_FILE.test(name)||(!r.keepShots&&SHOT_FILE.test(name))||(!r.keepMd&&/\.md$/i.test(name)))};
+    // also new files inside a scratch folder that was already there (_ai_tmp/ left by an earlier run)
+    const junk=p=>{const dir=p.endsWith(sep),name=basename(dir?p.slice(0,-1):p),parts=relative(t.cwd,dir?p.slice(0,-1):p).split(sep);
+      return parts.some(x=>TMP_NAME.test(x)||JUNK_DIRS.has(x))||(dir?JUNK_DIRS.has(name):JUNK_FILE.test(name)||(!r.keepShots&&SHOT_FILE.test(name))||(!r.keepMd&&/\.md$/i.test(name)))};
     // shortest paths first, so a removed folder takes its new content with it
     for(const p of added.sort((a,b)=>a.length-b.length)){
       if(gone.some(g=>g.endsWith(sep)&&p.startsWith(g)))continue;
@@ -853,6 +902,43 @@ Không bao giờ in, lưu ra file hay gửi đi mật khẩu.
 ${LOGIN_GUIDE}`:`Chưa có tài khoản đăng nhập nào cho nhiệm vụ này.
 ${LOGIN_GUIDE}`;
   }
+  // Testing a screen or a set of test cases: a script run in seconds beats one model turn per click
+  const testsUi=t=>kitsFor(t.team||'').includes('test')||/qa|test|kiểm thử|tester|chất lượng/i.test(`${t.team||''} ${t.role||''} ${t.agent||''} ${t.stepTitle||''}`);
+  // Codex runs commands in an OS sandbox in which Chrome cannot start (spawn EPERM): no uitest / npx playwright there,
+  // the test goes through the browser tools, which run outside the sandbox
+  const uiTestGuide=t=>t.engine==='codex'?`
+KIỂM THỬ GIAO DIỆN (Codex): lệnh \`uitest\` và \`npx playwright test\` KHÔNG chạy được trong môi trường này (sandbox chặn mở Chrome: spawn EPERM), đừng thử. Kiểm thử bằng công cụ browser_* :
+- Mỗi test case: thao tác (browser_fill_form điền nhiều ô một lần, browser_click, browser_select_option), kiểm tra kết quả bằng browser_find hoặc browser_wait_for (không đọc lại cả trang), chụp minh chứng bằng browser_take_screenshot (không truyền filename) ở bước kết luận Đạt/Không đạt.
+- Nhiều test case cùng một màn hình: dùng browser_evaluate trả về đúng dữ liệu cần (ví dụ số dòng, nội dung thông báo, giá trị các ô) để kiểm tra nhiều điều trong một lượt.
+- BỘ TEST LỚN: làm từng module, ghi kết quả module đó vào Excel ngay khi xong (Đạt/Không đạt, bước thực hiện, tài khoản, lỗi), rồi mới sang module sau. Hết thời gian thì báo rõ đã chạy tới đâu.
+- Không ghi "Bị chặn" cho test case khi công cụ browser_* vẫn dùng được.
+`:`
+KIỂM THỬ GIAO DIỆN (bắt buộc khi kiểm thử màn hình/luồng/test case): KHÔNG bấm từng bước bằng công cụ browser_* (mỗi thao tác tốn một lượt, rất chậm). Làm như sau:
+1. Dò trang (chỉ khi chưa biết selector): browser_navigate rồi browser_find hoặc browser_snapshot có target để lấy selector/nhãn, vài lượt là đủ. Đọc code giao diện trong dự án cũng được.
+2. Dự án đã có Playwright Test (có playwright.config.* và @playwright/test) → viết spec trong thư mục test của dự án, chụp ảnh sau mỗi bước bằng page.screenshot({path}), chạy \`npx playwright test <file>\`.
+3. Chưa có → viết kịch bản tests/ui/<ten-man-hinh>.mjs rồi chạy \`uitest tests/ui/<ten-man-hinh>.mjs --task ${t.id}\` (thêm --base-url <url> nếu cần, --headed nếu người dùng muốn xem). Lệnh tự mở Chrome, chạy từng bước, chụp ảnh sau MỖI bước (bước lỗi có ảnh -LOI), ghi lỗi console/JS, request hỏng và HTTP ≥400, in kết quả từng bước và lưu ảnh + ket-qua.json vào test-results/ui/<tên>-<thời gian>/. Kịch bản KHÔNG import playwright; mọi thứ được truyền vào:
+\`\`\`js
+export default async ({page, step, check, secret, baseURL}) => {
+  await step('TC01 Mở trang đăng nhập', async () => { await page.goto(baseURL + '/login'); await check.visible(page.getByRole('button', {name: 'Đăng nhập'})); });
+  await step('TC02 Sai mật khẩu báo lỗi', async () => {
+    await page.fill('#username', 'demo'); await page.fill('#password', 'sai-mat-khau'); await page.click('button[type=submit]');
+    await check.text(page.locator('.error'), 'Sai mật khẩu');
+  });
+  await step('TC03 Đăng nhập đúng', async () => {
+    await page.fill('#password', secret('SITE_1_PASSWORD')); await page.click('button[type=submit]'); await check.url(/dashboard/);
+  });
+};
+\`\`\`
+   Mỗi test case là một step (tên bắt đầu bằng mã test case nếu có). check: visible(loc), hidden(loc), text(loc, chuỗi|regex), value(loc, giá trị), count(loc, n), url(regex), true(điều kiện, thông báo). Step lỗi không dừng các step sau (thêm --stop-on-fail nếu các bước phụ thuộc nhau). Mật khẩu tài khoản đã lưu: secret('SITE_n_PASSWORD'), không bao giờ viết mật khẩu vào file.
+   Phiên đăng nhập được nhớ giữa các lần chạy uitest của việc này: bước đăng nhập mở trang cần vào trước, chỉ đăng nhập khi bị chuyển về trang đăng nhập. Bước chuẩn bị (đăng nhập, nạp dữ liệu) thêm {always:true} làm tham số thứ ba của step.
+4. Step lỗi: lỗi do kịch bản (sai selector, chờ chưa đủ) thì sửa kịch bản rồi CHỈ chạy lại các step đó: \`uitest <file> --task ${t.id} --only "TC_A_01|TC_A_07"\` (không chạy lại cả bộ); lỗi thật của sản phẩm thì ghi nhận. Chỉ dùng browser_* để xem tận mắt khi không hiểu vì sao lỗi.
+BỘ TEST LỚN (nhiều module/hàng chục test case): thời gian có hạn, làm theo từng module và lưu tiến độ liên tục:
+- Dò giao diện gọn: một kịch bản dò cho cả module (in ra selector/nhãn cần dùng, không in HTML dài), không viết nhiều kịch bản dò nhỏ lẻ.
+- Mỗi module một file tests/ui/<module>.mjs (phần dùng chung như đăng nhập để ở tests/ui/<ten>-common.mjs). Viết → chạy → sửa các step lỗi bằng --only → GHI NGAY kết quả module đó vào file người dùng cần cập nhật (ví dụ cột kết quả trong Excel test case), rồi mới sang module sau. Bị dừng giữa chừng thì phần đã ghi không mất.
+- Không gom việc chuẩn bị nặng (mở từng bản ghi để lấy dữ liệu) vào một step dài; chỉ lấy đúng dữ liệu các test case cần.
+- Hết thời gian mà chưa xong: báo rõ module/test case nào đã chạy, chưa chạy, và lệnh để chạy tiếp.
+5. Giữ lại kịch bản tests/ui/… và thư mục ảnh test-results/ui/… (đó là kết quả, để chạy lại khi kiểm thử hồi quy). Kết quả trả lời: bảng test case (mã · tên · Đạt/Không đạt · ảnh minh chứng · lỗi), đường dẫn thư mục ảnh và lệnh chạy lại.
+`;
   function webPrompt(t){
     return `
 TRÌNH DUYỆT: Bạn có bộ công cụ trình duyệt (MCP server tên "browser": browser_navigate, browser_click, browser_type, browser_find, browser_snapshot…) điều khiển một cửa sổ Chrome thật trên máy người dùng (mở link, đăng nhập, bấm, điền form, chọn, đọc nội dung, chụp màn hình).
@@ -862,27 +948,41 @@ TIẾT KIỆM TOKEN (bắt buộc): một trang đọc toàn bộ có thể dài
 - Điền nhiều ô một lần bằng browser_fill_form. Kiểm tra kết quả bằng browser_wait_for hoặc browser_find (ví dụ tìm thông báo thành công/lỗi) thay vì đọc lại cả trang.
 - Không mở lại trang đang ở, không đọc lại phần đã đọc, không thử lại cùng một thao tác đã thất bại quá 2 lần.
 - Chụp màn hình (browser_take_screenshot, KHÔNG truyền filename để ảnh tự lưu vào thư mục riêng của nhiệm vụ) chỉ ở kết quả quan trọng và lúc hoàn thành, để người dùng xem lại. Ảnh chỉ được lưu cho người dùng, bạn không nhìn thấy ảnh.
-${accountsText(t)}
+${testsUi(t)?uiTestGuide(t):''}${accountsText(t)}
 XEM FILE TRÊN MÁY: trình duyệt chặn link file:// . Để mở một file trong thư mục làm việc (ví dụ trang HTML bạn vừa tạo), dùng http://localhost:${port}/api/machine/preview/${t.id}/<đường dẫn tương đối trong thư mục làm việc>, ví dụ http://localhost:${port}/api/machine/preview/${t.id}/ten-du-an/index.html (CSS, JS, ảnh đi kèm tải được bình thường).
-Khi xong việc trên web, đóng trình duyệt bằng browser_close.
-`;
+BỊ TRANG WEB CHẶN (CAPTCHA, "unusual traffic", "trình duyệt này có thể không an toàn", "xác minh bạn là người"…): KHÔNG tìm cách vượt qua, KHÔNG thử lại liên tục (dễ bị khóa IP/tài khoản). Dừng thao tác trên trang đó và:
+- Cần tìm thông tin: dùng WebSearch/WebFetch thay cho tìm kiếm Google trong trình duyệt.
+- Cần tài liệu Google (Docs/Sheets/Drive): báo người dùng dùng phần kết nối Google của app hoặc đính kèm file.
+- Cần đăng nhập bằng Google trên web đang test: báo người dùng cấp tài khoản đăng nhập thường của môi trường test; vẫn test tiếp các phần không cần đăng nhập.
+Ghi rõ trong kết quả: trang nào bị chặn, lúc nào, phần việc nào chưa làm được vì vậy.
+${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong việc trên web, đóng trình duyệt bằng browser_close.\n'}`;
   }
+  const OWN_BROWSER_GUIDE=`TRÌNH DUYỆT CỦA NGƯỜI DÙNG: bạn đang điều khiển chính trình duyệt của người dùng, nơi họ đã đăng nhập sẵn email, mạng xã hội, ngân hàng, tài khoản công ty… Bắt buộc:
+- Chỉ mở và thao tác các trang cần cho nhiệm vụ này. KHÔNG đọc, tìm hay chụp email, tin nhắn, lịch sử, mật khẩu đã lưu hay dữ liệu cá nhân không liên quan.
+- KHÔNG đăng xuất, không đổi cài đặt tài khoản hay trình duyệt, không cài tiện ích, không gửi/đăng/thanh toán/xóa gì thay người dùng nếu nhiệm vụ không yêu cầu rõ.
+- Không đóng các tab người dùng đang mở. Khi xong việc, KHÔNG gọi browser_close (sẽ ngắt kết nối khỏi trình duyệt của người dùng).
+`;
   // Per-task Playwright MCP config + secrets file (deleted when the task ends); screenshots land in the run folder
   function webSetup(t,kit={allow:[],deny:[]},extraServers={}){
     if(!MCP_CLI)throw new Error('Chưa cài Playwright MCP (@playwright/mcp). Chạy npm install trong thư mục dự án.');
-    const browser=findBrowser();if(!browser)throw new Error('Không tìm thấy Chrome hoặc Edge trên máy để agent dùng.');
+    const pick=pickBrowser(config.browser),browser=pick.name;if(!browser)throw new Error('Không tìm thấy Chrome hoặc Edge trên máy để agent dùng.');
+    installUiTest(pick);
     const dir=join(RUNS_DIR,String(t.id));if(!t.asking)rmSync(dir,{recursive:true,force:true});mkdirSync(dir,{recursive:true});
     const secrets=join(dir,'secrets.env'),list=sitesFor(t);
     writeFileSync(secrets,list.map((s,i)=>`SITE_${i+1}_PASSWORD=${quoteEnv(s.password||'')}`).join('\n')+'\n',{mode:0o600});
     // Token savers: no page snapshot or generated Playwright code after each action, console errors only,
     // screenshots saved to the run folder for the user but not sent back to the model
-    const args=[MCP_CLI,'--browser',browser,'--isolated','--secrets',secrets,'--output-dir',dir,'--viewport-size','1366x860',
-      '--snapshot-mode','none','--codegen','none','--image-responses','omit','--console-level','error','--no-webmcp',...(rnProject(t.cwd)?['--device','iPhone 15']:[]),...(config.browserVisible?[]:['--headless'])];
-    const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args,env:NODE_ENV},...extraServers}}));
+    // the user's own browser (extension): no fresh profile, window size, device or headless; the extension asks the
+    // user which tab to share unless its token was saved in the settings
+    const own=!!pick.own;t.ownBrowser=pick.own||null;
+    const args=[MCP_CLI,'--browser',browser,...(browser==='firefox'?['--executable-path',pick.exe]:[]),...(own?['--extension']:['--isolated']),'--secrets',secrets,'--output-dir',dir,...(own?[]:['--viewport-size','1366x860']),
+      '--snapshot-mode','none','--codegen','none','--image-responses','omit','--console-level','error','--no-webmcp',...(own?[]:[...(rnProject(t.cwd)?['--device','iPhone 15']:[]),...(config.browserVisible?[]:['--headless'])])];
+    const env={...NODE_ENV,...(own&&config.extToken?{PLAYWRIGHT_MCP_EXTENSION_TOKEN:config.extToken}:{})};
+    const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args,env},...extraServers}}));
     t.siteLabels=list.map(s=>s.label);t.browser=browser;
     // Only the built-in tools a web task needs, and none of the browser tools it never uses (their schemas cost tokens every turn)
     const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'||designOnly(t)||autoOf(t)==='all'?['Write','Edit']:[]),...(kit.allow.length||autoOf(t)!=='ask'?['Bash']:[])];
-    return {dir,secrets,mcpArgs:args,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','WebSearch',...kit.allow,'--disallowedTools',...WEB_TOOLS_OFF,...kit.deny]};
+    return {dir,secrets,mcpArgs:args,mcpEnv:env,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','WebSearch',...kit.allow,'--disallowedTools',...WEB_TOOLS_OFF,...kit.deny]};
   }
   // Workflow steps wait for their dependencies; if one fails or is stopped, the steps after it stop too
   function depState(t){
@@ -902,6 +1002,8 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       if(blocked){Object.assign(t,{status:'cancelled',blockedBy:blocked?.id??null,activity:null,error:`Dừng vì bước trước chưa xong: ${blocked?`${blocked.name} · ${blocked.stepTitle||''}`:'đã bị xóa'}.`,finished:new Date().toISOString()});changed=true;continue}
       if(waiting.length){const a=`Chờ ${waiting.map(d=>d.name).join(', ')} hoàn thành`;if(t.activity!==a){t.activity=a;changed=true}continue}
       if(procs.size+booting.size>=MAX_PARALLEL+(t.urgent?URGENT_EXTRA:0))continue;
+      // the user's own browser serves one task at a time (the extension connects to one agent)
+      if(t.web&&pickBrowser(config.browser).own&&tasks.some(x=>x!==t&&x.status==='running'&&x.ownBrowser)){const a='Chờ việc khác dùng xong trình duyệt của bạn';if(t.activity!==a){t.activity=a;changed=true}continue}
       launch(t);
     }
     // a step stopped above may unblock nothing, but steps waiting on it must stop too
@@ -957,7 +1059,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     let permArgs=['--permission-prompt-tool','mcp__perm__approve'];
     if(!web){const dir=join(RUNS_DIR,String(t.id)),f=join(dir,'perm-mcp.json');mkdirSync(dir,{recursive:true});writeFileSync(f,JSON.stringify({mcpServers:{perm}}));permArgs=['--mcp-config',f,...permArgs]}
     const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.session),reply=!ask&&!!t.reply,replyResume=reply&&!!t.session;
+    // the last run used up its steps: carry on in the same session (nothing is read again), log and counters kept
+    const cont=!ask&&!reply&&!!t.cont&&!!t.session;
     if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
+    else if(cont)Object.assign(t,{status:'running',activity:'Đang làm tiếp trong cùng phiên…',log:t.log||[]});
     else if(reply)Object.assign(t,{status:'running',activity:'Đang tiếp tục với câu trả lời của bạn…',log:t.log||[]});
     else Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Claude Code…',log:[]});
     // Step log for the progress popup: init, tool calls, their (shortened) output and Claude's own messages
@@ -973,7 +1078,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     // Stop the run there instead and let the task wait for the user's answer, like the question block does.
     let toolQ=null;const said=[];const canAsk=ask||(t.clarifies||0)<MAX_CLARIFY;
     // Browser tools loaded up front: saves the opening ToolSearch turn
-    const {child,done,extend}=claude([...(resume||replyResume?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...(isVideo(t)?['--add-dir',KIT_SRC]:[]),...permArgs,...(web?.args||['--allowedTools','WebSearch','WebFetch',...kit.allow,'--disallowedTools',...kit.deny])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),timeout:taskTimeout(t),env:{MCP_TOOL_TIMEOUT:'86400000',...(web?{ENABLE_TOOL_SEARCH:'false'}:{})},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
+    const {child,done,extend}=claude([...(resume||replyResume||cont?['--resume',t.session]:!ask&&t.resumeSession?['--resume',t.resumeSession]:[]),'--max-turns',turns,'--permission-mode',t.mode,...modelArgs(t),...(isVideo(t)?['--add-dir',KIT_SRC]:[]),...permArgs,...(web?.args||['--allowedTools','WebSearch','WebFetch',...kit.allow,'--disallowedTools',...kit.deny])],{cwd:t.cwd,input:ask?askPrompt(t,ask,resume):cont?CONT_PROMPT:reply?replyPrompt(t,replyResume):prompt(t),timeout:taskTimeout(t),env:{MCP_TOOL_TIMEOUT:'86400000',...(web?{ENABLE_TOOL_SEARCH:'false'}:{})},onEvent:ev=>{if(ev.session_id)t.session=ev.session_id;
       if(ev.type==='system'&&ev.subtype==='init'&&web){const b=(ev.mcp_servers||[]).find(s=>s.name==='browser');if(b&&b.status!=='connected')note('denied',`Trình duyệt chưa sẵn sàng (${b.status})`,false)}
       if(ev.type==='system'&&ev.subtype==='init')note('init',`Đã khởi động Claude Code · model ${ev.model||'?'}${t.effort?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`);
       if(ev.type==='assistant')for(const c of ev.message?.content||[]){
@@ -991,7 +1096,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     done.then(async out=>{
       procs.delete(t.id);dropPerms(t);
       if(web)rmSync(web.secrets,{force:true});
-      leftEnd(t,note);
+      // out of steps or time on the first try: the task carries on in the same session, so its scratch files stay for now
+      const willCont=!ask&&!toolQ&&t.status!=='cancelled'&&(out.timedOut||out.result?.subtype==='error_max_turns')&&!t.cont&&!!t.session;
+      if(!willCont)leftEnd(t,note);
       await shootDesigns(t,note);
       await finishSnap(t,note);
       const r=out.result,cancelled=t.status==='cancelled',ok=!cancelled&&r&&!r.is_error&&r.subtype==='success';
@@ -1015,14 +1122,21 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       if(ask){
         // the saved session is gone (e.g. Claude data cleared): ask again once with a recap instead
         if(!ok&&!cancelled&&resume&&/no conversation found|session/i.test(`${r?.result||''} ${out.stderr}`)){t.session=null;t.status='queued';note('denied','Không mở lại được phiên cũ, hỏi lại kèm tóm tắt ngữ cảnh.',false);save();pump();return}
-        return endAsk(t,ask,{answer:ok&&r.result,error:resultError(r,out,cancelled,taskTimeout(t)),cost:r?.total_cost_usd,turns:r?.num_turns});
+        return endAsk(t,ask,{answer:ok&&r.result,error:resultError(r,out,cancelled,taskTimeout(t),+turns),cost:r?.total_cost_usd,turns:r?.num_turns});
       }
       if(!ok&&!cancelled&&t.resumeSession&&/no conversation found/i.test(`${r?.result||''} ${out.stderr}`)){t.resumeSession=null;t.status='queued';save();pump();return}
       // the saved session cannot be continued (gone, or cut off at a question): carry on once with the exchange recapped
       if(!ok&&!cancelled&&!out.timedOut&&replyResume&&r?.subtype!=='error_max_turns'&&r?.api_error_status!==401){note('denied','Không mở lại được phiên cũ, tiếp tục kèm tóm tắt trao đổi.',false);t.session=null;t.status='queued';save();pump();return}
+      // out of steps or time on the first try: one more run in the same session instead of failing
+      if(willCont){
+        note('denied',`${out.timedOut?`Đã hết ${Math.round(taskTimeout(t)/60000)} phút`:`Đã dùng hết ${turns} bước`}, tự làm tiếp thêm một lượt trong cùng phiên (không đọc lại từ đầu).`,false);
+        Object.assign(t,{cont:{turns:r?.num_turns||(out.timedOut?0:+turns),cost:r?.total_cost_usd||0},reply:null,status:'queued',activity:null});
+        save();pump();return;
+      }
+      const before=t.cont||{turns:0,cost:0};t.cont=null;
       t.reply=null;
-      Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(r.result||'').slice(0,20000)):null,error:ok?null:redact(resultError(r,out,cancelled,taskTimeout(t))),
-        durationMs:r?.duration_ms??(Date.now()-Date.parse(t.started)),turns:r?.num_turns??null,costUsd:r?.total_cost_usd??null,activity:null});
+      Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(r.result||'').slice(0,20000)):null,error:ok?null:redact(resultError(r,out,cancelled,taskTimeout(t),+turns)),
+        durationMs:before.turns||before.cost||out.timedOut?Date.now()-Date.parse(t.started):r?.duration_ms??(Date.now()-Date.parse(t.started)),turns:r?.num_turns!=null?r.num_turns+before.turns:null,costUsd:r?.total_cost_usd!=null?r.total_cost_usd+before.cost:null,activity:null});
       if(ok&&!checkQuestion(t)&&t.kind==='step')checkRework(t);
       save();pump();
     });
@@ -1088,7 +1202,10 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     if(t.web)try{web=webSetup(t)}catch(e){return fail(t,e.message)}
     leftStart(t);
     const ask=t.asking?t.thread.at(-1):null,resume=!!(ask&&t.codexThread),reply=!ask&&!!t.reply,replyResume=reply&&!!t.codexThread;
+    // the last run ran out of time: carry on in the same Codex thread, log and counters kept
+    const cont=!ask&&!reply&&!!t.cont&&!!t.codexThread;
     if(ask){Object.assign(t,{status:'running',activity:'Đang trả lời câu hỏi thêm…',log:t.log||[]});ask.started=new Date().toISOString()}
+    else if(cont)Object.assign(t,{status:'running',activity:'Đang làm tiếp trong cùng phiên…',log:t.log||[]});
     else if(reply)Object.assign(t,{status:'running',activity:'Đang tiếp tục với câu trả lời của bạn…',log:t.log||[]});
     else Object.assign(t,{status:'running',started:new Date().toISOString(),steps:0,activity:'Đang khởi động Codex…',log:[]});
     const note=(kind,text,isActivity=true)=>{text=redact(text);t.log.push({at:Date.now(),kind,text});if(t.log.length>200)t.log.shift();if(isActivity)t.activity=short(text,120)};
@@ -1096,18 +1213,19 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     const toml=v=>JSON.stringify(v);// JSON strings/arrays are valid TOML values
     // `codex exec` never asks, so MCP calls need pre-approval; the same risky browser tools as for Claude are switched off
     const extra=web?['-c',`mcp_servers.browser.command=${toml(process.execPath)}`,'-c',`mcp_servers.browser.args=${toml(web.mcpArgs)}`,
-      '-c','mcp_servers.browser.default_tools_approval_mode=approve','-c',`mcp_servers.browser.disabled_tools=${toml(WEB_TOOLS_OFF.map(n=>n.replace('mcp__browser__','')))}`]:[];
+      // the MCP server runs on the app's own Electron: without ELECTRON_RUN_AS_NODE it starts the app instead of Node
+      ...Object.entries(web.mcpEnv).flatMap(([k,v])=>['-c',`mcp_servers.browser.env.${k}=${toml(v)}`]),'-c','mcp_servers.browser.default_tools_approval_mode=approve','-c',`mcp_servers.browser.disabled_tools=${toml(WEB_TOOLS_OFF.map(n=>n.replace('mcp__browser__','')))}`]:[];
     if(t.modeSwitched)note('init',`Chế độ quyền: ${MODES[t.mode]} (trước đó: ${MODES[t.modeSwitched]})`,false);
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
-    else{for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);for(const d of designsFor(t).slice(0,8))if(existsSync(d.png))extra.push('-i',d.png)}// attach images so Codex can see them
+    else if(!cont){for(const f of t.files||[])if(f.kind==='image')extra.push('-i',f.abs);for(const d of designsFor(t).slice(0,8))if(existsSync(d.png))extra.push('-i',d.png)}// attach images so Codex can see them
     extra.push(...codexModelArgs(t));
-    if(!ask&&!reply&&t.model)note('init',`Model ${modelLabel(sameTier(t.model,'codex'))}${EFFORTS[t.effort]?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`,false);
+    if(!ask&&!reply&&!cont&&t.model)note('init',`Model ${modelLabel(sameTier(t.model,'codex'))}${EFFORTS[t.effort]?` · suy luận ${EFFORTS[t.effort].toLowerCase()}`:''}${t.modelWhy?` · ${t.modelWhy}`:''}`,false);
     let turns=0;
     // read-only design task: its design folder is the (only writable) workspace; the project is read by its full path
     const dOnly=designOnly(t);if(dOnly)mkdirSync(designDir(t),{recursive:true});
-    const vOnly=videoOnly(t);if(isVideo(t))extra.push('-c','sandbox_workspace_write.network_access=true');// mathvid reads the voice from the Internet
-    const {child,done}=codexExec(codexBin,{cwd:dOnly?designDir(t):vOnly?videoDir(t):t.cwd,input:ask?askPrompt(t,ask,resume):reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'||dOnly||vOnly?'workspace-write':'read-only',extra,timeout:taskTimeout(t),onEvent:ev=>{
+    const vOnly=videoOnly(t);if(isVideo(t)||t.web)extra.push('-c','sandbox_workspace_write.network_access=true');// mathvid reads the voice from the Internet; uitest opens the site under test
+    const {child,done}=codexExec(codexBin,{cwd:dOnly?designDir(t):vOnly?videoDir(t):t.cwd,input:ask?askPrompt(t,ask,resume):cont?CONT_PROMPT:reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume||cont?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'||dOnly||vOnly?'workspace-write':'read-only',extra,timeout:taskTimeout(t),onEvent:ev=>{
       const it=ev.item||{};
       if(it.type==='todo_list'&&Array.isArray(it.items))t.todos=it.items.slice(0,60).map(x=>({text:short(x.text,200),status:x.completed?'completed':'pending'}));
       if(ev.type==='thread.started'){if(ev.thread_id)t.codexThread=ev.thread_id;note('init','Đã khởi động Codex (ChatGPT)')}
@@ -1127,7 +1245,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
     done.then(async out=>{
       procs.delete(t.id);
       if(web)rmSync(web.secrets,{force:true});
-      leftEnd(t,note);
+      // out of time on the first try: carry on in the same thread, so the scratch files stay for now
+      const willCont=!ask&&t.status!=='cancelled'&&out.timedOut&&!t.cont&&!!t.codexThread;
+      if(!willCont)leftEnd(t,note);
       await shootDesigns(t,note);
       await finishSnap(t,note);
       const cancelled=t.status==='cancelled',ok=!cancelled&&!out.timedOut&&!out.error&&out.code===0&&!!out.message;
@@ -1136,9 +1256,15 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       if(!ok&&!cancelled&&!out.timedOut&&limitRetry(t,'codex',{text:`${out.error||''}\n${out.stderr}`},note))return;
       const err=cancelled?'Đã dừng theo yêu cầu.':out.timedOut?`Quá thời gian cho phép (${Math.round(taskTimeout(t)/60000)} phút).`:/not logged in|401|unauthorized/i.test((out.error||'')+out.stderr)?'Codex chưa đăng nhập hoặc phiên ChatGPT đã hết hạn. Bấm ô "Codex" trên thanh trên cùng để đăng nhập lại.':short(out.error||out.stderr||'Codex dừng mà không trả kết quả.',600);
       if(ask)return endAsk(t,ask,{answer:ok&&out.message,error:err,turns});
+      if(willCont){
+        note('denied',`Đã hết ${Math.round(taskTimeout(t)/60000)} phút, tự làm tiếp thêm một lượt trong cùng phiên (không đọc lại từ đầu).`,false);
+        Object.assign(t,{cont:{turns:turns||0,cost:0},reply:null,status:'queued',activity:null});
+        save();pump();return;
+      }
+      const before=t.cont||{turns:0};t.cont=null;
       t.reply=null;
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(out.message).slice(0,20000)):null,error:ok?null:redact(err),
-        durationMs:Date.now()-Date.parse(t.started),turns:turns||null,costUsd:null,activity:null});
+        durationMs:Date.now()-Date.parse(t.started),turns:turns+before.turns||null,costUsd:null,activity:null});
       if(ok&&!checkQuestion(t)&&t.kind==='step')checkRework(t);
       save();pump();
     });
@@ -1223,7 +1349,7 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
       engines:ENGINES,agentEngines:config.agentEngines,agentAI:config.agentAI||{},
       config:{workdir:config.workdir,mode:config.mode,modes:MODES,defaultWorkdir:DEFAULT_WORKDIR,browserVisible:config.browserVisible,
         toolkits:Object.fromEntries(Object.entries(TOOLKITS).map(([k,v])=>[k,{short:v.short,label:v.label,write:!!v.write}])),teamKits:config.teamKits||{},defaultKits:DEFAULT_TEAM_KITS},
-      browser:{mcp:!!MCP_CLI,channel:findBrowser(),sites:sites.filter(s=>!s.temp).map(siteView)},
+      browser:{mcp:!!MCP_CLI,channel:pickBrowser(config.browser).name,pick:config.browser||'auto',names:BROWSER_NAMES,ready:Object.fromEntries(Object.keys(BROWSER_NAMES).map(n=>[n,browserReady(n)])),firefox:ffInstall,own:pickBrowser(config.browser).own||null,extUrl:EXT_URL,extInstalled:{mychrome:extInstalled('chrome'),myedge:extInstalled('msedge')},extToken:!!config.extToken,sites:sites.filter(s=>!s.temp).map(siteView)},
       mobile:await mobileEnv().then(e=>({...e,summary:mobileSummary(e),project:rnProject(config.workdir)})).catch(()=>null),
       remote:await remoteInfo(viewer),
       auto:{levels:AUTO_LEVELS,agents:config.agentAuto||{}},
@@ -1310,6 +1436,9 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             }
             if(b.mode!==undefined){if(!MODES[b.mode])return json(res,400,{error:'Chế độ quyền không hợp lệ.'});config.mode=b.mode}
             if(b.browserVisible!==undefined)config.browserVisible=!!b.browserVisible;
+            if((b.browser!==undefined&&(OWN[b.browser]||OWN[config.browser])||b.extToken!==undefined)&&isRemoteReq(req))return json(res,403,{error:'Chế độ dùng trình duyệt đã đăng nhập của bạn chỉ đổi được trên chính máy chạy app.'});
+            if(b.extToken!==undefined)config.extToken=String(b.extToken||'').trim().slice(0,200)||null;
+            if(b.browser!==undefined){if(b.browser!=='auto'&&!BROWSER_NAMES[b.browser])return json(res,400,{error:'Trình duyệt không hợp lệ.'});config.browser=b.browser;if(b.browser==='firefox')installFirefox()}
             if(b.autoSwitch!==undefined)config.autoSwitch=!!b.autoSwitch;
             if(b.aiUpdate!==undefined){
               if(isRemoteReq(req))return json(res,403,{error:'Cài đặt cập nhật AI chỉ đổi được trên chính máy chạy app.'});
@@ -1570,12 +1699,16 @@ Khi xong việc trên web, đóng trình duyệt bằng browser_close.
             const t=tasks.find(t=>t.id===+m[1]);if(!t)return json(res,404,{error:'Không tìm thấy nhiệm vụ.'});
             if(m[2]==='cancel'){
               if(t.status==='queued'&&t.asking){Object.assign(t.thread.at(-1),{error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});Object.assign(t,{status:'done',asking:false,activity:null})}
-              else if(t.status==='queued'||t.status==='waiting')Object.assign(t,{status:'cancelled',question:null,reply:null,error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});
+              else if(t.status==='queued'||t.status==='waiting'){
+                // stopped while waiting to carry on after running out of steps: its scratch files are cleaned now
+                if(t.cont){t.cont=null;leftEnd(t,(kind,text)=>(t.log||=[]).push({at:Date.now(),kind,text}))}
+                Object.assign(t,{status:'cancelled',question:null,reply:null,error:'Đã dừng theo yêu cầu.',finished:new Date().toISOString()});
+              }
               else if(t.status==='running'){t.status='cancelled';dropPerms(t);killTree(procs.get(t.id))}
             }else if(t.status==='error'||t.status==='cancelled'){
               // a planning task that already created its steps is not re-planned
               if(t.kind==='plan'&&tasks.some(x=>x.wf===t.id&&x.kind==='step'))return json(res,409,{error:'Kế hoạch đã được tạo; hãy thử lại từng bước trong luồng.'});
-              Object.assign(t,{status:'queued',error:null,result:null,finished:null,started:null,steps:0,activity:null,cwd:config.workdir,mode:config.mode,created:new Date().toISOString(),blockedBy:null,fallback:null});
+              Object.assign(t,{status:'queued',error:null,result:null,finished:null,started:null,steps:0,activity:null,cwd:config.workdir,mode:config.mode,created:new Date().toISOString(),blockedBy:null,fallback:null,cont:null});
               // steps that stopped because of this one go back in the queue too
               if(t.wf)for(const x of tasks)if(x.wf===t.wf&&x.status==='cancelled'&&x.blockedBy)Object.assign(x,{status:'queued',error:null,finished:null,blockedBy:null});
               tasks=[t,...tasks.filter(x=>x!==t)];pump();

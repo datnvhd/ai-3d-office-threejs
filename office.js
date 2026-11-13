@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import {RoundedBoxGeometry} from 'three/addons/geometries/RoundedBoxGeometry.js';
+import {mergeGeometries} from 'three/addons/utils/BufferGeometryUtils.js';
 // Chibi office environment (after "Isometric Modern Office Interior"): tiled floor on a wood-edged base, floor-to-ceiling
 // city windows, a glass dev room, an open desk pod, lounge with wall TV, pantry and cafe table, switchable outdoor scenery.
 // Room floor spans x∈[-5.6,5.6], z∈[-4,4]; back wall at z=-4, left wall at x=-5.52. Floor top is at y=FY.
@@ -12,11 +13,11 @@ export const ROOM={x0:-5.6,x1:16.8,z0:-4,z1:12,w:22.4,d:16,cx:5.6,cz:4};
 const FY=-.06,WALL_H=2.8,WIN=[.85,2.35],TALL=[FY+.05,2.62],PI=Math.PI;
 const geoCache=new Map(),matCache=new Map();
 const geo=(k,make)=>{if(!geoCache.has(k))geoCache.set(k,make());return geoCache.get(k)};
-const rbox=(w,h,d,r=.03)=>geo(`r${w}_${h}_${d}_${r}`,()=>new RoundedBoxGeometry(w,h,d,2,Math.min(r,w/2-.002,h/2-.002,d/2-.002)));
+const rbox=(w,h,d,r=.03)=>geo(`r${w}_${h}_${d}_${r}`,()=>new RoundedBoxGeometry(w,h,d,r>.025?2:1,Math.min(r,w/2-.002,h/2-.002,d/2-.002)));
 const box=(w,h,d)=>geo(`b${w}_${h}_${d}`,()=>new THREE.BoxGeometry(w,h,d));
-const cyl=(rt,rb,h,n=20)=>geo(`y${rt}_${rb}_${h}_${n}`,()=>new THREE.CylinderGeometry(rt,rb,h,n));
-const sph=(r,w=20,h=14)=>geo(`s${r}_${w}`,()=>new THREE.SphereGeometry(r,w,h));
-const tor=(r,t,arc=PI*2)=>geo(`t${r}_${t}_${arc}`,()=>new THREE.TorusGeometry(r,t,10,40,arc));
+const cyl=(rt,rb,h,n=14)=>geo(`y${rt}_${rb}_${h}_${n}`,()=>new THREE.CylinderGeometry(rt,rb,h,n));
+const sph=(r,w=14,h=10)=>geo(`s${r}_${w}`,()=>new THREE.SphereGeometry(r,w,h));
+const tor=(r,t,arc=PI*2)=>geo(`t${r}_${t}_${arc}`,()=>new THREE.TorusGeometry(r,t,8,24,arc));
 const plane=(w,h)=>geo(`p${w}_${h}`,()=>new THREE.PlaneGeometry(w,h));
 const leafGeo=()=>geo('leaf',()=>new THREE.LatheGeometry([[0,0],[.3,.12],[.5,.38],[.42,.68],[.18,.9],[0,1]].map(p=>new THREE.Vector2(...p)),10));
 const mat=(c,rough=.6,extra)=>{const k=`${c}_${rough}_${extra?JSON.stringify(extra):''}`;if(!matCache.has(k))matCache.set(k,new THREE.MeshStandardMaterial({color:c,roughness:rough,metalness:0,...extra}));return matCache.get(k)};
@@ -33,6 +34,38 @@ const rng=seed=>()=>(seed=seed*16807%2147483647)/2147483647;
 function add(p,g,m,pos=[0,0,0],s=1,r,shadow=true){const o=new THREE.Mesh(g,m);o.position.set(...pos);typeof s==='number'?o.scale.setScalar(s):o.scale.set(...s);if(r)o.rotation.set(...r);o.castShadow=shadow;o.receiveShadow=true;p.add(o);return o}
 function grp(p,x=0,y=0,z=0,ry=0){const g=new THREE.Group();g.position.set(x,y,z);g.rotation.y=ry;p.add(g);return g}
 function freeze(o){o.traverse(c=>{if(c.userData.dynamic)return;c.updateMatrix();c.matrixAutoUpdate=false})}
+// Merges the static meshes under root into one mesh per material and shadow flags: thousands of desk, chair and plant
+// parts become a few hundred draw calls. Subtrees marked userData.dynamic (clock hands) and hidden meshes stay as they are.
+function bakeStatic(root){
+  root.updateMatrixWorld(true);
+  const inv=root.matrixWorld.clone().invert(),buckets=new Map(),done=[];
+  const keeps=o=>o.userData.dynamic||!o.visible||o.children.some(keeps);
+  (function walk(o){for(const c of o.children){
+    if(c.userData.dynamic||!c.visible)continue;
+    if(c.isMesh&&!Array.isArray(c.material)&&!c.children.some(keeps)){
+      const m=new THREE.Matrix4().multiplyMatrices(inv,c.matrixWorld),g=c.geometry.clone();
+      for(const k of Object.keys(g.attributes))if(!['position','normal','uv'].includes(k))g.deleteAttribute(k);
+      g.morphAttributes={};g.clearGroups();
+      if(!g.attributes.normal)g.computeVertexNormals();
+      if(!g.attributes.uv)g.setAttribute('uv',new THREE.BufferAttribute(new Float32Array(g.attributes.position.count*2),2));
+      if(!g.index)g.setIndex([...Array(g.attributes.position.count).keys()]);
+      g.applyMatrix4(m);
+      if(m.determinant()<0){const ix=g.index.array.slice();for(let i=0;i<ix.length;i+=3){const t=ix[i+1];ix[i+1]=ix[i+2];ix[i+2]=t}g.setIndex(new THREE.BufferAttribute(ix,1))}// mirrored: keep faces pointing out
+      const key=`${c.material.uuid}|${c.castShadow}|${c.receiveShadow}|${c.renderOrder}`;
+      if(!buckets.has(key))buckets.set(key,{c,list:[]});buckets.get(key).list.push(g);done.push(c);
+    }
+    walk(c);
+  }})(root);
+  for(const c of done)c.removeFromParent();
+  // groups left empty by the merge would still be walked every frame
+  (function prune(o){for(const c of [...o.children]){prune(c);if(!c.isMesh&&!c.isLight&&!c.children.length&&!c.userData.dynamic)c.removeFromParent()}})(root);
+  for(const {c,list} of buckets.values()){
+    const merged=mergeGeometries(list,false);list.forEach(g=>g.dispose());if(!merged)continue;
+    const mesh=new THREE.Mesh(merged,c.material);Object.assign(mesh,{castShadow:c.castShadow,receiveShadow:c.receiveShadow,renderOrder:c.renderOrder,matrixAutoUpdate:false});
+    root.add(mesh);
+  }
+  return {from:done.length,to:buckets.size};
+}
 function canvasTex(w,h,draw,repeat){const c=document.createElement('canvas');c.width=w;c.height=h;draw(c.getContext('2d'),w,h);const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;t.anisotropy=8;if(repeat){t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(...repeat)}return t}
 const texCache=new Map();
 const screenMat=(kind,w=512,h=320)=>{const k=`${kind}_${w}_${h}`;if(!texCache.has(k))texCache.set(k,new THREE.MeshBasicMaterial({map:canvasTex(w,h,SCREENS[kind]),toneMapped:false}));return texCache.get(k)};
@@ -465,5 +498,7 @@ export function createOffice(world,renderer){
     const d=new Date(),s=d.getSeconds()+d.getMilliseconds()/1000,m=d.getMinutes()+s/60,h=d.getHours()%12+m/60;
     hands.s.rotation.z=-s/60*PI*2;hands.m.rotation.z=-m/60*PI*2;hands.h.rotation.z=-h/12*PI*2;
   }
-  return {group:office,setScenery,workstation,update,addWorkScreen,meetingTV,scenes:Object.fromEntries(Object.entries(SCENERY).map(([k,v])=>[k,{label:v.label,swatch:v.swatch}]))};
+  // called once every desk is placed, before the agents, screens and other moving things are added
+  const bake=()=>bakeStatic(office);
+  return {group:office,setScenery,workstation,update,bake,addWorkScreen,meetingTV,scenes:Object.fromEntries(Object.entries(SCENERY).map(([k,v])=>[k,{label:v.label,swatch:v.swatch}]))};
 }

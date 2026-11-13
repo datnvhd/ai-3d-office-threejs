@@ -204,7 +204,7 @@ export function createOutdoor(world){
   for(let x=-12;x<=13.4;x+=.75)if(Math.abs(x)>1.3)bush(stat,x,9.6,.75);
   for(let z=-8.2;z<=9.6;z+=.75)bush(stat,13,z,.7);
   bench(stat,-6,9.9,PI);bench(stat,6,9.9,PI);
-  const city=bake(stat);world.add(city);
+  const city=bake(stat);city.traverse(o=>{o.updateMatrix();o.matrixAutoUpdate=false});world.add(city);
 
   // traffic: two lanes per road (right-hand traffic), cars stop at red lights and keep their distance
   const lanes=[];
