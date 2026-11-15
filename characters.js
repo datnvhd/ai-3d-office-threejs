@@ -9,7 +9,7 @@ import {RoundedBoxGeometry} from 'three/examples/jsm/geometries/RoundedBoxGeomet
 const SKIN=0xffd3b5,HAND=0xffdcc6,R=.31,HEAD_K=.7,HEAD_Y=1.45,UP=new THREE.Vector3(0,1,0);
 const geoCache=new Map(),matCache=new Map();
 // light mode: fewer segments on every curved part (each person is ~40k triangles at full detail)
-let Q=1;export const setCharDetail=lite=>{Q=lite?.6:1};const q=n=>Math.max(3,Math.round(n*Q));
+let Q=1;export const setCharDetail=detail=>{Q=detail};const q=n=>Math.max(3,Math.round(n*Q));
 const geo=(k,make)=>{if(!geoCache.has(k))geoCache.set(k,make());return geoCache.get(k)};
 const sph=(r,w=16,h=12)=>geo(`s${r}_${w}_${h}`,()=>new THREE.SphereGeometry(r,q(w),q(h)));
 const cap=(r,l)=>geo(`c${r}_${l}`,()=>new THREE.CapsuleGeometry(r,l,q(4),q(12)));

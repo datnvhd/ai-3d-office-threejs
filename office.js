@@ -14,9 +14,9 @@ const FY=-.06,WALL_H=2.8,WIN=[.85,2.35],TALL=[FY+.05,2.62],PI=Math.PI;
 const geoCache=new Map(),matCache=new Map();
 // desk monitors redraw their canvas every SCREEN_MS (slower in light mode: each redraw is a texture upload);
 // light mode also builds round parts with fewer segments (Q). Call before createOffice.
-let SCREEN_MS=120,Q=1;export const setLite=on=>{SCREEN_MS=on?400:120;Q=on?.6:1};const q=n=>Math.max(3,Math.round(n*Q));
+let SCREEN_MS=120,Q=1;export const setDetail=({screenMs=120,detail=1}={})=>{SCREEN_MS=screenMs;Q=detail};const q=n=>Math.max(3,Math.round(n*Q));
 const geo=(k,make)=>{if(!geoCache.has(k))geoCache.set(k,make());return geoCache.get(k)};
-const rbox=(w,h,d,r=.03)=>geo(`r${w}_${h}_${d}_${r}`,()=>new RoundedBoxGeometry(w,h,d,r>.025&&Q===1?2:1,Math.min(r,w/2-.002,h/2-.002,d/2-.002)));
+const rbox=(w,h,d,r=.03)=>geo(`r${w}_${h}_${d}_${r}`,()=>new RoundedBoxGeometry(w,h,d,r>.025&&Q>=1?2:1,Math.min(r,w/2-.002,h/2-.002,d/2-.002)));
 const box=(w,h,d)=>geo(`b${w}_${h}_${d}`,()=>new THREE.BoxGeometry(w,h,d));
 const cyl=(rt,rb,h,n=14)=>geo(`y${rt}_${rb}_${h}_${n}`,()=>new THREE.CylinderGeometry(rt,rb,h,q(n)));
 const sph=(r,w=14,h=10)=>geo(`s${r}_${w}`,()=>new THREE.SphereGeometry(r,q(w),q(h)));

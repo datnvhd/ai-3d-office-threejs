@@ -5,7 +5,7 @@ import {attachModel} from './character-models.js';
 import {initClaudeConnect} from './claude-connect.js';
 import {initCodexConnect} from './codex-connect.js';
 import {initGoogleConnect} from './google-connect.js';
-import {createOffice,setLite} from './office.js';
+import {createOffice,setDetail} from './office.js';
 import {createWander,ROW_X} from './wander.js';
 import {createOutdoor} from './outdoor.js';
 import {initMachineConnect,machineApi,pickWorkdir,vcsBadge,quotaLine} from './machine-connect.js';
@@ -20,8 +20,8 @@ import {escapeHTML,md,downloadList,linkFiles,optionButtons,toggleFill,fillPlaceh
 let quotaNow=null;// what is left of each AI plan (machine-connect.js loads it)
 const app=document.querySelector('#app');
 // Left column: assign work · right column: what the agents did with it (running, done with result, failed with error)
-app.innerHTML=`<div id="scene"></div><div class="top"><div class="brand"><span class="logo">▦</span><div><b>My Office <i>3D</i></b><small>AI AGENT WORKSPACE</small></div></div><div class="topstats"><span><em class="dot green"></em><b id="active">0</b> AI đang làm việc</span><span><em class="dot orange"></em><b id="queued">0</b> đang xử lý</span><span><em class="dot blue"></em><b id="done">0</b> hoàn thành</span><span><em class="dot red"></em><b id="failed">0</b> lỗi</span></div><div class="actions"><button id="reset">⟲ Đặt lại góc nhìn</button><button id="help">? Hướng dẫn</button></div></div><div class="floatinglabels" id="labels"></div>
-<aside class="side side-left"><div class="panel-kicker">① GIAO VIỆC</div><h2 class="side-title">Giao nhiệm vụ cho AI</h2><div class="section-title">CHỌN NHÂN VIÊN <span id="agent-count"></span><span class="viewsw"><button data-view="grid" title="Xem dạng lưới">▦</button><button data-view="list" title="Xem dạng danh sách, theo đội">☰</button></span></div><div class="agent-pick" id="avatars"></div><div class="profile"><div class="profile-avatar" id="profile-icon">◉</div><div class="profile-main"><h3 id="profile-name"></h3><span id="profile-role"></span><p class="profile-desc" id="profile-desc"></p></div><div class="profile-tools"><button class="ptool" id="agentEdit" title="Sửa tên, vai trò, mô tả">✎</button><button class="ptool" id="agentDel" title="Xóa agent">🗑</button></div></div><div class="status" id="profile-status"></div><div class="section-title">YÊU CẦU CÔNG VIỆC</div><textarea id="task" placeholder="Ví dụ: Phân tích báo cáo doanh thu quý III và tổng hợp 5 insight quan trọng... (dán ảnh bằng Ctrl+V, kéo file vào đây, gõ / để dùng skill)"></textarea><div class="opts"><div><label class="smalllabel">Mức ưu tiên</label><select id="priority"><option>Bình thường</option><option>Ưu tiên cao</option><option>Khẩn cấp</option></select></div><div><label class="smalllabel">Nơi thực thi</label><select id="runOn"><option value="machine">💻 Máy cá nhân</option><option value="sim">🎲 Mô phỏng</option></select></div><div><label class="smalllabel">Model AI</label><select id="model" title="Tự chọn: Director chọn model rẻ nhất đủ làm tốt từng bước. Giá: USD / 1 triệu token vào/ra"></select></div><div><label class="smalllabel">Mức suy luận</label><select id="effort" title="Suy luận càng sâu càng tốn token: Thấp ≈ một nửa Cao, Rất cao ≈ gấp đôi Cao"></select></div></div><label class="mcheck wfopt"><input type="checkbox" id="useWf"> 🔀 Tự tạo luồng công việc khi giao cho Director (Director chia việc cho các agent liên quan)</label><div class="webopt" id="webOpt"><label class="mcheck"><input type="checkbox" id="useWeb"> 🌐 Cho phép mở web & thao tác trình duyệt</label><select id="webSite" class="hidden"></select></div><p class="runnote" id="runNote"></p><button class="assign" id="assign">✦ Giao việc cho AI</button></aside>
+app.innerHTML=`<div id="scene"></div><div class="top"><div class="actions"><button id="gfx" title="Chất lượng đồ họa của thiết bị này">⚙ Đồ họa</button><button id="reset">⟲ Đặt lại góc nhìn</button><button id="help">? Hướng dẫn</button></div></div><div class="floatinglabels" id="labels"></div>
+<aside class="side side-left"><div class="panel-kicker">① GIAO VIỆC</div><h2 class="side-title">Giao nhiệm vụ cho AI</h2><div class="section-title">CHỌN NHÂN VIÊN <span id="agent-count"></span><span class="viewsw"><button data-view="grid" title="Xem dạng lưới">▦</button><button data-view="list" title="Xem dạng danh sách, theo đội">☰</button></span></div><div class="agent-pick" id="avatars"></div><div class="profile"><div class="profile-avatar" id="profile-icon">◉</div><div class="profile-main"><h3 id="profile-name"></h3><span id="profile-role"></span><p class="profile-desc" id="profile-desc"></p></div><div class="profile-tools"><button class="ptool" id="agentEdit" title="Sửa tên, vai trò, mô tả">✎</button><button class="ptool" id="agentDel" title="Xóa agent">🗑</button></div></div><div class="status" id="profile-status"></div><div class="section-title">YÊU CẦU CÔNG VIỆC</div><textarea id="task" placeholder="Ví dụ: Phân tích báo cáo doanh thu quý III và tổng hợp 5 insight quan trọng... (dán ảnh bằng Ctrl+V, kéo file vào đây, gõ / để dùng skill). Enter để giao việc, Shift+Enter để xuống dòng."></textarea><div class="opts"><div><label class="smalllabel">Mức ưu tiên</label><select id="priority"><option>Bình thường</option><option>Ưu tiên cao</option><option>Khẩn cấp</option></select></div><div><label class="smalllabel">Nơi thực thi</label><select id="runOn"><option value="machine">💻 Máy cá nhân</option><option value="sim">🎲 Mô phỏng</option></select></div><div><label class="smalllabel">Model AI</label><select id="model" title="Tự chọn: Director chọn model rẻ nhất đủ làm tốt từng bước. Giá: USD / 1 triệu token vào/ra"></select></div><div><label class="smalllabel">Mức suy luận</label><select id="effort" title="Suy luận càng sâu càng tốn token: Thấp ≈ một nửa Cao, Rất cao ≈ gấp đôi Cao"></select></div></div><label class="mcheck wfopt"><input type="checkbox" id="useWf"> 🔀 Tự tạo luồng công việc khi giao cho Director (Director chia việc cho các agent liên quan)</label><div class="webopt" id="webOpt"><label class="mcheck"><input type="checkbox" id="useWeb"> 🌐 Cho phép mở web & thao tác trình duyệt</label><select id="webSite" class="hidden"></select></div><p class="runnote" id="runNote"></p><button class="assign" id="assign">✦ Giao việc cho AI</button></aside>
 <aside class="side side-right"><div class="panel-kicker">② KẾT QUẢ XỬ LÝ</div><h2 class="side-title">Kết quả từ AI</h2><div class="result-tabs" id="resultTabs"></div><div id="results" class="tasklist"></div><p class="disclaimer">💻 Máy cá nhân: chạy thật bằng Claude Code (Designer dùng Codex/ChatGPT) trên máy của bạn · 🎲 Mô phỏng: tiến độ, kết quả và lỗi chỉ là giả lập.</p></aside>
 <div class="scenery" id="scenery"></div><div id="toast"></div><div class="modal hidden" id="guide"><div class="guide"><button class="close" id="closeguide">✕</button><h2>Điều khiển văn phòng</h2><p>🖱️ Kéo chuột để xoay góc nhìn 3D, cuộn để zoom. Bấm vào nhân viên, nhãn tên hoặc thẻ tên bên trái để chọn người nhận việc.</p><p>📋 Cột trái để giao việc, cột phải hiển thị việc đang xử lý, hoàn thành (kèm kết quả) hoặc gặp lỗi (có thể thử lại). Chọn nơi thực thi “Máy cá nhân” để chạy thật bằng Claude Code trên máy của bạn (bấm ô “Máy” trên thanh trên cùng để chọn thư mục làm việc, quyền và chạy kiểm tra), hoặc “Mô phỏng” để chạy thử giả lập.</p><button id="okguide" class="assign">Đã hiểu</button></div></div>`;
 // Built-in agents: look and desk per id (their desk position is fixed)
@@ -61,20 +61,34 @@ normalizeLeaders(agents);
 const world=new THREE.Scene();
 // Phone: touch screen up to 900 px wide, or a phone turned sideways (same test as the redirect in index.html)
 const PHONE_Q='(pointer:coarse) and (max-width:900px), (pointer:coarse) and (max-height:500px)',PHONE0=matchMedia(PHONE_Q).matches;
-// Light mode for weak machines (4 cores or fewer, Intel HD/UHD or software GL): no antialiasing, cheaper and smaller
-// shadow map, fewer frames and slower screen animations. localStorage office-lite = '1' / '0' forces it on or off.
-const LITE=(()=>{
-  try{const v=localStorage.getItem('office-lite');if(v==='1'||v==='0')return v==='1'}catch{}
-  let gpu='';try{const gl=document.createElement('canvas').getContext('webgl2')||document.createElement('canvas').getContext('webgl'),ext=gl?.getExtension('WEBGL_debug_renderer_info');gpu=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):'';gl?.getExtension('WEBGL_lose_context')?.loseContext()}catch{}
-  return (navigator.hardwareConcurrency||8)<=4||/Intel.*(HD|UHD) Graphics|SwiftShader|llvmpipe|Microsoft Basic Render/i.test(gpu);
-})();
-setLite(LITE);setCharDetail(LITE);document.documentElement.classList.toggle('lite',LITE);if(LITE)console.info('Văn phòng 3D: chế độ nhẹ (máy yếu)');
-const renderer=new THREE.WebGLRenderer({antialias:!PHONE0&&!LITE,alpha:false});renderer.setPixelRatio(Math.min(devicePixelRatio,LITE?1:1.5));renderer.shadowMap.enabled=!PHONE0;renderer.shadowMap.autoUpdate=false;renderer.shadowMap.type=LITE?THREE.PCFShadowMap:THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.65;document.querySelector('#scene').appendChild(renderer.domElement);
+// Graphics quality, chosen per device (localStorage office-gfx, so the desktop app, a phone and a remote browser each
+// keep their own): auto picks from the hardware, or the user picks high / medium / low / static in the Đồ họa window.
+// Each level: antialiasing, pixel ratio cap, shadow map (0 = no shadows), how often shadows are redrawn, segments on round
+// parts (also memory), desk screen redraws, frames a second [in use, left alone 10 s, in the background] (0 = drawn
+// only while the camera moves) and whether the endless CSS animations run (each one redraws the whole window).
+const GFX={
+  high:{label:'Cao',aa:true,pr:1.5,shadow:2048,soft:true,shadowMs:100,detail:1,screenMs:120,fps:[30,20,12],css:true,
+    desc:'Đẹp nhất: khử răng cưa, bóng mềm, đủ chi tiết, 30 khung hình/giây. Cho máy có card đồ họa rời hoặc CPU từ 6 nhân.'},
+  medium:{label:'Trung bình',aa:false,pr:1,shadow:1024,soft:false,shadowMs:200,detail:.6,screenMs:400,fps:[20,12,8],css:false,
+    desc:'Cân bằng: bóng thường, bớt chi tiết đồ vật, 20 khung hình/giây. Cho máy văn phòng, card đồ họa tích hợp.'},
+  low:{label:'Thấp',aa:false,pr:.75,shadow:0,soft:false,shadowMs:0,detail:.45,screenMs:3000,fps:[12,8,4],css:false,
+    desc:'Nhẹ: tắt bóng, vẽ ở 75% độ phân giải, ít chi tiết, 12 khung hình/giây. Cho máy yếu, điện thoại, máy chạy pin.'},
+  static:{label:'Tĩnh',aa:false,pr:.75,shadow:0,soft:false,shadowMs:0,detail:.45,screenMs:3000,fps:[0,0,0],css:false,
+    desc:'Tiết kiệm nhất: chỉ vẽ lại khi bạn xoay hoặc zoom; nhân vật và xe đứng yên. CPU gần như không tốn khi để yên.'}
+};
+const GPU_NAME=(()=>{try{const gl=document.createElement('canvas').getContext('webgl2')||document.createElement('canvas').getContext('webgl'),ext=gl?.getExtension('WEBGL_debug_renderer_info'),n=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):'';gl?.getExtension('WEBGL_lose_context')?.loseContext();return String(n||'')}catch{return ''}})();
+// software GL or a phone → low; 4 cores or fewer, or Intel HD/UHD graphics → medium; otherwise high
+const GFX_AUTO=/SwiftShader|llvmpipe|Microsoft Basic Render/i.test(GPU_NAME)||PHONE0?'low':(navigator.hardwareConcurrency||8)<=4||/Intel.*(HD|UHD) Graphics/i.test(GPU_NAME)?'medium':'high';
+const GFX_PICK=(()=>{try{const v=localStorage.getItem('office-gfx');if(GFX[v])return v;const old=localStorage.getItem('office-lite');return old==='1'?'medium':old==='0'?'high':'auto'}catch{return 'auto'}})();
+const GFX_LEVEL=GFX_PICK==='auto'?GFX_AUTO:GFX_PICK,G=GFX[GFX_LEVEL];
+setDetail({screenMs:G.screenMs,detail:G.detail});setCharDetail(G.detail);document.documentElement.classList.toggle('lite',!G.css);
+console.info(`Văn phòng 3D: đồ họa ${G.label}${GFX_PICK==='auto'?' (tự động)':''} · ${navigator.hardwareConcurrency||'?'} nhân · ${GPU_NAME||'GPU ?'}`);
+const renderer=new THREE.WebGLRenderer({antialias:G.aa&&!PHONE0,alpha:false});renderer.setPixelRatio(G.pr<1?(devicePixelRatio>1?1:G.pr):Math.min(devicePixelRatio,G.pr));/* low: 75% on a normal screen, 1:1 (no retina) on a sharp one */renderer.shadowMap.enabled=!!G.shadow&&!PHONE0;renderer.shadowMap.autoUpdate=false;renderer.shadowMap.type=G.soft?THREE.PCFSoftShadowMap:THREE.PCFShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.65;document.querySelector('#scene').appendChild(renderer.domElement);
 const camera=new THREE.PerspectiveCamera(40,1,.1,240);let theta=Math.PI/4,phi=.96,dist=PHONE0?54:37;
 // on a phone the sheet covers the lower part: the picture is shifted up by phShift px so the office sits in the free part
-let phShift=0,camMovedT=0,wakeT=0;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camMovedT=performance.now();if(wakeT){clearTimeout(wakeT);wakeT=0;nextT=0;requestAnimationFrame(animate)}camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
+let phShift=0,camMovedT=0,wakeT=0,stopped=false;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camMovedT=performance.now();if(wakeT||stopped){clearTimeout(wakeT);wakeT=0;stopped=false;nextT=0;requestAnimationFrame(animate)}camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
 const room=createOffice(world,renderer),office=room.group,pickables=[];
-if(LITE)world.traverse(o=>{if(o.isLight&&o.castShadow)o.shadow.mapSize.set(1024,1024)});
+if(G.shadow)world.traverse(o=>{if(o.isLight&&o.castShadow)o.shadow.mapSize.set(G.shadow,G.shadow)});
 function agentCharacter(agent){const g=new THREE.Group();g.position.set(agent.x,0,agent.z);g.rotation.y=agent.yaw??.35;office.add(g);agent.char=createCharacter(agent.look);g.add(agent.char.group);const hit=new THREE.Mesh(new THREE.CylinderGeometry(.43,.43,2,12),new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));hit.position.y=1;hit.userData.agent=agent.id;g.add(hit);pickables.push(hit);agent.group=g;agent.labelPos=new THREE.Vector3(agent.x,2.05,agent.z);const ring=new THREE.Mesh(new THREE.RingGeometry(.37,.42,32),new THREE.MeshBasicMaterial({color:agent.color,side:THREE.DoubleSide,transparent:true,opacity:0}));ring.rotation.x=-Math.PI/2;ring.position.y=.013;g.add(ring);agent.ring=ring;return g}
 // Characters stand in front of their desk with the chair pushed to one side
 for(const b of BUILTIN)room.workstation(b.x,b.z,b.desk);// built-in desks stay even when their agent is deleted
@@ -342,7 +356,7 @@ function announceDone(j){
   if(!j.asks&&!document.querySelector('.agent-form')?.closest('.modal:not(.hidden)')){selectAgent(j.agent);pv.open(j.agent,j.key)}
 }
 setInterval(watchJobs,1000);
-function updateStats(){const jobs=allJobs(),run=jobs.filter(j=>GROUP[j.status]==='running');{const pc=document.getElementById('phCount');if(pc){pc.textContent=run.length;pc.hidden=!run.length}}$('active').textContent=new Set(run.map(j=>j.agent)).size;$('queued').textContent=run.length;$('done').textContent=jobs.filter(j=>j.status==='done').length;$('failed').textContent=jobs.filter(j=>GROUP[j.status]==='error').length;agents.forEach(a=>a.el.classList.toggle('busy',run.some(j=>j.agent===a.id)));
+function updateStats(){const jobs=allJobs(),run=jobs.filter(j=>GROUP[j.status]==='running');{const pc=document.getElementById('phCount');if(pc){pc.textContent=run.length;pc.hidden=!run.length}}agents.forEach(a=>a.el.classList.toggle('busy',run.some(j=>j.agent===a.id)));
   document.querySelectorAll('#avatars [data-agent]').forEach(e=>{const b=run.some(j=>j.agent===e.dataset.agent),d=e.querySelector('.adot');if(d){d.classList.toggle('busy',b);d.title=b?'Đang làm việc':'Đang rảnh'}});renderResults();renderProfile();pv?.refresh()}
 // The AI staff as a grid of cards or as a list grouped by team (remembered per browser); a dot shows who is working
 let agentView=(()=>{try{return localStorage.getItem('office-agent-view')==='list'?'list':'grid'}catch{return 'grid'}})();
@@ -487,6 +501,9 @@ async function answerJob(j,text){
 }
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.matches?.('[data-login-user],[data-login-pass]')){e.preventDefault();const box=e.target.closest('.loginbox');return submitLogin(box,allJobs().find(j=>j.key===box?.dataset.qjob))}});
 document.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.matches?.('[data-answer-input]')){e.preventDefault();sendTyped(e.target.dataset.answerInput)}});
+// Request box: Enter gives the task, Shift+Enter starts a new line (the skill list handles Enter itself while open, and
+// Enter that only confirms an IME composition is left alone)
+document.addEventListener('keydown',e=>{if(e.key!=='Enter'||e.shiftKey||e.isComposing||e.keyCode===229||e.target.id!=='task')return;e.preventDefault();const b=$('assign');if(!b.disabled)b.click()});
 $('results').onclick=async e=>{
   const qf=e.target.closest('[data-fill]');if(qf){const k=qf.dataset.fill;toggleFill(k,qf.dataset.text);renderResults();document.querySelector(`[data-answer-input="${k}"]`)?.focus();return}
   const qa=e.target.closest('[data-answer]'),qs=e.target.closest('[data-answer-send]');
@@ -536,23 +553,46 @@ setInterval(()=>{let changed=false;
   else if(j.progress>=100){j.status='done';j.finished=new Date();if(j.kind==='plan')simPlanDone(j);else if(simRework(j)){toast(`↩ ${a.name} trả lại cho ${j.rework.to.join(', ')} để sửa`);continue}else j.result=simResult(a);toast(`✓ ${a.name} đã hoàn thành nhiệm vụ`)}}
   if(changed)updateStats()},2200);
 selectAgent(selected.id);renderRunNote();updateStats();syncRemote();
+// Đồ họa window: pick the graphics level for this device (kept in this browser only); applied by reloading the page
+$('gfx').onclick=()=>{
+  const m=document.createElement('div');m.className='modal';
+  const opt=(k,label,desc)=>`<label class="gfxopt ${GFX_PICK===k?'on':''}"><input type="radio" name="gfx" value="${k}" ${GFX_PICK===k?'checked':''}><span><b>${label}${k===GFX_LEVEL&&GFX_PICK!=='auto'?' · đang dùng':''}</b><small>${desc}</small></span></label>`;
+  m.innerHTML=`<div class="guide gfxbox"><button class="close" data-close>✕</button><h2>Chất lượng đồ họa</h2>
+    <p class="gfxdev">Thiết bị này: ${navigator.hardwareConcurrency||'?'} nhân CPU${navigator.deviceMemory?` · ~${navigator.deviceMemory} GB RAM`:''} · ${escapeHTML(GPU_NAME.replace(/^ANGLE \(|\)$/g,'').replace(/ Direct3D.*$|, D3D.*$/,'').replace(/ \(0x[0-9a-f]+\)/i,'').replace(/^(\w+), (?=\1)/,'')||'không rõ card đồ họa')} · màn ${screen.width}×${screen.height}${devicePixelRatio>1?` ×${devicePixelRatio}`:''}</p>
+    ${opt('auto','Tự động',`Theo cấu hình thiết bị: hiện chọn <b>${GFX[GFX_AUTO].label}</b>.`)}
+    ${Object.entries(GFX).map(([k,v])=>opt(k,v.label,v.desc)).join('')}
+    <p class="claude-note">Lưu riêng cho thiết bị/trình duyệt này: máy tính, điện thoại và trình duyệt truy cập từ xa có thể chọn mức khác nhau. Mức thấp hơn đỡ tốn CPU, card đồ họa, RAM và pin.</p>
+    <button class="assign" data-apply>Áp dụng (tải lại trang)</button></div>`;
+  document.body.appendChild(m);
+  m.addEventListener('change',()=>m.querySelectorAll('.gfxopt').forEach(l=>l.classList.toggle('on',l.querySelector('input').checked)));
+  m.addEventListener('click',e=>{
+    if(e.target===m||e.target.closest('[data-close]'))return m.remove();
+    if(!e.target.closest('[data-apply]'))return;
+    const v=m.querySelector('input[name=gfx]:checked')?.value||'auto';
+    if(v===GFX_PICK)return m.remove();
+    try{localStorage.setItem('office-gfx',v);localStorage.removeItem('office-lite')}catch{}
+    location.reload();
+  });
+};
 const HOME_VIEW=[Math.PI/4,.96,37];$('reset').onclick=()=>{[theta,phi,dist]=HOME_VIEW;updateCamera()};const guide=$('guide');$('help').onclick=()=>guide.classList.remove('hidden');$('closeguide').onclick=$('okguide').onclick=()=>guide.classList.add('hidden');
 let dragging=false,moved=0,px=0,py=0,touchN=0;renderer.domElement.addEventListener('pointerdown',e=>{dragging=true;moved=0;px=e.clientX;py=e.clientY;renderer.domElement.setPointerCapture(e.pointerId)});renderer.domElement.addEventListener('pointermove',e=>{if(!dragging||touchN>1)return;const dx=e.clientX-px,dy=e.clientY-py;moved+=Math.abs(dx)+Math.abs(dy);theta-=dx*.006;phi=Math.max(.40,Math.min(1.38,phi+dy*.005));px=e.clientX;py=e.clientY;updateCamera()});renderer.domElement.addEventListener('pointerup',e=>{dragging=false;if(moved>7)return;const p=new THREE.Vector2(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);const ray=new THREE.Raycaster();ray.setFromCamera(p,camera);const hits=ray.intersectObjects(pickables);if(hits.length)openAgent(hits[0].object.userData.agent)});renderer.domElement.addEventListener('wheel',e=>{dist=Math.max(10,Math.min(60,dist+e.deltaY*.02));updateCamera()},{passive:true});let lastT=0,nextT=0,shadowT=0,sizeK='';
-// Frame rate by what the user is doing: 60 a second only while the camera moves (drag, zoom, pinch), 30 (light mode 20)
-// while the mouse or keyboard was used in the last 10 s, 20 (light mode 12) when the window is left alone, 12 (light
-// mode 8) when it is in the background. Each frame costs a fixed amount to show (measured: about half the cost of a
-// frame on an Intel HD 630 does not depend on what is drawn), so fewer frames is what helps most. The scene never stands still (people,
-// cars, screens), so the cap is what keeps the CPU/GPU idle. Shadows: the sun is fixed, so a camera move needs no new
-// shadow map; it is redrawn ~10 times a second (light mode 5) for the moving people. Canvas resized only on a size change.
+// Frame rate by what the user is doing: 60 a second only while the camera moves (drag, zoom, pinch), otherwise the
+// graphics level's rate for in use (mouse or keyboard in the last 10 s), left alone, or in the background. Each frame
+// costs a fixed amount to show (measured: about half the cost of a frame on an Intel HD 630 does not depend on what is
+// drawn), so fewer frames is what helps most. Shadows: the sun is fixed, so a camera move needs no new shadow map; it is
+// redrawn every G.shadowMs for the moving people. Canvas resized only on a size change.
 // Between frames the loop sleeps in a timer instead of waking on every screen refresh; a camera move wakes it at once.
 function nextFrame(){const wait=nextT-performance.now()-4;if(wait>8)wakeT=setTimeout(()=>{wakeT=0;requestAnimationFrame(animate)},wait);else requestAnimationFrame(animate)}
 let inputT=0;for(const ev of ['pointermove','pointerdown','keydown','wheel'])addEventListener(ev,()=>{inputT=performance.now()},{capture:true,passive:true});
-function animate(t){const fps=t-camMovedT<1500?60:!document.hasFocus()?(LITE?8:12):t-inputT<10000?(LITE?20:30):(LITE?12:20),step=1000/fps;if(t<nextT-1)return nextFrame();nextT=Math.max(nextT+step,t-step);
-const dt=Math.min(.15,(t-lastT)/1000);lastT=t;wander.update(dt);outdoor.update(t,dt);
-if(t-shadowT>=(LITE?200:100)){renderer.shadowMap.needsUpdate=true;shadowT=t}
+// Frames a second come from the graphics level (G.fps: in use, left alone, background). The static level has none: the
+// loop stops after the camera settles and a camera move or a window resize starts it again; people and cars stay still.
+const STILL=!G.fps[0];addEventListener('resize',()=>updateCamera());
+function animate(t){const fps=t-camMovedT<1500?60:!document.hasFocus()?G.fps[2]:t-inputT<10000?G.fps[0]:G.fps[1];if(!fps){stopped=true;return}const step=1000/fps;if(t<nextT-1)return nextFrame();nextT=Math.max(nextT+step,t-step);
+const dt=Math.min(.15,(t-lastT)/1000);lastT=t;if(!STILL){wander.update(dt);outdoor.update(t,dt)}
+if(G.shadowMs&&t-shadowT>=G.shadowMs){renderer.shadowMap.needsUpdate=true;shadowT=t}
 const k=`${innerWidth}x${innerHeight}`;if(k!==sizeK){sizeK=k;renderer.setSize(innerWidth,innerHeight,false)}camera.aspect=innerWidth/innerHeight;if(phShift)camera.setViewOffset(innerWidth,innerHeight,0,phShift,innerWidth,innerHeight);else if(camera.view)camera.clearViewOffset();camera.updateProjectionMatrix();const tags=[],tagScale=Math.max(.72,Math.min(1,1.25-dist/90));
-for(const a of agents){a.group.getWorldPosition(a.labelPos);a.labelPos.y=2.05;const p=a.labelPos.clone().project(camera);const visible=p.z<1;const x=(p.x*.5+.5)*innerWidth,y=(-p.y*.5+.5)*innerHeight;tags.push({a,x,y,z:p.z,visible});if(a.bubble?.classList.contains('show')){a.bubble.style.transform=`translate(-50%,-100%) translate(${x}px,${y-12}px)`;a.bubble.style.visibility=visible?'visible':'hidden'}a.char.update(t)}
-placeTags(tags,tagScale);room.update(t);renderer.render(world,camera);nextFrame()}requestAnimationFrame(animate);
+for(const a of agents){a.group.getWorldPosition(a.labelPos);a.labelPos.y=2.05;const p=a.labelPos.clone().project(camera);const visible=p.z<1;const x=(p.x*.5+.5)*innerWidth,y=(-p.y*.5+.5)*innerHeight;tags.push({a,x,y,z:p.z,visible});if(a.bubble?.classList.contains('show')){a.bubble.style.transform=`translate(-50%,-100%) translate(${x}px,${y-12}px)`;a.bubble.style.visibility=visible?'visible':'hidden'}if(!STILL)a.char.update(t)}
+placeTags(tags,tagScale);if(!STILL)room.update(t);renderer.render(world,camera);nextFrame()}requestAnimationFrame(animate);
 
 // Outdoor scenery switcher (remembered per browser)
 const sceneryEl=document.getElementById('scenery');sceneryEl.innerHTML='<span>BỐI CẢNH</span>'+Object.entries(room.scenes).map(([k,s])=>`<button data-scene="${k}" title="${s.label}"><i style="background:${s.swatch}"></i><em>${s.label}</em></button>`).join('');

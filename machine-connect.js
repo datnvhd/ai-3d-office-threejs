@@ -6,6 +6,7 @@ const gb=b=>(b/1073741824).toFixed(1)+' GB';
 import {openFolderPicker} from './folder-picker.js';
 import {pwField} from './pw-field.js';
 import qrcode from 'qrcode-generator';
+import {splitKind} from './workflow-plan.js';
 // QR code of a link as an inline SVG (dark modules on white, with the quiet zone phones need to read it)
 const qrSvg=text=>{const q=qrcode(0,'M');q.addData(text);q.make();return q.createSvgTag({cellSize:4,margin:4,scalable:true})};
 // Which version control holds the working folder and where its code is pushed
@@ -136,6 +137,8 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
       ${rows([row('claude','Claude (gói Claude)',st.claude.found&&st.claude.auth),row('codex','Codex (gói ChatGPT)',st.codex.ready)])}
       ${L.both?'<p class="claude-err">Đã hết hạn mức của cả hai gói AI. Việc mới sẽ dừng và báo lại cho tới giờ mở lại, hoặc khi bạn nâng cấp gói (bấm "Dùng lại ngay").</p>':''}
       <label class="mcheck"><input type="checkbox" id="mAutoSwitch" ${L.autoSwitch?'checked':''}> Tự chuyển sang AI còn hạn mức: Claude hết thì làm bằng Codex, Codex hết thì làm bằng Claude</label>
+      <label class="mcheck">Số việc chạy cùng lúc: <select id="mParallel">${[1,2,3,4,5,6].map(n=>`<option value="${n}"${n===(L.maxParallel||2)?' selected':''}>${n}</option>`).join('')}</select></label>
+      <p class="claude-note">Bộ test case lớn được QA chia cho các thành viên đội QA chạy song song; số này giới hạn bao nhiêu việc chạy cùng lúc. Nhiều việc hơn thì xong nhanh hơn nhưng dùng hạn mức gói AI nhanh hơn và máy nặng hơn (mỗi việc kiểm thử mở một trình duyệt).</p>
       <p class="claude-note">Hạn mức theo 5 giờ, ngày hoặc tuần của gói. App đọc giờ mở lại trong thông báo của Claude/Codex (không đọc được thì thử lại sau 1 giờ) và tự dùng lại khi tới giờ.</p>`;
   };
   const rows=list=>`<div class="claude-rows">${list.map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`;
@@ -191,7 +194,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
       <div class="section-title">BỘ CÔNG CỤ CHO ĐỘI IT</div>
       <p class="claude-note">Lệnh dòng lệnh mỗi đội được phép chạy. Ở chế độ <b>Chỉ đọc</b> chỉ các lệnh xem (git status/diff/log, ls, cat…) được dùng; các bộ có dấu ✎ cần chế độ được sửa file. Không bao giờ cho phép git push, xóa hàng loạt hay publish.</p>
       <div class="mkits">${getTeams().map(team=>{const on=new Set(config.teamKits[team]??config.defaultKits[team]??config.defaultKits['*']);
-        return `<div class="mkit"><b>${esc(team)}</b><div>${Object.entries(config.toolkits).map(([k,v])=>`<label class="kchip ${on.has(k)?'on':''}" title="${esc(v.label)}"><input type="checkbox" data-kit="${k}" data-team="${esc(team)}" ${on.has(k)?'checked':''}>${esc(v.short)}${v.write?' ✎':''}</label>`).join('')}</div></div>`}).join('')}</div>
+        return `<div class="mkit"><b>${esc(team)}</b><div>${Object.entries(config.toolkits).map(([k,v])=>`<label class="kchip ${on.has(k)?'on':''}" title="${esc(v.label)}"><input type="checkbox" data-kit="${k}" data-team="${esc(team)}" ${on.has(k)?'checked':''}>${esc(v.short)}${v.write?' ✎':''}</label>`).join('')}${splitKind(team)?(o=>`<label class="kchip ${o?'on':''}" title="Việc lớn của đội (bộ test case, đặc tả, nghiên cứu, dữ liệu, nội dung nhiều phần) được Leader chia cho các thành viên làm song song rồi tổng hợp"><input type="checkbox" data-split="${esc(team)}" ${o?'checked':''}>⇉ Chia việc song song</label>`)(!(st.limits.splitOff||[]).includes(team)):''}</div></div>`}).join('')}</div>
       ${st.video?`<p class="claude-note">🎬 Bộ công cụ <b>Video toán</b> (Manim, giọng đọc tiếng Việt, ffmpeg): ${st.video.ready?`đã sẵn sàng · Manim ${esc(st.video.manim||'')}${st.video.latex?' · có LaTeX':''}`:st.video.installing?'<span class="spinner"></span> đang cài…':st.video.error?`<em class="bad">${esc(st.video.error)}</em>`:'tự cài khi agent đội Video nhận việc đầu tiên (khoảng 1 phút, cần Internet).'}</p>`:''}
       <div class="section-title">TRÌNH DUYỆT & TÀI KHOẢN WEB</div>
       ${rows([['Công cụ trình duyệt',st.browser.mcp?'Playwright MCP đã cài':'<em class="bad">chưa cài @playwright/mcp</em>'],['Trình duyệt dùng',st.browser.channel?esc(st.browser.names?.[st.browser.channel]||st.browser.channel):'<em class="bad">không tìm thấy Chrome/Edge</em>']])}
@@ -247,6 +250,8 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
         const lvl=el.value,who=getAgents().find(a=>a.id===el.dataset.auto)?.name||el.dataset.auto;
         if(lvl!=='ask'&&!confirm(`Cho phép ${who} ${lvl==='all'?'tự chạy lệnh và tự sửa file trong thư mục làm việc':'tự chạy lệnh'} mà không hỏi bạn?\nLệnh nguy hiểm vẫn sẽ hỏi.`)){el.value=st.auto.agents[el.dataset.auto]||'ask';return}
         st=await machineApi('/config',{method:'POST',body:JSON.stringify({agentAuto:{[el.dataset.auto]:lvl}})});onStatus(st);toast(`${who}: ${st.auto.levels[lvl]}`)}
+      else if(name==='split'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({splitTeam:el.dataset.split,split:el.checked})});onStatus(st);toast(el.checked?`Đội ${el.dataset.split}: việc lớn sẽ được chia cho các thành viên làm song song`:`Đội ${el.dataset.split}: không chia việc`)}
+      else if(name==='parallel'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({maxParallel:+el.value})});onStatus(st);toast(`Chạy tối đa ${st.limits.maxParallel} việc cùng lúc`)}
       else if(name==='autoSwitch'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({autoSwitch:el.checked})});onStatus(st);toast(el.checked?'Sẽ tự chuyển sang AI còn hạn mức':'Không tự chuyển: việc sẽ dừng khi gói AI hết hạn mức')}
       else if(name==='update'){await updateAct({engine:el.dataset.engine});toast('Đang cập nhật ở chế độ chạy ngầm…')}
       else if(name==='skipUpdate'){await updateAct({skip:el.dataset.engine});toast('Sẽ không hỏi lại bản này')}
@@ -269,7 +274,7 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
     finally{busy=false;checking=false;render()}
   }
   body.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b)});
-  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.name==='mUpdate')act('updateMode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mBrowser')act('browser',e.target);else if(e.target.id==='mPublic')act('public',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
+  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.dataset.split!==undefined)act('split',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.name==='mUpdate')act('updateMode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mBrowser')act('browser',e.target);else if(e.target.id==='mPublic')act('public',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.id==='mParallel')act('parallel',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
   body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir')});
 
   refresh();

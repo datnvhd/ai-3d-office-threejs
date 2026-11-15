@@ -398,3 +398,14 @@
    60 times a second; the spinners, striped live bars and blinking dots stand still here */
 .lite .cdot.checking,.lite .spinner,.lite .progress.live i,.lite .tag.busy::after{animation:none}
 .lite .tag.busy::after{border-color:#f08a3c}
+/* Đồ họa window: graphics level per device */
+.gfxbox{width:min(520px,92vw);max-height:90vh;overflow:auto}
+.gfxdev{font-size:12px;color:#aab3c5;margin:-6px 0 12px}
+.gfxopt{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid #39404d;border-radius:12px;margin-bottom:8px;cursor:pointer;line-height:1.45}
+.gfxopt:hover{background:#2c3342}
+.gfxopt.on{border-color:#f4966b;background:#2f2a2a}
+.gfxopt input{margin-top:3px;accent-color:#f4966b}
+.gfxopt>span>b{display:block;font-size:13px}
+.gfxopt small{display:block;font-size:12px;color:#aab3c5}
+/* no brand block on the left: the buttons stay on the right */
+.top{justify-content:flex-end}

@@ -24,7 +24,7 @@ import {createTunnel} from './tunnel.js';
 import {loadSkills,publicSkills,skillRefs,skillPrompt,skillsAvailablePrompt,importSkills,removeSkill,PERSONAL_DIR} from './skills.js';
 import {randomBytes} from 'node:crypto';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion,fitModel,TIER,sameTier,engineOfModel,enginesOf,ENGINE_NAMES} from '../workflow-plan.js';
+import {ruleSteps,planPrompt,parsePlan,MODELS,LATEST,EFFORTS,modelId,modelLabel,pickModel,MAX_REWORK,reworkGuide,parseRework,LEVELS,teamOf,levelOf,MAX_CLARIFY,QUESTION_GUIDE,parseQuestion,parseLooseQuestion,parsePlanQuestion,fitModel,TIER,sameTier,engineOfModel,enginesOf,ENGINE_NAMES,MAX_SPLIT,splitGuide,parseSplit,splitKind,partNote,mergeTask,SPLIT_KINDS} from '../workflow-plan.js';
 // What each level means for the agent doing the work
 const LEVEL_NOTE={leader:'Bạn là Leader của đội: chịu trách nhiệm chất lượng chung, làm và duyệt kỹ, chỉ ra rủi ro.',senior:'Bạn là Senior: xử lý được việc khó, chủ động đề xuất giải pháp tốt.',middle:'Bạn là Middle: làm chắc chắn việc thông thường, hỏi lại khi yêu cầu chưa rõ.',junior:'Bạn là Junior: làm cẩn thận từng bước, nêu rõ chỗ chưa chắc chắn để người có kinh nghiệm xem lại.'};
 
@@ -334,6 +334,8 @@ export function machineBridge(){
   let bin=null,binChecked=false,version=null,binGen=-1;
   let port=5173;// the dev server's real port, set once it listens; web tasks open their files through it
   let config={workdir:DEFAULT_WORKDIR,mode:'default',browserVisible:true,...readJson(CONFIG_FILE,{})};
+  // tasks that may run at the same time (machine.json maxParallel, set in the Máy cá nhân window): 1–6, default 2
+  const parallel=()=>Math.min(6,Math.max(1,Number.isInteger(config.maxParallel)?config.maxParallel:MAX_PARALLEL));
   // kit lists saved before the Mobile kit existed: give it to the teams that build or test code (it only acts in RN apps)
   if(config.teamKits&&!config.kitsMobile)for(const list of Object.values(config.teamKits))if(Array.isArray(list)&&(list.includes('node')||list.includes('test'))&&!list.includes('mobile'))list.push('mobile');
   config.kitsMobile=true;
@@ -493,7 +495,7 @@ export function machineBridge(){
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
   const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel,src,sheet,sheets})=>({name,kind,rel,src,sheet,sheets:sheets?.map(({preview,...s})=>s)}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
-  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,browser:config.browser,extToken:config.extToken,agentEngines:config.agentEngines,agentAI:config.agentAI,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,aiLimits:config.aiLimits,aiUpdate:config.aiUpdate,aiUpdateSkip:config.aiUpdateSkip,agentAuto:config.agentAuto,lastCheck});
+  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,browser:config.browser,extToken:config.extToken,agentEngines:config.agentEngines,agentAI:config.agentAI,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,maxParallel:config.maxParallel,splitOff:config.splitOff,aiLimits:config.aiLimits,aiUpdate:config.aiUpdate,aiUpdateSkip:config.aiUpdateSkip,agentAuto:config.agentAuto,lastCheck});
 
   // ---------- saved web logins (passwords stay in this file and are never sent to the page or to Claude) ----------
   let sites=readJson(SITES_FILE,[]);
@@ -805,7 +807,7 @@ Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
   // a step can send back more than once (its first run, then follow-ups): `reworks` counts them
   const sentBack=(wf,o)=>tasks.filter(x=>x.wf===wf&&x.rework&&originOf(x)===o).reduce((n,x)=>n+(x.reworks||1),0);
   function backTo(t){
-    if(t.wf==null)return '';
+    if(t.wf==null||t.partOf!=null)return '';
     const plan=planSteps(t.wf),anc=ancestors(t.wf,originOf(t)),prev=plan.filter(p=>anc.has(p.id));
     return prev.length?reworkGuide(prev.map(p=>({no:plan.indexOf(p)+1,name:p.name,title:p.stepTitle})),MAX_REWORK-sentBack(t.wf,originOf(t))):'';
   }
@@ -816,6 +818,7 @@ Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
   function checkRework(t,ask=null,rw=null){
     if(!rw){rw=parseRework(t.result);if(!rw)return;t.result=rw.clean}
     const addNote=s=>{if(ask)ask.answer=(ask.answer||'')+s;else t.result+=s};
+    if(t.partOf!=null){addNote('\n\n_(Phần việc chia nhỏ không trả lại trực tiếp; bước tổng hợp sẽ quyết định trả lại.)_');return}
     const o=originOf(t),plan=planSteps(t.wf),anc=ancestors(t.wf,o),no=id=>plan.findIndex(p=>p.id===id)+1;
     const targets=rw.to.map(n=>plan[n-1]?.id).filter(id=>id!=null&&anc.has(id));
     if(!targets.length){addNote('\n\n_(Yêu cầu trả lại bị bỏ qua vì không trỏ tới bước trước hợp lệ.)_');return}
@@ -825,11 +828,14 @@ Tiếp tục làm nhiệm vụ với các thông tin trên.${more}`;
     t.rework={to:targets.map(id=>`#${no(id)} ${plan[no(id)-1].name}`),reason:rw.reason};
     if(ask)addNote(`\n\n↩ Đã trả lại cho ${t.rework.to.join(', ')} để sửa; sửa xong sẽ kiểm tra lại.`);
     if(used>=MAX_REWORK){Object.assign(t,{status:'error',error:`Vẫn chưa đạt sau ${MAX_REWORK} lần trả lại sửa: ${rw.reason}`});return}
-    const redo=plan.filter(p=>anc.has(p.id)&&(targets.includes(p.id)||[...ancestors(t.wf,p.id)].some(a=>targets.includes(a))));
+    // a step that split its work and its parts are not run again: the merge step (redone like any other) re-runs the tests
+    const redo=plan.filter(p=>anc.has(p.id)&&!p.split&&p.partOf==null&&(targets.includes(p.id)||[...ancestors(t.wf,p.id)].some(a=>targets.includes(a))));
     const made={},now=new Date().toISOString();
-    const depsFor=x=>planDepsOf(x).map(d=>made[d]??newest(t.wf,d)?.id).filter(Boolean);
+    // fixes of the steps a step builds on, also through the skipped split steps
+    const fixesBefore=id=>{const a=ancestors(t.wf,id);return Object.entries(made).filter(([k])=>a.has(+k)).map(([,v])=>v)};
+    const depsFor=x=>[...new Set([...planDepsOf(x).map(d=>made[d]??newest(t.wf,d)?.id).filter(Boolean),...fixesBefore(originOf(x))])];
     const copy=(src,over)=>({id:nextId++,kind:'step',wf:src.wf,wfTitle:src.wfTitle,request:src.request,agent:src.agent,name:src.name,role:src.role,desc:src.desc,team:src.team,level:src.level,priority:src.priority,
-      model:src.model,effort:src.effort,modelWhy:src.modelWhy,cwd:src.cwd,mode:src.mode,host:src.host,web:src.web,siteIds:src.siteIds,files:src.files,fileNames:src.fileNames,
+      mergeOf:src.mergeOf,model:src.model,effort:src.effort,modelWhy:src.modelWhy,cwd:src.cwd,mode:src.mode,host:src.host,web:src.web,siteIds:src.siteIds,files:src.files,fileNames:src.fileNames,
       status:'queued',created:now,...over});
     for(const p of redo){// plan order, so a step's own fixes are made before the steps that use them
       const prev=newest(t.wf,p.id),target=targets.includes(p.id),deps=[t.id,...depsFor(p)];
@@ -862,6 +868,55 @@ Yêu cầu kiểm tra lại của người dùng: ${short(ask.q,500)}`:''}`});
     for(const x of tasks)if(x.wf===t.wf&&x.kind==='step'&&x.status==='queued'&&!fresh.has(x.id))
       x.deps=(x.deps||[]).map(d=>{const y=tasks.find(z=>z.id===d);return y?newest(t.wf,originOf(y)).id:d});
   }
+  // ---------- split a step across the team ----------
+  // A step of a workflow (not a part, not already split) of a team whose work splits cleanly (QA, BA, Research, Data,
+  // Marketing; never dev) may hand parts of a big job to its teammates. Teams can be switched off in the settings.
+  // Members come from the team list the Director planned with; the agent itself takes a part only when there are more
+  // parts than mates. Parts run at the same time (up to the parallel limit), then a merge step in the splitter's session.
+  const kindOf=t=>(config.splitOff||[]).includes(t.team||'')?null:splitKind(`${t.team||''} ${t.role||''} ${t.agent||''}`);
+  const matesOf=t=>{const plan=tasks.find(x=>x.id===t.wf&&x.kind==='plan');const mine=t.team||teamOf({id:t.agent});return (plan?.team||[]).filter(a=>a.id!==t.agent&&teamOf(a)===mine)};
+  const splitMax=t=>Math.min(MAX_SPLIT,Math.max(matesOf(t).length+1,parallel()));
+  function splitNote(t){
+    const kind=kindOf(t);
+    if(t.wf==null||t.partOf!=null||t.mergeOf!=null||t.split||t.origin!=null||!kind)return '';
+    const mates=matesOf(t);if(!mates.length)return '';
+    return splitGuide(mates,splitMax(t),kind)+`Máy đang cho chạy tối đa ${parallel()} việc cùng lúc; phần nhiều hơn sẽ chờ tới lượt.
+`;
+  }
+  function checkSplit(t){
+    if(t.status!=='done'||t.rework)return;
+    const sp=parseSplit(t.result);if(!sp)return;
+    t.result=sp.clean;
+    const kind=kindOf(t);
+    if(t.wf==null||t.partOf!=null||t.mergeOf!=null||t.split||t.origin!=null||!kind){t.result+='\n\n_(Yêu cầu chia việc bị bỏ qua: chỉ bước gốc của đội QA, BA, Research, Data, Marketing trong luồng mới được chia.)_';return}
+    const mates=matesOf(t),parts=sp.parts.slice(0,splitMax(t));
+    if(parts.length<2||!mates.length){t.result+='\n\n_(Không chia việc: cần ít nhất 2 phần và 1 đồng đội cùng đội.)_';return}
+    const self={id:t.agent,name:t.name,role:t.role,desc:t.desc,team:t.team,level:t.level};
+    const who=[...mates,self],now=new Date().toISOString(),n=parts.length,ids=[];
+    parts.forEach((p,i)=>{
+      const m=who[i%who.length],pick=fitModel(aiOf(m.id),{model:t.model,effort:t.effort},engineOf(m.id));
+      const x={id:nextId++,kind:'step',wf:t.wf,wfTitle:t.wfTitle,request:t.request,partOf:t.id,partNo:i+1,partCount:n,
+        stepTitle:`${t.stepTitle} · phần ${i+1}/${n}${p.title?`: ${p.title}`:''}`,deps:[t.id],planDeps:[t.id],
+        agent:m.id,name:m.name,role:m.role,desc:m.desc,team:m.team,level:m.level,priority:t.priority,status:'queued',created:now,
+        model:pick.model,effort:pick.effort,modelWhy:`${t.name} chia việc`,engine:pick.engine,
+        cwd:t.cwd,mode:t.mode,host:t.host,web:t.web,siteIds:t.siteIds,files:t.files,fileNames:t.fileNames,skills:t.skills,
+        splitKind:kind,text:`${p.task}
+
+${partNote(kind,i+1,n,t.stepTitle,t.name)}`};
+      tasks.unshift(x);ids.push(x.id);
+    });
+    const merge={id:nextId++,kind:'step',wf:t.wf,wfTitle:t.wfTitle,request:t.request,mergeOf:t.id,stepTitle:`${t.stepTitle} · tổng hợp`,deps:[...ids],planDeps:[...ids],
+      agent:t.agent,name:t.name,role:t.role,desc:t.desc,team:t.team,level:t.level,priority:t.priority,status:'queued',created:now,
+      model:t.model,effort:t.effort,modelWhy:t.modelWhy,engine:t.engine,resumeSession:t.session||null,resumeThread:t.codexThread||null,
+      cwd:t.cwd,mode:t.mode,host:t.host,web:t.web,siteIds:t.siteIds,files:t.files,fileNames:t.fileNames,skills:t.skills,
+      splitKind:kind,text:mergeTask(kind,n,t.stepTitle,sp.merge,t.text)};
+    tasks.unshift(merge);
+    // steps that waited for this one now wait for the merged result
+    for(const x of tasks)if(x.wf===t.wf&&x.status==='queued'&&x.partOf!==t.id&&x!==merge){
+      const re=l=>l&&l.map(d=>d===t.id?merge.id:d);x.deps=re(x.deps);if(x.planDeps)x.planDeps=re(x.planDeps)}
+    t.split={parts:ids,merge:merge.id};
+    t.result+=`\n\n🔀 Đã chia thành ${n} phần chạy song song: ${parts.map((p,i)=>`${who[i%who.length].name} (${p.title||`phần ${i+1}`})`).join(', ')}. ${t.name} tổng hợp khi các phần xong.`;
+  }
   // A workflow step sees the user's original request and the results of the steps it waits for
   // Marked design images a task should follow: from the design task it was handed over from, otherwise from the newest
   // design steps of its workflow (a redone design replaces the earlier one)
@@ -884,9 +939,9 @@ Bám sát các ảnh này; chỗ nào làm khác ảnh thì nêu rõ lý do tron
 LUỒNG CÔNG VIỆC: Đây là bước "${t.stepTitle}" trong luồng "${t.wfTitle}" do Director điều phối.
 Yêu cầu gốc của người dùng: ${t.request}
 ${prev.length?`Kết quả các bước trước (dùng làm đầu vào cho bước này):
-${prev.map(p=>`--- ${p.name} · ${p.stepTitle} ---\n${String(p.result||'').slice(0,3500)}`).join('\n')}
+${prev.map(p=>`--- ${p.name} · ${p.stepTitle}${p.status==='error'?' (LỖI, chưa xong)':''} ---\n${String(p.result||p.error||'').slice(0,t.mergeOf!=null?12000:3500)}`).join('\n')}
 `:''}Chỉ làm phần việc của bước này; các bước khác do agent khác đảm nhận.
-${backTo(t)}`;
+${backTo(t)}${splitNote(t)}`;
   }
   // Sites given to a web task: the ones the user picked, otherwise those whose host appears in the request
   function sitesFor(t){
@@ -987,9 +1042,9 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
   // Workflow steps wait for their dependencies; if one fails or is stopped, the steps after it stop too
   function depState(t){
     const deps=(t.deps||[]).map(id=>tasks.find(x=>x.id===id));
-    const bad=deps.find(d=>!d||d.status==='error'||d.status==='cancelled');
+    const bad=deps.find(d=>!d||d.status==='cancelled'||d.status==='error'&&!(t.mergeOf!=null&&d.partOf===t.mergeOf));
     if(bad)return {blocked:bad};
-    const waiting=deps.filter(d=>d.status!=='done');
+    const waiting=deps.filter(d=>d.status!=='done'&&d.status!=='error');
     return {waiting};
   }
   function pump(){
@@ -1001,7 +1056,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
       const {blocked,waiting}=depState(t);
       if(blocked){Object.assign(t,{status:'cancelled',blockedBy:blocked?.id??null,activity:null,error:`Dừng vì bước trước chưa xong: ${blocked?`${blocked.name} · ${blocked.stepTitle||''}`:'đã bị xóa'}.`,finished:new Date().toISOString()});changed=true;continue}
       if(waiting.length){const a=`Chờ ${waiting.map(d=>d.name).join(', ')} hoàn thành`;if(t.activity!==a){t.activity=a;changed=true}continue}
-      if(procs.size+booting.size>=MAX_PARALLEL+(t.urgent?URGENT_EXTRA:0))continue;
+      if(procs.size+booting.size>=parallel()+(t.urgent?URGENT_EXTRA:0))continue;
       // the user's own browser serves one task at a time (the extension connects to one agent)
       if(t.web&&pickBrowser(config.browser).own&&tasks.some(x=>x!==t&&x.status==='running'&&x.ownBrowser)){const a='Chờ việc khác dùng xong trình duyệt của bạn';if(t.activity!==a){t.activity=a;changed=true}continue}
       launch(t);
@@ -1137,7 +1192,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
       t.reply=null;
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(r.result||'').slice(0,20000)):null,error:ok?null:redact(resultError(r,out,cancelled,taskTimeout(t),+turns)),
         durationMs:before.turns||before.cost||out.timedOut?Date.now()-Date.parse(t.started):r?.duration_ms??(Date.now()-Date.parse(t.started)),turns:r?.num_turns!=null?r.num_turns+before.turns:null,costUsd:r?.total_cost_usd!=null?r.total_cost_usd+before.cost:null,activity:null});
-      if(ok&&!checkQuestion(t)&&t.kind==='step')checkRework(t);
+      if(ok&&!checkQuestion(t)&&t.kind==='step'){checkRework(t);checkSplit(t)}
       save();pump();
     });
   }
@@ -1265,7 +1320,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
       t.reply=null;
       Object.assign(t,{status:cancelled?'cancelled':ok?'done':'error',finished:new Date().toISOString(),result:ok?redact(String(out.message).slice(0,20000)):null,error:ok?null:redact(err),
         durationMs:Date.now()-Date.parse(t.started),turns:turns+before.turns||null,costUsd:null,activity:null});
-      if(ok&&!checkQuestion(t)&&t.kind==='step')checkRework(t);
+      if(ok&&!checkQuestion(t)&&t.kind==='step'){checkRework(t);checkSplit(t)}
       save();pump();
     });
   }
@@ -1355,7 +1410,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
       auto:{levels:AUTO_LEVELS,agents:config.agentAuto||{}},
       updates:(updater.check().catch(()=>{}),updater.view()),
       video:videoKitState(),
-      limits:{autoSwitch:config.autoSwitch!==false,both:bothLimited(),claude:limitOf('claude'),codex:limitOf('codex')},
+      limits:{autoSwitch:config.autoSwitch!==false,maxParallel:parallel(),splitOff:config.splitOff||[],both:bothLimited(),claude:limitOf('claude'),codex:limitOf('codex')},
       workdir:wd,lastCheck,vcs:wd.exists?await vcsInfo(config.workdir):{kind:null},recentDirs:(config.recentDirs||[]).filter(d=>existsSync(d)),
       running:tasks.filter(t=>t.status==='running').length,queued:tasks.filter(t=>t.status==='queued').length,
       ready:!!(b&&a&&wd.writable)
@@ -1440,6 +1495,8 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
             if(b.extToken!==undefined)config.extToken=String(b.extToken||'').trim().slice(0,200)||null;
             if(b.browser!==undefined){if(b.browser!=='auto'&&!BROWSER_NAMES[b.browser])return json(res,400,{error:'Trình duyệt không hợp lệ.'});config.browser=b.browser;if(b.browser==='firefox')installFirefox()}
             if(b.autoSwitch!==undefined)config.autoSwitch=!!b.autoSwitch;
+            if(b.maxParallel!==undefined){const n=+b.maxParallel;if(!Number.isInteger(n)||n<1||n>6)return json(res,400,{error:'Số việc chạy cùng lúc phải từ 1 đến 6.'});config.maxParallel=n;setTimeout(pump)}
+            if(b.splitTeam!==undefined){const team=short(b.splitTeam,40),off=new Set(config.splitOff||[]);if(b.split)off.delete(team);else off.add(team);config.splitOff=[...off]}
             if(b.aiUpdate!==undefined){
               if(isRemoteReq(req))return json(res,403,{error:'Cài đặt cập nhật AI chỉ đổi được trên chính máy chạy app.'});
               if(!UPDATE_MODES[b.aiUpdate])return json(res,400,{error:'Chế độ cập nhật không hợp lệ.'});config.aiUpdate=b.aiUpdate;updater.check().catch(()=>{});

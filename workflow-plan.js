@@ -151,6 +151,7 @@ Quy tắc:
 - Mỗi "task" là chỉ dẫn cụ thể cho agent đó, viết bằng tiếng Việt; bước sau sẽ tự nhận kết quả của bước trước.
 - Ví dụ: "Tạo trang đăng nhập" → designer thiết kế → director duyệt thiết kế → frontend dựng giao diện + backend làm API (song song) → qa kiểm thử.
 - Designer tạo ẢNH thiết kế (mockup) cho từng màn hình; các bước sau (duyệt, dev, QA) tự nhận các ảnh người dùng đã chọn, nên việc có giao diện nên có bước designer trước bước dev.
+- Việc lớn gồm nhiều phần độc lập của đội QA, BA, Research, Data hoặc Marketing (bộ test case nhiều module, đặc tả nhiều module, nghiên cứu nhiều đối thủ, phân tích nhiều bộ dữ liệu, nhiều bài nội dung): giao MỘT bước cho Leader đội đó. Leader tự chia cho các thành viên trong đội làm song song rồi tổng hợp, nên KHÔNG tự tách thành nhiều bước cùng đội. Việc code của dev không chia kiểu này.
 - Ví dụ: "Sửa lỗi không đăng nhập được" → frontend/backend sửa lỗi → qa kiểm thử lại.
 - Ví dụ: "Làm video TikTok giải thích hàm số bậc hai" → research soạn kiến thức & kịch bản lời đọc → agent đội Video dựng video MP4 (chỉ agent đội Video làm được video) → qa xem khung hình, soát kiến thức và chính tả (có thể trả lại để sửa). Có agent Marketing thì có thể thêm bước viết caption/hashtag song song với QA. Video sáng tạo/cảm xúc bằng toán (tỏ tình, sinh nhật, tri ân thầy cô…) chỉ cần agent đội Video (1 bước), không cần research.
 - Ví dụ: "Phân tích doanh thu quý" → analyst phân tích → director tổng hợp & duyệt.
@@ -217,6 +218,132 @@ export function parseRework(text){
   const to=[...new Set((Array.isArray(j?.to)?j.to:[j?.to]).map(Number).filter(n=>Number.isInteger(n)&&n>0))];
   if(!to.length)return null;
   return {to,reason:String(j.reason||'').trim().slice(0,600)||'Chưa đạt yêu cầu',clean:String(text).replace(m[0],'').trim()};
+}
+
+// ---------- Split a step across the team ----------
+// A big step of a team whose work splits cleanly (QA test suites, BA specs, research topics, data sets, marketing
+// content) may be split: the agent answers with a split block, the server gives each part to a teammate (parts run at
+// the same time), then the same agent merges the results in a final step, in its own session. Dev work is never split:
+// parts would edit the same code in one folder at the same time.
+export const MAX_SPLIT=6;
+const DEV_RE=/front ?end|back ?end|\bdev\b|developer|lập trình|full ?stack|mobile dev|\bios\b|android|devops/i;
+// per kind: what the team does (who), when a step is big enough to split, what a part is, what to settle before
+// splitting, the rules of a part, what a part answers and what the merge step does
+export const SPLIT_KINDS={
+  qa:{label:'QA',re:/\bqa\b|test|kiểm thử|tester|chất lượng/i,
+    when:'bộ test case LỚN (khoảng từ 15 test case, hoặc từ 2 module/màn hình độc lập trở lên)',
+    how:'Đọc danh sách test case (file đính kèm, Excel, tài liệu…), nhóm theo module/màn hình',
+    indep:'không phần nào cần dữ liệu do phần khác tạo ra, và không hai phần cùng sửa một bản ghi',
+    first:'dò giao diện, kịch bản đăng nhập tests/ui/<ten>-common.mjs, tài khoản, URL',
+    example:{title:'Đăng nhập (TC01–TC12)',task:'chỉ dẫn đầy đủ cho phần này: mã các test case, file nguồn, URL, tài khoản, kịch bản chung dùng lại được',merge:'việc cần làm khi tổng hợp, ví dụ ghi cột Kết quả vào file Excel X'},
+    small:'Bộ test nhỏ',
+    rules:n=>[`Chỉ làm đúng các test case của phần này.`,
+      `KHÔNG sửa file kết quả chung (ví dụ file Excel test case gốc, báo cáo chung): bước tổng hợp sẽ ghi. Kết quả của bạn nằm trong câu trả lời.`,
+      `Kịch bản test của phần đặt tên riêng (ví dụ tests/ui/<module-cua-phan>.mjs). Kịch bản dùng chung đã có (tests/ui/*-common.mjs) chỉ dùng, không sửa; cần khác thì chép ra bản riêng.`,
+      `Không tạo, sửa hay xóa dữ liệu dùng chung mà phần khác có thể đang dùng; cần dữ liệu riêng thì tự tạo với tên có hậu tố "-p${n}".`],
+    result:'bảng test case (mã · tên · Đạt/Không đạt · ảnh minh chứng · lỗi), đường dẫn thư mục ảnh và lệnh chạy lại kịch bản của phần này',
+    merge:[`Gộp bảng kết quả của mọi phần (mã · tên · Đạt/Không đạt · ảnh minh chứng · lỗi), thống kê tổng số Đạt/Không đạt.`,
+      `Phần nào báo LỖI hoặc bỏ sót test case: tự chạy lại phần đó (dùng kịch bản phần đó đã viết, uitest <file> --only "<mã>").`,
+      `Chỉ bước này được ghi vào file kết quả chung (ví dụ cột Kết quả trong Excel test case).`]},
+  ba:{label:'BA',re:/\bba\b|business analy|phân tích nghiệp vụ|nghiệp vụ|đặc tả|user stor|\bsrs\b|\bbrd\b/i,
+    when:'tài liệu nghiệp vụ LỚN (đặc tả, user story, use case, luồng nghiệp vụ… cho từ 3 module/chức năng độc lập trở lên)',
+    how:'Đọc yêu cầu và tài liệu nguồn, chia theo module/chức năng',
+    indep:'mỗi phần viết trọn một nhóm module, phần nào cũng không phải viết lại nội dung của phần khác',
+    first:'mẫu tài liệu (mục lục, mẫu user story/use case, mẫu tiêu chí chấp nhận), cách đánh mã (mỗi phần một dải mã riêng, ví dụ US-DH-01 cho module Đơn hàng), danh sách vai trò người dùng, bảng thuật ngữ; ghi vào một file khung chung để các phần dùng',
+    example:{title:'Đơn hàng & Thanh toán',task:'chỉ dẫn đầy đủ cho phần này: các module, tài liệu nguồn, file khung chung, dải mã được dùng, file đầu ra của phần',merge:'gộp thành file đặc tả docs/srs.docx theo mục lục chung'},
+    small:'Tài liệu nhỏ',
+    rules:n=>[`Chỉ viết các module của phần này, vào file riêng của phần (ví dụ docs/<module>.md, hoặc đúng file đầu ra được giao).`,
+      `KHÔNG sửa tài liệu chung hay file khung chung: bước tổng hợp sẽ gộp. Dùng đúng mẫu, vai trò, thuật ngữ và dải mã đã chốt trong file khung.`,
+      `Chỗ nào liên quan tới module của phần khác (dữ liệu dùng chung, luồng đi qua nhiều module) thì ghi vào mục "Phụ thuộc với module khác", không tự viết phần của module đó.`,
+      `Thông tin còn thiếu thì ghi giả định hoặc đưa vào mục "Câu hỏi mở", không dừng cả phần để hỏi.`],
+    result:'danh sách module và mã (US/UC) đã viết, đường dẫn file của phần, các phụ thuộc với module khác và câu hỏi mở',
+    merge:[`Gộp tài liệu của mọi phần thành tài liệu hoàn chỉnh theo mục lục chung (một file hoặc bộ file như yêu cầu).`,
+      `Thống nhất thuật ngữ, vai trò, cách đánh mã và văn phong; bỏ nội dung trùng; xử lý các phụ thuộc giữa module mà các phần đã ghi lại.`,
+      `Phần nào báo LỖI hoặc thiếu module: tự viết bổ sung. Gom các câu hỏi mở thành một danh sách cho người dùng.`]},
+  data:{label:'Data',re:/\bdata\b|dữ liệu|analyst|thống kê|\bbi\b/i,
+    when:'phân tích dữ liệu LỚN (nhiều file/bảng/sheet, hoặc từ 3 mảng phân tích độc lập trở lên)',
+    how:'Xem các nguồn dữ liệu và câu hỏi cần trả lời, chia theo file/bảng, khu vực, kỳ báo cáo hoặc theo câu hỏi phân tích',
+    indep:'mỗi phần đọc nguồn riêng hoặc trả lời câu hỏi riêng, không phần nào chờ kết quả của phần khác',
+    first:'định nghĩa các chỉ số (công thức), cách làm sạch dữ liệu, đơn vị, mốc thời gian, định dạng bảng kết quả',
+    example:{title:'Doanh thu miền Bắc (Q1–Q3)',task:'chỉ dẫn đầy đủ cho phần này: file/sheet nguồn, định nghĩa chỉ số, câu hỏi cần trả lời, định dạng bảng kết quả, file đầu ra của phần',merge:'gộp thành báo cáo bao-cao-quy.xlsx kèm biểu đồ'},
+    small:'Dữ liệu nhỏ',
+    rules:n=>[`Chỉ phân tích phần dữ liệu/câu hỏi của phần này, dùng đúng định nghĩa chỉ số và cách làm sạch đã chốt.`,
+      `Chỉ ĐỌC file dữ liệu gốc, không sửa. Kết quả trung gian lưu vào file riêng của phần (ví dụ output/phan-${n}.csv).`,
+      `KHÔNG sửa báo cáo chung: bước tổng hợp sẽ gộp.`,
+      `Ghi rõ vấn đề chất lượng dữ liệu gặp phải (thiếu, trùng, bất thường) và cách đã xử lý.`],
+    result:'bảng số liệu chính, nhận xét, đường dẫn file kết quả của phần và ghi chú chất lượng dữ liệu',
+    merge:[`Gộp số liệu của mọi phần, kiểm tra tổng khớp với dữ liệu gốc và các phần dùng cùng định nghĩa chỉ số.`,
+      `Phần nào báo LỖI: tự phân tích lại phần đó.`,
+      `Chỉ bước này được ghi báo cáo chung (bảng tổng, biểu đồ, nhận định, khuyến nghị).`]},
+  research:{label:'Research',re:/research|nghiên cứu|khảo sát/i,
+    when:'nghiên cứu RỘNG (từ 3 chủ đề, đối thủ, thị trường hoặc nhóm nguồn độc lập trở lên)',
+    how:'Xác định các chủ đề/đối tượng cần nghiên cứu, chia theo chủ đề hoặc đối tượng',
+    indep:'mỗi phần nghiên cứu đối tượng riêng, không phần nào cần kết quả của phần khác',
+    first:'khung so sánh chung (tiêu chí, đơn vị, mốc thời gian, định dạng bảng, mức độ chi tiết)',
+    example:{title:'Đối thủ A, B',task:'chỉ dẫn đầy đủ cho phần này: đối tượng, khung tiêu chí, nguồn nên dùng, định dạng bảng kết quả',merge:'gộp thành báo cáo so sánh có khuyến nghị'},
+    small:'Chủ đề hẹp',
+    rules:n=>[`Chỉ nghiên cứu các đối tượng của phần này, theo đúng khung tiêu chí chung.`,
+      `Mọi số liệu và nhận định quan trọng phải có nguồn (link) và thời điểm.`,
+      `KHÔNG tạo hay sửa báo cáo chung: bước tổng hợp sẽ gộp. Kết quả nằm trong câu trả lời (file riêng của phần nếu dài).`],
+    result:'bảng theo khung tiêu chí chung kèm nguồn, các phát hiện chính và điểm chưa chắc chắn',
+    merge:[`Gộp kết quả mọi phần thành báo cáo chung: bảng so sánh theo khung tiêu chí, nhận định, khuyến nghị.`,
+      `Kiểm tra số liệu mâu thuẫn giữa các phần (khác nguồn, khác thời điểm) và ghi rõ cách xử lý.`,
+      `Phần nào báo LỖI hoặc thiếu: tự nghiên cứu bổ sung.`]},
+  marketing:{label:'Marketing',re:/marketing|content|nội dung|truyền thông|\bseo\b|copywrit|social/i,
+    when:'nhiều sản phẩm nội dung độc lập (từ 5 bài viết/post/kịch bản, hoặc từ 3 kênh/chiến dịch trở lên)',
+    how:'Liệt kê các sản phẩm cần làm, chia theo kênh, chủ đề hoặc nhóm bài',
+    indep:'mỗi phần làm trọn các sản phẩm của mình, không hai phần làm trùng chủ đề',
+    first:'giọng văn, thông điệp chính, đối tượng, từ khóa, quy cách (độ dài, hashtag, CTA), các ý đã giao cho từng phần để tránh trùng',
+    example:{title:'Facebook: 5 bài tuần 1',task:'chỉ dẫn đầy đủ cho phần này: kênh, số lượng, chủ đề từng bài, giọng văn, thông điệp, quy cách, file đầu ra của phần',merge:'gộp thành lịch đăng content-plan.xlsx'},
+    small:'Ít nội dung',
+    rules:n=>[`Chỉ làm các sản phẩm của phần này, đúng giọng văn, thông điệp và quy cách đã chốt.`,
+      `Lưu vào file riêng của phần (ví dụ content/phan-${n}.md). KHÔNG sửa file kế hoạch/lịch chung: bước tổng hợp sẽ gộp.`,
+      `Không lấy chủ đề hay ý đã giao cho phần khác.`],
+    result:'danh sách sản phẩm đã làm (tên · kênh · chủ đề), đường dẫn file của phần',
+    merge:[`Gộp mọi phần thành bộ nội dung hoàn chỉnh (và lịch đăng nếu có yêu cầu).`,
+      `Soát giọng văn thống nhất, bỏ ý trùng, kiểm tra thông điệp chính có đủ.`,
+      `Phần nào báo LỖI hoặc thiếu: tự làm bổ sung.`]}
+};
+// Which kind of split a team/role/agent text fits, or null (dev work and teams of no listed kind are never split)
+export function splitKind(text){
+  const s=String(text||'');if(DEV_RE.test(s))return null;
+  return Object.keys(SPLIT_KINDS).find(k=>SPLIT_KINDS[k].re.test(s))||null;
+}
+// Prompt part for a step that may split: mates = the other members of its team [{name, level}], max = most parts
+export function splitGuide(mates,max,kind='qa'){
+  const K=SPLIT_KINDS[kind]||SPLIT_KINDS.qa,ex=K.example;
+  return `
+CHIA VIỆC CHẠY SONG SONG: đội của bạn còn ${mates.length} người (${mates.map(m=>`${m.name} · ${LEVELS[m.level]||m.level}`).join(', ')}). Nếu bước này là ${K.when} thì ĐỪNG tự làm hết; chia cho cả đội làm cùng lúc:
+1. ${K.how}, chia thành 2–${max} phần có khối lượng gần bằng nhau. Các phần phải làm độc lập: ${K.indep}.
+2. Việc chung mà mọi phần đều cần (${K.first}) thì làm xong TRƯỚC khi chia, để các phần dùng lại.
+3. Trả lời ngắn cách chia và lý do, rồi đặt ở CUỐI CÙNG (sau phần "Kết quả:") đúng một khối:
+\`\`\`split
+{"parts":[{"title":"${ex.title}","task":"${ex.task}"}],"merge":"${ex.merge}"}
+\`\`\`
+"task" của mỗi phần phải tự đủ để người nhận làm ngay, không cần hỏi lại (người nhận không thấy cuộc trao đổi của bạn). Hệ thống giao mỗi phần cho một đồng đội, rồi giao lại cho bạn bước tổng hợp trong chính phiên làm việc này. ${K.small} thì tự làm luôn, không chia.
+`;
+}
+// What a part is told after its own task: it runs next to its teammates, and how it must answer
+export function partNote(kind,no,count,stepTitle,by){
+  const K=SPLIT_KINDS[kind]||SPLIT_KINDS.qa;
+  return `ĐÂY LÀ PHẦN ${no}/${count} của bước "${stepTitle}" do ${by} chia ra; các phần còn lại do đồng đội làm CÙNG LÚC trên cùng máy, cùng thư mục làm việc. Quy tắc khi làm song song:
+${K.rules(no).map(r=>`- ${r}`).join('\n')}
+Kết quả trả lời: ${K.result}.`;
+}
+// The merge step's task: count = number of parts, extra = what the splitter asked for the merge
+export function mergeTask(kind,count,stepTitle,extra,original){
+  const K=SPLIT_KINDS[kind]||SPLIT_KINDS.qa;
+  return `Các đồng đội đã làm xong ${count} phần bạn chia (kết quả từng phần ở "Kết quả các bước trước"). Tổng hợp thành kết quả của cả bước "${stepTitle}":
+${K.merge.map(r=>`- ${r}`).join('\n')}${extra?`
+- Yêu cầu tổng hợp bạn đặt ra khi chia: ${extra}`:''}
+Việc gốc của bước: ${original}`;
+}
+// The split block of a step's answer: {parts:[{title, task}], merge, clean: the answer without the block} or null
+export function parseSplit(text){
+  const m=String(text||'').match(/```split\s*([\s\S]*?)```/i);if(!m)return null;
+  let j;try{j=JSON.parse(m[1])}catch{return null}
+  const parts=(Array.isArray(j?.parts)?j.parts:[]).map(p=>({title:String(p?.title||'').trim().slice(0,80),task:String(p?.task||'').trim().slice(0,4000)})).filter(p=>p.task).slice(0,MAX_SPLIT);
+  return {parts,merge:String(j?.merge||'').trim().slice(0,2000),clean:String(text).replace(m[0],'').trim()};
 }
 
 // ---------- Teams and levels ----------
