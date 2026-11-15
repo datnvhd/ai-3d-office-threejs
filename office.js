@@ -12,12 +12,15 @@ import {mergeGeometries} from 'three/addons/utils/BufferGeometryUtils.js';
 export const ROOM={x0:-5.6,x1:16.8,z0:-4,z1:12,w:22.4,d:16,cx:5.6,cz:4};
 const FY=-.06,WALL_H=2.8,WIN=[.85,2.35],TALL=[FY+.05,2.62],PI=Math.PI;
 const geoCache=new Map(),matCache=new Map();
+// desk monitors redraw their canvas every SCREEN_MS (slower in light mode: each redraw is a texture upload);
+// light mode also builds round parts with fewer segments (Q). Call before createOffice.
+let SCREEN_MS=120,Q=1;export const setLite=on=>{SCREEN_MS=on?400:120;Q=on?.6:1};const q=n=>Math.max(3,Math.round(n*Q));
 const geo=(k,make)=>{if(!geoCache.has(k))geoCache.set(k,make());return geoCache.get(k)};
-const rbox=(w,h,d,r=.03)=>geo(`r${w}_${h}_${d}_${r}`,()=>new RoundedBoxGeometry(w,h,d,r>.025?2:1,Math.min(r,w/2-.002,h/2-.002,d/2-.002)));
+const rbox=(w,h,d,r=.03)=>geo(`r${w}_${h}_${d}_${r}`,()=>new RoundedBoxGeometry(w,h,d,r>.025&&Q===1?2:1,Math.min(r,w/2-.002,h/2-.002,d/2-.002)));
 const box=(w,h,d)=>geo(`b${w}_${h}_${d}`,()=>new THREE.BoxGeometry(w,h,d));
-const cyl=(rt,rb,h,n=14)=>geo(`y${rt}_${rb}_${h}_${n}`,()=>new THREE.CylinderGeometry(rt,rb,h,n));
-const sph=(r,w=14,h=10)=>geo(`s${r}_${w}`,()=>new THREE.SphereGeometry(r,w,h));
-const tor=(r,t,arc=PI*2)=>geo(`t${r}_${t}_${arc}`,()=>new THREE.TorusGeometry(r,t,8,24,arc));
+const cyl=(rt,rb,h,n=14)=>geo(`y${rt}_${rb}_${h}_${n}`,()=>new THREE.CylinderGeometry(rt,rb,h,q(n)));
+const sph=(r,w=14,h=10)=>geo(`s${r}_${w}`,()=>new THREE.SphereGeometry(r,q(w),q(h)));
+const tor=(r,t,arc=PI*2)=>geo(`t${r}_${t}_${arc}`,()=>new THREE.TorusGeometry(r,t,q(8),q(24),arc));
 const plane=(w,h)=>geo(`p${w}_${h}`,()=>new THREE.PlaneGeometry(w,h));
 const leafGeo=()=>geo('leaf',()=>new THREE.LatheGeometry([[0,0],[.3,.12],[.5,.38],[.42,.68],[.18,.9],[0,1]].map(p=>new THREE.Vector2(...p)),10));
 const mat=(c,rough=.6,extra)=>{const k=`${c}_${rough}_${extra?JSON.stringify(extra):''}`;if(!matCache.has(k))matCache.set(k,new THREE.MeshStandardMaterial({color:c,roughness:rough,metalness:0,...extra}));return matCache.get(k)};
@@ -410,7 +413,7 @@ const WORK=(()=>{
   };
   const mats={};for(const k of Object.keys(draw)){const c=document.createElement('canvas');c.width=W;c.height=H;const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;mats[k]={ctx:c.getContext('2d'),tex,m:new THREE.MeshBasicMaterial({map:tex,toneMapped:false}),used:0}}
   let last=0;
-  return {mats,update(t,shown){if(t-last<120)return;last=t;for(const [k,o] of Object.entries(mats))if(shown[k]){draw[k](o.ctx,t);o.tex.needsUpdate=true}}};
+  return {mats,update(t,shown){if(t-last<SCREEN_MS)return;last=t;for(const [k,o] of Object.entries(mats))if(shown[k]){draw[k](o.ctx,t);o.tex.needsUpdate=true}}};
 })();
 // Closed meeting room in the front-left of the added space, twice the first size (x∈[-5.44,1.2], z∈[5.4,11.6]): the outer
 // wall with its window is the left side; long table the team stands around when the Director plans (wander.js SEATS),

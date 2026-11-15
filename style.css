@@ -394,3 +394,7 @@
 .pwf{position:relative;display:flex;min-width:0}.pwf>input{flex:1;width:100%;min-width:0;padding-right:38px!important;box-sizing:border-box}.pw{-webkit-text-security:disc;text-security:disc}.pw.show{-webkit-text-security:none;text-security:none}.pw:placeholder-shown{-webkit-text-security:none}.rpass .pwf{flex:1}.pw-eye{position:absolute;right:4px;top:50%;transform:translateY(-50%);width:30px;height:30px;display:grid;place-items:center;border:0;border-radius:7px;background:transparent;color:#8d98a9;cursor:pointer;padding:0}.pw-eye:hover{color:#f4966b;background:#ffffff14}.lgrid .pw-eye{width:26px;height:26px}.lgrid .pw-eye:hover{background:#7c5ce614;color:#7c5ce6}.pw-eye .pw-shut{display:none}.pwf:has(.pw.show) .pw-eye .pw-open{display:none}.pwf:has(.pw.show) .pw-eye .pw-shut{display:inline}
 .toktag{white-space:nowrap}
 .dlvideo{margin-top:8px;display:flex;justify-content:center;background:#0e1120;border-radius:10px;padding:6px}.dlvideo video{width:100%;max-width:230px;aspect-ratio:9/16;border-radius:8px;background:#000}.pv-box .dlvideo video{max-width:300px}
+/* Light mode (weak machines): an endless CSS animation makes the browser recompose the whole window, 3D canvas included,
+   60 times a second; the spinners, striped live bars and blinking dots stand still here */
+.lite .cdot.checking,.lite .spinner,.lite .progress.live i,.lite .tag.busy::after{animation:none}
+.lite .tag.busy::after{border-color:#f08a3c}

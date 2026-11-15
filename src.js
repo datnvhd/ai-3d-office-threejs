@@ -1,11 +1,11 @@
 import * as THREE from 'three';
 import './style.css';
-import {createCharacter,PRESETS} from './characters.js';
+import {createCharacter,PRESETS,setCharDetail} from './characters.js';
 import {attachModel} from './character-models.js';
 import {initClaudeConnect} from './claude-connect.js';
 import {initCodexConnect} from './codex-connect.js';
 import {initGoogleConnect} from './google-connect.js';
-import {createOffice} from './office.js';
+import {createOffice,setLite} from './office.js';
 import {createWander,ROW_X} from './wander.js';
 import {createOutdoor} from './outdoor.js';
 import {initMachineConnect,machineApi,pickWorkdir,vcsBadge,quotaLine} from './machine-connect.js';
@@ -61,11 +61,20 @@ normalizeLeaders(agents);
 const world=new THREE.Scene();
 // Phone: touch screen up to 900 px wide, or a phone turned sideways (same test as the redirect in index.html)
 const PHONE_Q='(pointer:coarse) and (max-width:900px), (pointer:coarse) and (max-height:500px)',PHONE0=matchMedia(PHONE_Q).matches;
-const renderer=new THREE.WebGLRenderer({antialias:!PHONE0,alpha:false});renderer.setPixelRatio(Math.min(devicePixelRatio,1.5));renderer.shadowMap.enabled=!PHONE0;renderer.shadowMap.autoUpdate=false;renderer.shadowMap.type=THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.65;document.querySelector('#scene').appendChild(renderer.domElement);
+// Light mode for weak machines (4 cores or fewer, Intel HD/UHD or software GL): no antialiasing, cheaper and smaller
+// shadow map, fewer frames and slower screen animations. localStorage office-lite = '1' / '0' forces it on or off.
+const LITE=(()=>{
+  try{const v=localStorage.getItem('office-lite');if(v==='1'||v==='0')return v==='1'}catch{}
+  let gpu='';try{const gl=document.createElement('canvas').getContext('webgl2')||document.createElement('canvas').getContext('webgl'),ext=gl?.getExtension('WEBGL_debug_renderer_info');gpu=ext?gl.getParameter(ext.UNMASKED_RENDERER_WEBGL):'';gl?.getExtension('WEBGL_lose_context')?.loseContext()}catch{}
+  return (navigator.hardwareConcurrency||8)<=4||/Intel.*(HD|UHD) Graphics|SwiftShader|llvmpipe|Microsoft Basic Render/i.test(gpu);
+})();
+setLite(LITE);setCharDetail(LITE);document.documentElement.classList.toggle('lite',LITE);if(LITE)console.info('Văn phòng 3D: chế độ nhẹ (máy yếu)');
+const renderer=new THREE.WebGLRenderer({antialias:!PHONE0&&!LITE,alpha:false});renderer.setPixelRatio(Math.min(devicePixelRatio,LITE?1:1.5));renderer.shadowMap.enabled=!PHONE0;renderer.shadowMap.autoUpdate=false;renderer.shadowMap.type=LITE?THREE.PCFShadowMap:THREE.PCFSoftShadowMap;renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.65;document.querySelector('#scene').appendChild(renderer.domElement);
 const camera=new THREE.PerspectiveCamera(40,1,.1,240);let theta=Math.PI/4,phi=.96,dist=PHONE0?54:37;
 // on a phone the sheet covers the lower part: the picture is shifted up by phShift px so the office sits in the free part
-let phShift=0;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
+let phShift=0,camMovedT=0,wakeT=0;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camMovedT=performance.now();if(wakeT){clearTimeout(wakeT);wakeT=0;nextT=0;requestAnimationFrame(animate)}camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
 const room=createOffice(world,renderer),office=room.group,pickables=[];
+if(LITE)world.traverse(o=>{if(o.isLight&&o.castShadow)o.shadow.mapSize.set(1024,1024)});
 function agentCharacter(agent){const g=new THREE.Group();g.position.set(agent.x,0,agent.z);g.rotation.y=agent.yaw??.35;office.add(g);agent.char=createCharacter(agent.look);g.add(agent.char.group);const hit=new THREE.Mesh(new THREE.CylinderGeometry(.43,.43,2,12),new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));hit.position.y=1;hit.userData.agent=agent.id;g.add(hit);pickables.push(hit);agent.group=g;agent.labelPos=new THREE.Vector3(agent.x,2.05,agent.z);const ring=new THREE.Mesh(new THREE.RingGeometry(.37,.42,32),new THREE.MeshBasicMaterial({color:agent.color,side:THREE.DoubleSide,transparent:true,opacity:0}));ring.rotation.x=-Math.PI/2;ring.position.y=.013;g.add(ring);agent.ring=ring;return g}
 // Characters stand in front of their desk with the chair pushed to one side
 for(const b of BUILTIN)room.workstation(b.x,b.z,b.desk);// built-in desks stay even when their agent is deleted
@@ -529,14 +538,21 @@ setInterval(()=>{let changed=false;
 selectAgent(selected.id);renderRunNote();updateStats();syncRemote();
 const HOME_VIEW=[Math.PI/4,.96,37];$('reset').onclick=()=>{[theta,phi,dist]=HOME_VIEW;updateCamera()};const guide=$('guide');$('help').onclick=()=>guide.classList.remove('hidden');$('closeguide').onclick=$('okguide').onclick=()=>guide.classList.add('hidden');
 let dragging=false,moved=0,px=0,py=0,touchN=0;renderer.domElement.addEventListener('pointerdown',e=>{dragging=true;moved=0;px=e.clientX;py=e.clientY;renderer.domElement.setPointerCapture(e.pointerId)});renderer.domElement.addEventListener('pointermove',e=>{if(!dragging||touchN>1)return;const dx=e.clientX-px,dy=e.clientY-py;moved+=Math.abs(dx)+Math.abs(dy);theta-=dx*.006;phi=Math.max(.40,Math.min(1.38,phi+dy*.005));px=e.clientX;py=e.clientY;updateCamera()});renderer.domElement.addEventListener('pointerup',e=>{dragging=false;if(moved>7)return;const p=new THREE.Vector2(e.clientX/innerWidth*2-1,-e.clientY/innerHeight*2+1);const ray=new THREE.Raycaster();ray.setFromCamera(p,camera);const hits=ray.intersectObjects(pickables);if(hits.length)openAgent(hits[0].object.userData.agent)});renderer.domElement.addEventListener('wheel',e=>{dist=Math.max(10,Math.min(60,dist+e.deltaY*.02));updateCamera()},{passive:true});let lastT=0,nextT=0,shadowT=0,sizeK='';
-// At most 60 frames a second (30 while the window is in the background), shadows redrawn at most 30 times a second,
-// and the canvas resized only when the window size changes
-function animate(t){requestAnimationFrame(animate);const step=document.hasFocus()?1000/60:1000/30;if(t<nextT-1)return;nextT=Math.max(nextT+step,t-step);
-const dt=Math.min(.1,(t-lastT)/1000);lastT=t;wander.update(dt);outdoor.update(t,dt);
-if(t-shadowT>=32){renderer.shadowMap.needsUpdate=true;shadowT=t}
+// Frame rate by what the user is doing: 60 a second only while the camera moves (drag, zoom, pinch), 30 (light mode 20)
+// while the mouse or keyboard was used in the last 10 s, 20 (light mode 12) when the window is left alone, 12 (light
+// mode 8) when it is in the background. Each frame costs a fixed amount to show (measured: about half the cost of a
+// frame on an Intel HD 630 does not depend on what is drawn), so fewer frames is what helps most. The scene never stands still (people,
+// cars, screens), so the cap is what keeps the CPU/GPU idle. Shadows: the sun is fixed, so a camera move needs no new
+// shadow map; it is redrawn ~10 times a second (light mode 5) for the moving people. Canvas resized only on a size change.
+// Between frames the loop sleeps in a timer instead of waking on every screen refresh; a camera move wakes it at once.
+function nextFrame(){const wait=nextT-performance.now()-4;if(wait>8)wakeT=setTimeout(()=>{wakeT=0;requestAnimationFrame(animate)},wait);else requestAnimationFrame(animate)}
+let inputT=0;for(const ev of ['pointermove','pointerdown','keydown','wheel'])addEventListener(ev,()=>{inputT=performance.now()},{capture:true,passive:true});
+function animate(t){const fps=t-camMovedT<1500?60:!document.hasFocus()?(LITE?8:12):t-inputT<10000?(LITE?20:30):(LITE?12:20),step=1000/fps;if(t<nextT-1)return nextFrame();nextT=Math.max(nextT+step,t-step);
+const dt=Math.min(.15,(t-lastT)/1000);lastT=t;wander.update(dt);outdoor.update(t,dt);
+if(t-shadowT>=(LITE?200:100)){renderer.shadowMap.needsUpdate=true;shadowT=t}
 const k=`${innerWidth}x${innerHeight}`;if(k!==sizeK){sizeK=k;renderer.setSize(innerWidth,innerHeight,false)}camera.aspect=innerWidth/innerHeight;if(phShift)camera.setViewOffset(innerWidth,innerHeight,0,phShift,innerWidth,innerHeight);else if(camera.view)camera.clearViewOffset();camera.updateProjectionMatrix();const tags=[],tagScale=Math.max(.72,Math.min(1,1.25-dist/90));
 for(const a of agents){a.group.getWorldPosition(a.labelPos);a.labelPos.y=2.05;const p=a.labelPos.clone().project(camera);const visible=p.z<1;const x=(p.x*.5+.5)*innerWidth,y=(-p.y*.5+.5)*innerHeight;tags.push({a,x,y,z:p.z,visible});if(a.bubble?.classList.contains('show')){a.bubble.style.transform=`translate(-50%,-100%) translate(${x}px,${y-12}px)`;a.bubble.style.visibility=visible?'visible':'hidden'}a.char.update(t)}
-placeTags(tags,tagScale);room.update(t);renderer.render(world,camera)}requestAnimationFrame(animate);
+placeTags(tags,tagScale);room.update(t);renderer.render(world,camera);nextFrame()}requestAnimationFrame(animate);
 
 // Outdoor scenery switcher (remembered per browser)
 const sceneryEl=document.getElementById('scenery');sceneryEl.innerHTML='<span>BỐI CẢNH</span>'+Object.entries(room.scenes).map(([k,s])=>`<button data-scene="${k}" title="${s.label}"><i style="background:${s.swatch}"></i><em>${s.label}</em></button>`).join('');

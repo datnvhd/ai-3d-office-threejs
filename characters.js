@@ -8,13 +8,15 @@ import {RoundedBoxGeometry} from 'three/examples/jsm/geometries/RoundedBoxGeomet
 // The face and hair are modelled on a head of radius R and the whole head group is scaled by HEAD_K.
 const SKIN=0xffd3b5,HAND=0xffdcc6,R=.31,HEAD_K=.7,HEAD_Y=1.45,UP=new THREE.Vector3(0,1,0);
 const geoCache=new Map(),matCache=new Map();
+// light mode: fewer segments on every curved part (each person is ~40k triangles at full detail)
+let Q=1;export const setCharDetail=lite=>{Q=lite?.6:1};const q=n=>Math.max(3,Math.round(n*Q));
 const geo=(k,make)=>{if(!geoCache.has(k))geoCache.set(k,make());return geoCache.get(k)};
-const sph=(r,w=16,h=12)=>geo(`s${r}_${w}_${h}`,()=>new THREE.SphereGeometry(r,w,h));
-const cap=(r,l)=>geo(`c${r}_${l}`,()=>new THREE.CapsuleGeometry(r,l,4,12));
-const cyl=(rt,rb,h,n=14)=>geo(`y${rt}_${rb}_${h}_${n}`,()=>new THREE.CylinderGeometry(rt,rb,h,n));
-const tor=(r,t,arc=Math.PI*2)=>geo(`t${r}_${t}_${arc}`,()=>new THREE.TorusGeometry(r,t,8,24,arc));
+const sph=(r,w=16,h=12)=>geo(`s${r}_${w}_${h}`,()=>new THREE.SphereGeometry(r,q(w),q(h)));
+const cap=(r,l)=>geo(`c${r}_${l}`,()=>new THREE.CapsuleGeometry(r,l,q(4),q(12)));
+const cyl=(rt,rb,h,n=14)=>geo(`y${rt}_${rb}_${h}_${n}`,()=>new THREE.CylinderGeometry(rt,rb,h,q(n)));
+const tor=(r,t,arc=Math.PI*2)=>geo(`t${r}_${t}_${arc}`,()=>new THREE.TorusGeometry(r,t,q(8),q(24),arc));
 const box=(w,h,d)=>geo(`b${w}_${h}_${d}`,()=>new THREE.BoxGeometry(w,h,d));
-const rbox=(w,h,d)=>geo(`r${w}_${h}_${d}`,()=>new RoundedBoxGeometry(w,h,d,2,Math.min(w,h,d)*.45));
+const rbox=(w,h,d)=>geo(`r${w}_${h}_${d}`,()=>new RoundedBoxGeometry(w,h,d,Q<1?1:2,Math.min(w,h,d)*.45));
 const mat=(c,rough=.6,extra)=>{const k=`${c}_${rough}_${extra?JSON.stringify(extra):''}`;if(!matCache.has(k))matCache.set(k,new THREE.MeshStandardMaterial({color:c,roughness:rough,metalness:0,...extra}));return matCache.get(k)};
 const shade=(c,f)=>{const o=new THREE.Color(c);return o.setRGB(Math.min(1,o.r*f),Math.min(1,o.g*f),Math.min(1,o.b*f)).getHex()};
 function add(p,g,m,pos=[0,0,0],s=1,r){const o=new THREE.Mesh(g,m);o.position.set(...pos);typeof s==='number'?o.scale.setScalar(s):o.scale.set(...s);if(r)o.rotation.set(...r);p.add(o);return o}
@@ -25,7 +27,7 @@ function onHead(head,a,b,lift=0){const g=new THREE.Group(),r=R+lift;g.position.s
 
 // Soft hair clump: rounded top, tapering tip at -y, bent along z (bend > 0 flicks the tip outward, < 0 hugs the head)
 const clump=bend=>geo(`clump${bend}`,()=>{
-  const g=new THREE.LatheGeometry([[0,-1],[.16,-.93],[.42,-.72],[.7,-.4],[.9,-.05],[1,.3],[.96,.6],[.78,.84],[.45,.98],[0,1]].map(p=>new THREE.Vector2(...p)),20);
+  const g=new THREE.LatheGeometry([[0,-1],[.16,-.93],[.42,-.72],[.7,-.4],[.9,-.05],[1,.3],[.96,.6],[.78,.84],[.45,.98],[0,1]].map(p=>new THREE.Vector2(...p)),q(20));
   const p=g.attributes.position;for(let i=0;i<p.count;i++){const t=(1-p.getY(i))/2;p.setZ(i,p.getZ(i)+bend*t*t)}
   g.computeVertexNormals();return g});
 const B=v=>Math.round(v*10)/10;// bends are cached in .1 steps
@@ -110,7 +112,7 @@ function face(head,o){
   }
   add(onHead(head,0,-.25,.004),sph(.015),mat(0xf0a88c,.5),[0,0,0],[1.2,.8,.6]);
   const mo=onHead(head,0,-.4,.012);
-  if(o.mouth==='open'){add(mo,geo('mouth',()=>new THREE.CircleGeometry(.04,24,Math.PI,Math.PI)),mat(0x8e3b3b,.5),[0,.014,0]);add(mo,geo('tongue',()=>new THREE.CircleGeometry(.023,16,Math.PI,Math.PI)),mat(0xff8f8f,.5),[0,-.004,.001])}
+  if(o.mouth==='open'){add(mo,geo('mouth',()=>new THREE.CircleGeometry(.04,q(24),Math.PI,Math.PI)),mat(0x8e3b3b,.5),[0,.014,0]);add(mo,geo('tongue',()=>new THREE.CircleGeometry(.023,q(16),Math.PI,Math.PI)),mat(0xff8f8f,.5),[0,-.004,.001])}
   else add(mo,tor(o.mouth==='grin'?.038:.03,.007,Math.PI),mat(0x8a3a32,.5),[0,.016,0],1,[0,0,Math.PI]);
   return eyes;
 }
@@ -118,7 +120,7 @@ function face(head,o){
 // Hair: a smooth scalp shell plus a few large overlapping rounded locks (one main colour, few highlights)
 function hair(head,o){
   const hm=mat(o.hairColor,.55),hl=mat(shade(o.hairColor,1.12),.5);let seed=o.seed||1;const rnd=()=>(seed=seed*16807%2147483647)/2147483647;
-  const shell=(r,len,tilt)=>add(head,geo(`shell${r}_${len}`,()=>new THREE.SphereGeometry(R*r,32,20,0,Math.PI*2,0,len)),hm,[0,0,0],1,[-tilt,0,0]);
+  const shell=(r,len,tilt)=>add(head,geo(`shell${r}_${len}`,()=>new THREE.SphereGeometry(R*r,q(32),q(20),0,Math.PI*2,0,len)),hm,[0,0,0],1,[-tilt,0,0]);
   if(o.hair==='messy'){
     shell(1.08,1.95,.6);
     // fluffy fringe falling over the forehead
@@ -165,8 +167,8 @@ function hair(head,o){
 // Heights (feet at 0): ankle .17, hip pivot .8, hoodie hem .74, shoulders 1.13, neck 1.17–1.3, head centre 1.43
 const HIP=.8,SH_Y=1.1,SH_X=.2,NECK=1.2,ZS=.72;
 // Lathe profile (radius by height) squashed front-to-back; phi0/phiLen leave a front opening (open jacket)
-const torsoGeo=(k,prof,phi0=0,len=Math.PI*2)=>geo(k,()=>{const g=new THREE.LatheGeometry(prof.map(([r,y])=>new THREE.Vector2(r,y)),24,phi0,len);g.scale(1,1,ZS);return g});
-const legGeo=(k,prof)=>geo(k,()=>new THREE.LatheGeometry(prof.map(([r,y])=>new THREE.Vector2(r,y)),14));
+const torsoGeo=(k,prof,phi0=0,len=Math.PI*2)=>geo(k,()=>{const g=new THREE.LatheGeometry(prof.map(([r,y])=>new THREE.Vector2(r,y)),q(24),phi0,len);g.scale(1,1,ZS);return g});
+const legGeo=(k,prof)=>geo(k,()=>new THREE.LatheGeometry(prof.map(([r,y])=>new THREE.Vector2(r,y)),q(14)));
 const HOODIE=[[0,.72],[.19,.725],[.198,.8],[.204,.92],[.2,1.03],[.186,1.1],[.15,1.16],[.085,1.2],[0,1.205]];
 const JACKET=HOODIE.map(([r,y])=>[r?r+.016:0,y+(y<.73?-.005:0)]);
 const SHIRT=[[0,.74],[.172,.745],[.18,.82],[.19,.94],[.188,1.04],[.174,1.11],[.14,1.165],[.075,1.2],[0,1.205]];
@@ -239,8 +241,8 @@ function varsity(g,o){
   const jm=mat(o.top,.7,{side:THREE.DoubleSide});
   add(g,torsoGeo('jacket',JACKET,GAP,Math.PI*2-GAP*2),jm);
   const band=mat(o.band??o.top,.75),stripe=mat(o.stripe??0xffffff,.7);
-  add(g,geo('jhem',()=>new THREE.CylinderGeometry(.218,.214,.055,24,1,true,GAP,Math.PI*2-GAP*2)),mat(o.band??o.top,.75,{side:THREE.DoubleSide}),[0,.745,0],[1,1,ZS]);
-  for(const y of[.758,.738])add(g,geo('jstr',()=>new THREE.CylinderGeometry(.221,.221,.006,24,1,true,GAP,Math.PI*2-GAP*2)),mat(o.stripe??0xffffff,.7,{side:THREE.DoubleSide}),[0,y,0],[1,1,ZS]);
+  add(g,geo('jhem',()=>new THREE.CylinderGeometry(.218,.214,.055,q(24),1,true,GAP,Math.PI*2-GAP*2)),mat(o.band??o.top,.75,{side:THREE.DoubleSide}),[0,.745,0],[1,1,ZS]);
+  for(const y of[.758,.738])add(g,geo('jstr',()=>new THREE.CylinderGeometry(.221,.221,.006,q(24),1,true,GAP,Math.PI*2-GAP*2)),mat(o.stripe??0xffffff,.7,{side:THREE.DoubleSide}),[0,y,0],[1,1,ZS]);
   // front edges with snaps, standing knit collar
   for(const s of[-1,1]){
     const a=s*GAP;
@@ -347,20 +349,29 @@ function robot(p,x,z){
   add(h,sph(.15),w,[0,0,0],[1.15,.88,1]);add(h,sph(.12),mat(0x1c2340,.2),[0,-.01,.07],[1.1,.72,.78]);
   for(const s of[-1,1]){
     add(h,cap(.016,.018),glow,[s*.05,0,.162],[1,1,.5]);
-    add(h,geo('ear',()=>new THREE.ConeGeometry(.05,.09,16)),w,[s*.1,.13,0],1,[0,0,-s*.35]);
-    add(h,geo('earIn',()=>new THREE.ConeGeometry(.028,.05,12)),mat(0xc9b8ff,.5),[s*.1,.125,.025],1,[0,0,-s*.35]);
+    add(h,geo('ear',()=>new THREE.ConeGeometry(.05,.09,q(16))),w,[s*.1,.13,0],1,[0,0,-s*.35]);
+    add(h,geo('earIn',()=>new THREE.ConeGeometry(.028,.05,q(12))),mat(0xc9b8ff,.5),[s*.1,.125,.025],1,[0,0,-s*.35]);
   }
   return g;
 }
 
+// Plain opaque colours (no texture, no glow) that differ only in colour share one vertex-coloured material per
+// roughness/side: each animated part then draws in one call instead of one per colour (~59 → ~20 per person)
+const vcMats=new Map();
+const plain=m=>m.isMeshStandardMaterial&&!m.map&&!m.transparent&&m.opacity===1&&!m.emissive?.getHex();
+const vcMat=m=>{const k=`${m.roughness}|${m.metalness}|${m.side}`;if(!vcMats.has(k))vcMats.set(k,new THREE.MeshStandardMaterial({vertexColors:true,roughness:m.roughness,metalness:m.metalness,side:m.side}));return vcMats.get(k)};
 // Merge every static mesh under each animated part into one mesh per material (pivots stay separate groups)
 function mergeTree(g){
   g.updateMatrixWorld(true);
   const inv=g.matrixWorld.clone().invert(),buckets=new Map(),done=[],pivots=[];
-  (function walk(o){for(const c of o.children){if(c.userData.pivot){pivots.push(c);continue}if(c.isMesh){const m=new THREE.Matrix4().multiplyMatrices(inv,c.matrixWorld),gg=c.geometry.index?c.geometry.clone():c.geometry.clone();gg.applyMatrix4(m);if(!buckets.has(c.material))buckets.set(c.material,[]);buckets.get(c.material).push(gg);done.push(c)}walk(c)}})(g);
+  (function walk(o){for(const c of o.children){if(c.userData.pivot){pivots.push(c);continue}if(c.isMesh){const m=new THREE.Matrix4().multiplyMatrices(inv,c.matrixWorld),gg=c.geometry.clone();gg.applyMatrix4(m);
+    let key=c.material;
+    if(plain(c.material)){key=vcMat(c.material);const {r,g:gr,b}=c.material.color,n=gg.attributes.position.count,a=new Float32Array(n*3);for(let i=0;i<n;i++){a[i*3]=r;a[i*3+1]=gr;a[i*3+2]=b}gg.setAttribute('color',new THREE.BufferAttribute(a,3))}
+    if(!buckets.has(key))buckets.set(key,[]);buckets.get(key).push(gg);done.push(c)}walk(c)}})(g);
   for(const c of done)c.removeFromParent();
   for(const [m,list] of buckets){
-    for(const gg of list)for(const k of Object.keys(gg.attributes))if(!['position','normal','uv'].includes(k))gg.deleteAttribute(k);
+    const keep=m.vertexColors?['position','normal','color']:['position','normal','uv'];// every part of a bucket needs the same attributes
+    for(const gg of list)for(const k of Object.keys(gg.attributes))if(!keep.includes(k))gg.deleteAttribute(k);
     const flat=list.some(x=>!x.index),parts=flat?list.map(x=>x.index?x.toNonIndexed():x):list,merged=mergeGeometries(parts,false);parts.forEach(x=>x.dispose());list.forEach(x=>x.dispose());if(!merged)continue;
     const mesh=new THREE.Mesh(merged,m);mesh.castShadow=!m.transparent;mesh.receiveShadow=true;g.add(mesh);
   }
