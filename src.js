@@ -21,7 +21,7 @@ let quotaNow=null;// what is left of each AI plan (machine-connect.js loads it)
 const app=document.querySelector('#app');
 // Left column: assign work · right column: what the agents did with it (running, done with result, failed with error)
 app.innerHTML=`<div id="scene"></div><div class="top"><div class="actions"><button id="gfx" title="Chất lượng đồ họa của thiết bị này">⚙ Đồ họa</button><button id="reset">⟲ Đặt lại góc nhìn</button><button id="help">? Hướng dẫn</button></div></div><div class="floatinglabels" id="labels"></div>
-<aside class="side side-left"><div class="panel-kicker">① GIAO VIỆC</div><h2 class="side-title">Giao nhiệm vụ cho AI</h2><div class="section-title">CHỌN NHÂN VIÊN <span id="agent-count"></span><span class="viewsw"><button data-view="grid" title="Xem dạng lưới">▦</button><button data-view="list" title="Xem dạng danh sách, theo đội">☰</button></span></div><div class="agent-pick" id="avatars"></div><div class="profile"><div class="profile-avatar" id="profile-icon">◉</div><div class="profile-main"><h3 id="profile-name"></h3><span id="profile-role"></span><p class="profile-desc" id="profile-desc"></p></div><div class="profile-tools"><button class="ptool" id="agentEdit" title="Sửa tên, vai trò, mô tả">✎</button><button class="ptool" id="agentDel" title="Xóa agent">🗑</button></div></div><div class="status" id="profile-status"></div><div class="section-title">YÊU CẦU CÔNG VIỆC</div><textarea id="task" placeholder="Ví dụ: Phân tích báo cáo doanh thu quý III và tổng hợp 5 insight quan trọng... (dán ảnh bằng Ctrl+V, kéo file vào đây, gõ / để dùng skill). Enter để giao việc, Shift+Enter để xuống dòng."></textarea><div class="opts"><div><label class="smalllabel">Mức ưu tiên</label><select id="priority"><option>Bình thường</option><option>Ưu tiên cao</option><option>Khẩn cấp</option></select></div><div><label class="smalllabel">Nơi thực thi</label><select id="runOn"><option value="machine">💻 Máy cá nhân</option><option value="sim">🎲 Mô phỏng</option></select></div><div><label class="smalllabel">Model AI</label><select id="model" title="Tự chọn: Director chọn model rẻ nhất đủ làm tốt từng bước. Giá: USD / 1 triệu token vào/ra"></select></div><div><label class="smalllabel">Mức suy luận</label><select id="effort" title="Suy luận càng sâu càng tốn token: Thấp ≈ một nửa Cao, Rất cao ≈ gấp đôi Cao"></select></div></div><label class="mcheck wfopt"><input type="checkbox" id="useWf"> 🔀 Tự tạo luồng công việc khi giao cho Director (Director chia việc cho các agent liên quan)</label><div class="webopt" id="webOpt"><label class="mcheck"><input type="checkbox" id="useWeb"> 🌐 Cho phép mở web & thao tác trình duyệt</label><select id="webSite" class="hidden"></select></div><p class="runnote" id="runNote"></p><button class="assign" id="assign">✦ Giao việc cho AI</button></aside>
+<aside class="side side-left"><div class="panel-kicker">① GIAO VIỆC</div><h2 class="side-title">Giao nhiệm vụ cho AI</h2><div class="section-title">CHỌN NHÂN VIÊN <span id="agent-count"></span><span class="viewsw"><button data-view="grid" title="Xem dạng lưới">▦</button><button data-view="list" title="Xem dạng danh sách, theo đội">☰</button></span></div><div class="agent-pick" id="avatars"></div><div class="profile"><div class="profile-avatar" id="profile-icon">◉</div><div class="profile-main"><h3 id="profile-name"></h3><span id="profile-role"></span><p class="profile-desc" id="profile-desc"></p></div><div class="profile-tools"><button class="ptool" id="agentEdit" title="Sửa tên, vai trò, mô tả">✎</button><button class="ptool" id="agentDel" title="Xóa agent">🗑</button></div></div><div class="status" id="profile-status"></div><div class="section-title">YÊU CẦU CÔNG VIỆC</div><div id="appOpt" class="appopt hidden"><label class="mcheck"><input type="checkbox" id="useApp"> 📱 Test app trên điện thoại <small id="appWhat"></small></label></div><textarea id="task" placeholder="Ví dụ: Phân tích báo cáo doanh thu quý III và tổng hợp 5 insight quan trọng... (dán ảnh bằng Ctrl+V, kéo file vào đây, gõ / để dùng skill). Enter để giao việc, Shift+Enter để xuống dòng."></textarea><div class="opts"><div><label class="smalllabel">Mức ưu tiên</label><select id="priority"><option>Bình thường</option><option>Ưu tiên cao</option><option>Khẩn cấp</option></select></div><div><label class="smalllabel">Nơi thực thi</label><select id="runOn"><option value="machine">💻 Máy cá nhân</option><option value="sim">🎲 Mô phỏng</option></select></div><div><label class="smalllabel">Model AI</label><select id="model" title="Tự chọn: Director chọn model rẻ nhất đủ làm tốt từng bước. Giá: USD / 1 triệu token vào/ra"></select></div><div><label class="smalllabel">Mức suy luận</label><select id="effort" title="Suy luận càng sâu càng tốn token: Thấp ≈ một nửa Cao, Rất cao ≈ gấp đôi Cao"></select></div></div><label class="mcheck wfopt"><input type="checkbox" id="useWf"> 🔀 Tự tạo luồng công việc khi giao cho Director (Director chia việc cho các agent liên quan)</label><div class="webopt" id="webOpt"><label class="mcheck"><input type="checkbox" id="useWeb"> 🌐 Cho phép mở web & thao tác trình duyệt</label><select id="webSite" class="hidden"></select></div><p class="runnote" id="runNote"></p><button class="assign" id="assign">✦ Giao việc cho AI</button></aside>
 <aside class="side side-right"><div class="panel-kicker">② KẾT QUẢ XỬ LÝ</div><h2 class="side-title">Kết quả từ AI</h2><div class="result-tabs" id="resultTabs"></div><div id="results" class="tasklist"></div><p class="disclaimer">💻 Máy cá nhân: chạy thật bằng Claude Code (Designer dùng Codex/ChatGPT) trên máy của bạn · 🎲 Mô phỏng: tiến độ, kết quả và lỗi chỉ là giả lập.</p></aside>
 <div class="scenery" id="scenery"></div><div id="toast"></div><div class="modal hidden" id="guide"><div class="guide"><button class="close" id="closeguide">✕</button><h2>Điều khiển văn phòng</h2><p>🖱️ Kéo chuột để xoay góc nhìn 3D, cuộn để zoom. Bấm vào nhân viên, nhãn tên hoặc thẻ tên bên trái để chọn người nhận việc.</p><p>📋 Cột trái để giao việc, cột phải hiển thị việc đang xử lý, hoàn thành (kèm kết quả) hoặc gặp lỗi (có thể thử lại). Chọn nơi thực thi “Máy cá nhân” để chạy thật bằng Claude Code trên máy của bạn (bấm ô “Máy” trên thanh trên cùng để chọn thư mục làm việc, quyền và chạy kiểm tra), hoặc “Mô phỏng” để chạy thử giả lập.</p><button id="okguide" class="assign">Đã hiểu</button></div></div>`;
 // Built-in agents: look and desk per id (their desk position is fixed)
@@ -128,6 +128,14 @@ const ERRORS=['Hết thời gian chờ phản hồi từ công cụ (timeout 60s
 const STATUS={queued:'Đang chờ',running:'Đang xử lý',waiting:'Chờ bạn trả lời',done:'Hoàn thành',error:'Lỗi',cancelled:'Đã dừng'};
 const GROUP={queued:'running',running:'running',waiting:'running',done:'done',error:'error',cancelled:'error'};
 let selected=agents[0],sim=[],remote=[],simId=0,filter='all',machine=null,lastSig='',syncTimer=null;const prevStatus=new Map();
+let useApp=false;try{useApp=localStorage.getItem('office-use-app')==='1'}catch{}
+// Phone testing (Máy cá nhân window, server/machine-bridge.js): may this agent test apps on the phone, and which app.
+// Not set for the agent: its team's "Điện thoại" kit decides; the app is the one picked for everyone.
+const kitsOfTeam=t=>machine?.config?.teamKits?.[t]??machine?.config?.defaultKits?.[t]??machine?.config?.defaultKits?.['*']??[];
+const phoneOk=a=>{const on=machine?.mobile?.agents?.[a.id]?.on;return on!==undefined?!!on:kitsOfTeam(teamOf(a)).includes('phone')};
+const phoneAppOf=a=>machine?.mobile?.agents?.[a.id]?.app||machine?.mobile?.phone?.app||'';
+// the switch shows for an agent allowed to test on the phone, or for the Director's plan when some agent is
+const appSwitch=()=>runOn==='machine'&&!!machine?.mobile&&(phoneOk(selected)||wfOn()&&agents.some(phoneOk));
 let runOn='machine',useWeb=false,useWf=true,model='auto',effort='auto';try{runOn=localStorage.getItem('office-run-on')||'machine';useWeb=localStorage.getItem('office-use-web')==='1';useWf=localStorage.getItem('office-use-wf')!=='0';model=modelId(localStorage.getItem('office-model'))||'auto';effort=localStorage.getItem('office-effort')||'auto'}catch{}
 // A workflow only when the job is given to the Director; a task given to another agent runs with that agent alone
 const wfOn=()=>useWf&&selected.id==='director';
@@ -158,6 +166,9 @@ function profileQuota(){const q=quotaNow;if(!q)return '';const e=engineOf(select
 function renderRunNote(){
   $('runOn').value=runOn;const m=machine,el=$('runNote'),pick=$('webSite'),keep=pick.value;
   $('webOpt').classList.toggle('hidden',runOn!=='machine');$('useWeb').checked=useWeb;pick.classList.toggle('hidden',!useWeb);
+  {const show=appSwitch(),app=phoneOk(selected)?phoneAppOf(selected):'',ph=(machine?.mobile?.phones||[]).find(p=>p.state==='device');
+    $('appOpt').classList.toggle('hidden',!show);$('useApp').checked=useApp;
+    $('appWhat').textContent=useApp?`· ${app||'chưa chọn app'}${ph?` · ${ph.model||ph.serial}`:' · chưa cắm điện thoại'}`:'· tắt: test web';}
   // rebuilt only when the saved sites change, so an open dropdown is not closed by the status poll
   const opts='<option value="auto">🔑 Tự nhận tài khoản theo link trong yêu cầu</option>'+(m?.browser?.sites||[]).map(x=>`<option value="${x.id}">🔑 ${escapeHTML(x.label)} · ${escapeHTML(x.username||'')}</option>`).join('');
   if(pick.dataset.sig!==opts){pick.innerHTML=opts;pick.dataset.sig=opts;if([...pick.options].some(o=>o.value===keep))pick.value=keep}
@@ -404,6 +415,7 @@ var pv=createProgressView({toast,onPerm:permJob,loginBox,onLogin:(j,box)=>submit
     setDesignFrom(j);selectAgent(fe.id);if(!taskEl.value.trim())taskEl.value=`Code giao diện theo các ảnh thiết kế đã chọn (của ${agentOf(j.agent).name}): `;taskEl.focus();toast(`🎨 Việc tiếp theo sẽ code theo ${designFrom.n} ảnh thiết kế`)},onAssign:id=>{selectAgent(id);taskEl.focus()}});
 function openAgent(id){selectAgent(id);pv.open(id)}
 const machineUI=initMachineConnect({toast,onStatus:s=>{machine=s;renderRunNote()},getTeams:()=>[...new Set(agents.map(teamOf))],getAgents:()=>agents.map(a=>({id:a.id,name:a.name,team:teamOf(a),color:a.color,engine:engineOf(a.id)})),onQuota:q=>{quotaNow=q;renderProfile()}});
+$('useApp').onchange=e=>{useApp=e.target.checked;try{localStorage.setItem('office-use-app',useApp?'1':'0')}catch{}renderRunNote()};
 $('useWeb').onchange=e=>{useWeb=e.target.checked;try{localStorage.setItem('office-use-web',useWeb?'1':'0')}catch{}renderRunNote()};
 $('useWf').onchange=e=>{useWf=e.target.checked;try{localStorage.setItem('office-use-wf',useWf?'1':'0')}catch{}renderRunNote()};
 $('runOn').onchange=e=>{runOn=e.target.value;try{localStorage.setItem('office-run-on',runOn)}catch{}renderRunNote()};
@@ -473,7 +485,7 @@ async function submitTask({agentId=selected.id,text,priority='Bình thường',w
   const wf=a.id==='director'&&(workflow??useWf);let j;
   if(where==='machine'){
     if(wf?!machine?.ready:!engineReady(a.id)){const codex=!wf&&engineOf(a.id)==='codex';throw Object.assign(new Error(codex?`${a.name} dùng Codex: hãy đăng nhập Codex (ô Codex trên thanh trên cùng)`:'Máy cá nhân chưa sẵn sàng: kiểm tra kết nối trước khi giao việc'),{openMachine:!codex})}
-    const {task}=await machineApi('/tasks',{method:'POST',body:JSON.stringify({agent:a.id,name:a.name,role:a.role,desc:a.desc,agentTeam:teamOf(a),level:levelOf(a),designFrom:designFrom?.rid,text,priority,model:m,effort:ef,workflow:wf,team:team(),files,web,siteIds})});
+    const {task}=await machineApi('/tasks',{method:'POST',body:JSON.stringify({agent:a.id,name:a.name,role:a.role,desc:a.desc,agentTeam:teamOf(a),level:levelOf(a),designFrom:designFrom?.rid,text,priority,model:m,effort:ef,workflow:wf,team:team(),files,web,siteIds,app:appSwitch()?useApp:undefined})});
     j=fromServer(task);remote.unshift(j);prevStatus.set(j.key,j.status);toast(wf?'🔀 Director đang lập kế hoạch và chia việc cho các agent liên quan':`Đã gửi nhiệm vụ cho ${a.name}, chạy trên máy ${task.host}`);syncTimer=setTimeout(syncRemote,800);
   }else if(wf){const k='s'+(++simId);j=start({key:k,wf:k,kind:'plan',owner:a.id,agent:'director',stepTitle:'Lập kế hoạch & phân công',text,priority,created:new Date()},0);sim.unshift(j);toast('🔀 Director đang lập kế hoạch (mô phỏng)')}
   else{j=start({key:'s'+(++simId),agent:a.id,text,priority,created:new Date()},.18);sim.unshift(j);toast('Đã giao nhiệm vụ mô phỏng cho '+a.name)}
@@ -627,6 +639,24 @@ async function saveAI(id,form){
   const same=models.length===rec.length&&rec.every(m=>models.includes(m));
   machine=await machineApi('/config',{method:'POST',body:JSON.stringify({agent:id,engine,models:same?[]:models,maxEffort:form.maxEffort.value})});renderRunNote();
 }
+// Phone part of the agent form: may this agent test apps on the plugged-in phone, and on which app ('' = the shared one)
+function phoneFields(a){
+  if(!machine?.mobile)return '';
+  const own=a?machine.mobile.agents?.[a.id]||{}:{},on=a?phoneOk(a):false,shared=machine.mobile.phone?.app||'';
+  return `<fieldset class="ai-pick phone-pick"><legend>Kiểm thử app trên điện thoại</legend>
+    <label class="ai-model"><input type="checkbox" name="phoneOn" ${on?'checked':''}><span>Cho phép agent này điều khiển điện thoại Android cắm vào máy (lệnh apptest)${a&&own.on===undefined?' <small>(đang theo đội)</small>':''}</span></label>
+    <label>App kiểm thử<span class="phone-app"><input name="phoneApp" list="phoneAppList" value="${escapeHTML(own.app||'')}" placeholder="Để trống: app chung${shared?` (${escapeHTML(shared)})`:''}" autocomplete="off" spellcheck="false"><datalist id="phoneAppList">${shared?`<option value="${escapeHTML(shared)}">`:''}</datalist><button type="button" class="ghost" data-phone-apps>⟲ Tải app từ điện thoại</button></span></label>
+    <p class="agent-note">Khi agent được phép, ô Yêu cầu công việc có nút <b>📱 Test app</b>: bật thì việc chạy trên điện thoại với app này, tắt thì test web.</p></fieldset>`;
+}
+async function savePhone(id,form){
+  if(!machine?.mobile||!form.phoneApp)return;
+  const app=form.phoneApp.value.trim(),cur=machine.mobile.agents?.[id]||{},a=agents.find(x=>x.id===id);
+  // the switch is only stored when it differs from the team's default (so it keeps following the team otherwise)
+  const byTeam=a?kitsOfTeam(teamOf(a)).includes('phone'):false,on=form.phoneOn.checked;
+  const body={agent:id,on:cur.on===undefined&&on===byTeam?null:on,app};
+  if(body.on===(cur.on??null)&&app===(cur.app||''))return;
+  machine=await machineApi('/config',{method:'POST',body:JSON.stringify({agentPhone:body})});renderRunNote();
+}
 const agentForm=document.createElement('div');agentForm.className='modal hidden';document.getElementById('app').appendChild(agentForm);
 function openAgentForm(a){
   if(!a&&freeSlot()<0){toast(`Văn phòng đã đủ ${SLOTS.length} chỗ ngồi: xóa bớt agent để thêm mới`);return}
@@ -638,6 +668,7 @@ function openAgentForm(a){
       <label>Cấp bậc<select name="level">${Object.entries(LEVELS).map(([k,v])=>`<option value="${k}" ${(a?levelOf(a):'middle')===k?'selected':''}>${v}</option>`).join('')}</select></label></div>
     <label>Mô tả & cách làm việc<textarea name="desc" maxlength="2000" rows="6" placeholder="Agent này làm gì, làm theo cách nào, tiêu chuẩn đầu ra, điều cần tránh… Mô tả được gửi kèm mỗi việc giao cho agent và Director dùng nó để phân việc.">${escapeHTML(a?.desc||'')}</textarea></label>
     ${aiFields(a)}
+    ${phoneFields(a)}
     ${a?.builtin?'':`<div class="agent-look"><label>Ngoại hình<select name="preset">${looks}</select></label><label>Màu<input type="color" name="color" value="${hex(a?.color??(0x1000000*Math.random()|0)|0x303030)}"></label></div>`}
     <p class="agent-note">${a?'Đổi ngoại hình sẽ tải lại trang.':'Agent mới được xếp vào bàn trống tiếp theo và trang sẽ tải lại.'}${runOn==='sim'&&sim.some(j=>GROUP[j.status]==='running')&&(!a||!a.builtin)?' Việc mô phỏng đang chạy sẽ mất khi tải lại.':''}</p>
     <div class="pv-actions"><button class="assign" type="submit">${a?'Lưu':'＋ Thêm agent'}</button><button type="button" class="ghost" data-close>Hủy</button></div></form>`;
@@ -646,6 +677,16 @@ function openAgentForm(a){
   // only the chosen engine's models are shown
   const showModels=()=>{const es=enginesOf({engine:form.engine.value});form.querySelectorAll('[data-ai-engine]').forEach(g=>g.hidden=!es.includes(g.dataset.aiEngine))};
   form.querySelectorAll('[name=engine]').forEach(r=>r.onchange=showModels);showModels();
+  // the phone's installed apps as suggestions for the app box
+  form.querySelector('[data-phone-apps]')?.addEventListener('click',async e=>{
+    const b=e.currentTarget;b.disabled=true;
+    try{const serial=machine?.mobile?.phone?.serial||'',r=await machineApi('/phone/apps'+(serial?`?serial=${encodeURIComponent(serial)}`:''));
+      form.querySelector('#phoneAppList').innerHTML=r.apps.map(p=>`<option value="${escapeHTML(p)}">`).join('');
+      toast(r.apps.length?`${r.apps.length} app trên điện thoại: gõ vài chữ vào ô App để chọn`:'Điện thoại chưa cài app nào ngoài app hệ thống');form.phoneApp.focus()}
+    catch(err){toast(err.message)}finally{b.disabled=false}});
+  // app box only matters when the agent may use the phone
+  const phoneSync=()=>{if(form.phoneApp)form.phoneApp.closest('label').classList.toggle('off',!form.phoneOn.checked)};
+  form.phoneOn?.addEventListener('change',phoneSync);phoneSync();
   form.onsubmit=async e=>{
     e.preventDefault();const f=Object.fromEntries(new FormData(form)),btn=form.querySelector('[type=submit]');
     const vals={name:f.name.trim(),role:f.role.trim(),desc:f.desc.trim(),team:f.team.trim()||f.role.trim()||'Khác',level:f.level};if(!vals.name)return;
@@ -656,7 +697,7 @@ function openAgentForm(a){
     if(a){reload=!a.builtin&&(look.preset!==a.preset||look.color!==a.color);list=agents.map(x=>agentRecord(x===a?{...x,...vals,...look}:x))}
     else{const id='a'+Date.now().toString(36);list=[...agents.map(agentRecord),{id,...vals,...look,slot:freeSlot()}]}
     btn.disabled=true;
-    try{await saveAgents(list);await saveAI(a?.id||list.at(-1).id,form)}catch(err){toast(err.message);btn.disabled=false;return}
+    try{await saveAgents(list);await saveAI(a?.id||list.at(-1).id,form);await savePhone(a?.id||list.at(-1).id,form)}catch(err){toast(err.message);btn.disabled=false;return}
     if(reload){try{localStorage.setItem('office-select',a?.id||list.at(-1).id);if(!a)localStorage.setItem('office-new',list.at(-1).id)}catch{}location.reload();return}
     Object.assign(a,vals);normalizeLeaders(agents);wander.refreshTeams();a.el.innerHTML=tagHTML(a);renderAvatars();selectAgent(selected.id);agentForm.classList.add('hidden');toast('Đã lưu '+a.name);
   };

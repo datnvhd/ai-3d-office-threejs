@@ -21,7 +21,10 @@ function api(method,path,body){
 
 async function decide({tool_name,input,tool_use_id}){
   try{
-    let r=await api('POST','/perm',{tool:tool_name,input,id:tool_use_id}),fails=0;
+    // the office server may be restarting (an update, a reload): try to reach it for a minute before giving up
+    let r,fails=0;
+    for(;;){try{r=await api('POST','/perm',{tool:tool_name,input,id:tool_use_id});break}catch(e){if(e.status||++fails>30)throw e;await sleep(2000)}}
+    fails=0;
     while(!r.decision){
       await sleep(800);
       try{r=await api('GET',`/perm/${r.id}`);fails=0}

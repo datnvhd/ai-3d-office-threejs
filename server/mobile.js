@@ -66,7 +66,7 @@ let envCache=null,envAt=0;
 // What can be used for checks on this machine; cached for a minute (the window polls status)
 export async function mobileEnv(force=false){
   if(!force&&envCache&&Date.now()-envAt<60000)return envCache;
-  const b=mobileBins(),out={os:process.platform,xcode:null,simulators:[],booted:[],android:null,avds:[],devices:[],maestro:null};
+  const b=mobileBins(),out={os:process.platform,xcode:null,simulators:[],booted:[],android:null,avds:[],devices:[],phones:[],maestro:null};
   if(isMac){
     const v=await sh('xcodebuild',['-version']);
     if(v){out.xcode=v.split('\n')[0].trim();
@@ -77,17 +77,30 @@ export async function mobileEnv(force=false){
   }
   if(b.adb){
     out.android=b.adb;
-    const d=await sh(b.adb,['devices']);if(d)out.devices=d.split('\n').slice(1).map(l=>l.trim().split(/\s+/)).filter(p=>p[1]==='device').map(p=>p[0]);
+    // every phone/emulator adb sees, with its model and Android version (unauthorized: USB debugging not allowed yet)
+    const d=await sh(b.adb,['devices','-l']);
+    if(d){
+      const rows=d.split('\n').slice(1).map(l=>l.trim()).filter(l=>l&&!l.startsWith('*')).map(l=>{const [serial,state]=l.split(/\s+/);return {serial,state,model:((l.match(/model:(\S+)/)||[])[1]||'').replace(/_/g,' '),emulator:/^emulator-/.test(serial)}});
+      out.devices=rows.filter(r=>r.state==='device').map(r=>r.serial);
+      out.phones=await Promise.all(rows.slice(0,8).map(async r=>({...r,android:r.state==='device'?((await sh(b.adb,['-s',r.serial,'shell','getprop','ro.build.version.release']))||'').trim():''})));
+    }
   }
   if(b.emulator){const a=await sh(b.emulator,['-list-avds']);if(a)out.avds=a.split('\n').map(s=>s.trim()).filter(s=>s&&!/^(INFO|WARNING)/.test(s)).slice(0,20)}
   if(b.maestro)out.maestro=isWin?b.maestro:((await sh(b.maestro,['--version'],20000))||'').trim().split('\n').pop()||b.maestro;
   envCache=out;envAt=Date.now();return out;
 }
 // Last result without waiting (prompts are built synchronously; launch() refreshes it before an RN task starts)
-export const mobileEnvCached=()=>envCache||{os:process.platform,xcode:null,simulators:[],booted:[],android:null,avds:[],devices:[],maestro:null};
+export const mobileEnvCached=()=>envCache||{os:process.platform,xcode:null,simulators:[],booted:[],android:null,avds:[],devices:[],phones:[],maestro:null};
+// Apps the user installed on a phone (package names), for picking the app to test
+export async function phoneApps(serial){
+  const adb=mobileBins().adb;if(!adb)return null;
+  const out=await sh(adb,[...(serial?['-s',serial]:[]),'shell','pm','list','packages','-3'],15000);
+  return out==null?null:out.split('\n').map(l=>l.replace(/^package:/,'').trim()).filter(Boolean).sort();
+}
+export const phoneName=p=>`${p.model||p.serial}${p.android?` (Android ${p.android})`:''}${p.emulator?' · máy ảo':''}`;
 export const mobileSummary=e=>[
   isMac?(e.xcode?`${e.xcode} · ${e.simulators.length} iOS Simulator${e.booted.length?` (đang chạy: ${e.booted.join(', ')})`:''}`:'Chưa có Xcode (cần để chạy iOS Simulator)'):'iOS Simulator: chỉ có trên macOS',
-  e.android?`Android SDK · ${e.avds.length} máy ảo${e.devices.length?` · đang kết nối: ${e.devices.join(', ')}`:''}`:'Chưa có Android SDK (adb)',
+  e.android?`Android SDK · ${e.avds.length} máy ảo${(e.phones||[]).length?` · đang kết nối: ${e.phones.map(p=>p.state==='device'?phoneName(p):`${p.serial} (${p.state})`).join(', ')}`:''}`:'Chưa có Android SDK (adb)',
   e.maestro?`Maestro ${e.maestro}`:'Chưa có Maestro (kịch bản kiểm thử UI)',
 ];
 

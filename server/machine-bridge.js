@@ -17,7 +17,7 @@ import {STORE_DIR,NODE_ENV,cleanEnv,run,findClaudeBinary,killTree,reapGroup,getS
 import {findCodexBinary,codexAuth,codexExec,codexRun} from './codex-bridge.js';
 import {createUpdater,cliGen,UPDATE_MODES} from './ai-updates.js';
 import {createSnapshots} from './snapshot.js';
-import {rnProject,mobileEnv,mobileEnvCached,mobileSummary,MOBILE_KIT,mobilePrompt,mobilePlanNote} from './mobile.js';
+import {rnProject,mobileEnv,mobileEnvCached,mobileSummary,MOBILE_KIT,mobilePrompt,mobilePlanNote,mobileBins,phoneApps,phoneName} from './mobile.js';
 import {detectLimit,ENGINE_NAME} from './ai-limits.js';
 import {createRemoteServer,isRemoteReq,newRemoteKey,lanAddresses,hashPassword,MIN_PASSWORD,DEFAULT_REMOTE_PORT} from './remote-access.js';
 import {createTunnel} from './tunnel.js';
@@ -202,6 +202,18 @@ function installUiTest(pick=pickBrowser()){
   }catch{}
 }
 installUiTest();
+// `apptest` for the agents' shell: server/phone-runner.mjs drives an app already installed on an Android phone plugged
+// in by USB (adb); its screenshots go to the task's "Ảnh chụp" (--task <id>)
+const APPTEST_RUNNER=join(dirname(fileURLToPath(import.meta.url)),'phone-runner.mjs');
+function installAppTest(){
+  try{
+    mkdirSync(TOOL_BIN,{recursive:true});
+    const adb=mobileBins().adb||'adb',node=process.execPath,asNode=!!process.versions.electron,sh=p=>p.replace(/\\/g,'/');
+    if(process.platform==='win32')writeFileSync(join(TOOL_BIN,'apptest.cmd'),`@echo off\r\n${asNode?'set ELECTRON_RUN_AS_NODE=1\r\n':''}set "APPTEST_ADB=${adb}"\r\nset "APPTEST_RUNS=${RUNS_DIR}"\r\n"${node}" "${APPTEST_RUNNER}" %*\r\n`);
+    writeFileSync(join(TOOL_BIN,'apptest'),`#!/bin/sh\n${asNode?'export ELECTRON_RUN_AS_NODE=1\n':''}export APPTEST_ADB="${sh(adb)}"\nexport APPTEST_RUNS="${sh(RUNS_DIR)}"\nexec "${sh(node)}" "${sh(APPTEST_RUNNER)}" "$@"\n`,{mode:0o755});
+  }catch{}
+}
+installAppTest();
 const designGuide=t=>`
 ẢNH THIẾT KẾ CHO DEV: kết quả thiết kế phải là ẢNH để dev code theo. Với mỗi màn hình, trạng thái hoặc thành phần quan trọng, tạo MỘT file HTML độc lập (CSS viết ngay trong file, không cần JavaScript; tài nguyên ngoài chỉ được dùng Google Fonts) trong thư mục:
 ${designDir(t)}
@@ -255,10 +267,11 @@ const TOOLKITS={
   gh:{short:'GitHub CLI',label:'GitHub CLI: xem issue, PR, CI (bình luận/tạo issue khi được sửa file)',cmds:['gh issue view','gh issue list','gh pr view','gh pr list','gh pr diff','gh pr checks','gh run list','gh run view'],writeCmds:['gh issue create','gh issue comment','gh pr comment']},
   docs:{short:'Tài liệu & sơ đồ',label:'Tài liệu & sơ đồ: Mermaid CLI (mmdc), pandoc',write:true,cmds:['npx -y @mermaid-js/mermaid-cli','mmdc','pandoc']},
   mobile:MOBILE_KIT,// its commands are only given when the working folder is a React Native app (mobile.js)
+  phone:{short:'Điện thoại',label:'Kiểm thử app đã cài trên điện thoại Android cắm vào máy (lệnh apptest: đọc màn hình, chạm, gõ, vuốt, chụp ảnh, log crash; không cần mã nguồn)',cmds:['apptest','adb devices']},
   browser:{short:'Trình duyệt',label:'Trình duyệt tự động (Playwright) bật sẵn cho mọi việc của đội',web:true},
   mathvideo:{short:'Video toán',label:'Video toán học: lệnh mathvid (Manim, giọng đọc tiếng Việt, ffmpeg), tự cài lần đầu',cmds:['mathvid']}
 };
-const DEFAULT_TEAM_KITS={Frontend:['files','git','node','test','gh','mobile'],Backend:['files','git','node','python','test','gh'],QA:['files','git','test','browser','mobile'],BA:['files','docs'],
+const DEFAULT_TEAM_KITS={Frontend:['files','git','node','test','gh','mobile'],Backend:['files','git','node','python','test','gh'],QA:['files','git','test','browser','mobile','phone'],BA:['files','docs'],
   Design:['files','browser'],Data:['files','python'],Video:['files','python','mathvideo'],Research:['files'],'Ban điều hành':['files','git'],'*':['files']};
 // never allowed, whatever the kits say
 const DENY_CMDS=['git push','git reset --hard','git clean','rm -rf','npm publish','gh repo delete','gh release create',
@@ -339,6 +352,42 @@ export function machineBridge(){
   // kit lists saved before the Mobile kit existed: give it to the teams that build or test code (it only acts in RN apps)
   if(config.teamKits&&!config.kitsMobile)for(const list of Object.values(config.teamKits))if(Array.isArray(list)&&(list.includes('node')||list.includes('test'))&&!list.includes('mobile'))list.push('mobile');
   config.kitsMobile=true;
+  // QA teams saved before the phone kit existed get it too
+  if(Array.isArray(config.teamKits?.QA)&&!config.kitsPhone&&!config.teamKits.QA.includes('phone'))config.teamKits.QA.push('phone');
+  config.kitsPhone=true;
+  // A task about testing on a phone, for a team with the phone kit, while a phone is plugged in and allowed: the phones
+  // Per agent (Máy cá nhân window): may it test apps on the phone, and on which app. Not set: its team's phone kit decides,
+  // and the app is the one picked for everyone (config.phone.app)
+  const PKG_RE=/^[A-Za-z][\w]*(\.[A-Za-z_][\w]*)+$/;
+  const phoneAllowed=(agent,team)=>{const on=config.agentPhone?.[agent]?.on;return on!==undefined?!!on:kitsFor(team||'').includes('phone')};
+  const appOf=agent=>config.agentPhone?.[agent]?.app||config.phone?.app||'';
+  const PHONE_RE=/điện thoại|smartphone|\bphone\b|android|\bapk\b|mobile|thiết bị thật|máy thật/i;
+  const phoneAsked=t=>t.appMode==='app'||t.appMode!=='web'&&PHONE_RE.test(`${t.text||''} ${t.stepTitle||''}`)||!!(appOf(t.agent)&&String(t.text||'').includes(appOf(t.agent)));
+  const phonesFor=t=>{
+    if(isDesign(t)||isVideo(t)||t.appMode==='web'||!phoneAllowed(t.agent,t.team)||!phoneAsked(t))return null;
+    const ph=(mobileEnvCached().phones||[]).filter(p=>p.state==='device');
+    return ph.length?ph:null;
+  };
+  const phonePrompt=t=>{
+    const ph=t.phone&&phonesFor(t);if(!ph)return '';
+    const pick=ph.find(p=>p.serial===config.phone?.serial),app=appOf(t.agent);
+    const dev=pick||ph[0],flag=ph.length>1?` --device ${dev.serial}`:'';
+    return `
+KIỂM THỬ APP TRÊN ĐIỆN THOẠI THẬT (Android cắm USB, app đã cài sẵn, không cần mã nguồn):
+Điện thoại đang kết nối: ${ph.map(p=>`${p.serial} = ${phoneName(p)}`).join('; ')}.${ph.length>1?` Dùng ${dev.serial}${pick?' (người dùng chọn)':''} trừ khi yêu cầu nói máy khác: thêm --device <serial> vào MỌI lệnh apptest.`:''}
+${app?`App người dùng chọn cho bạn để kiểm thử: ${app} (dùng app này nếu yêu cầu không nói app khác).`:'Chưa chọn app: tìm package bằng `apptest apps <từ khóa>` theo tên app trong yêu cầu; không chắc app nào thì hỏi người dùng.'}
+Điều khiển điện thoại bằng lệnh apptest qua công cụ chạy lệnh (Bash, hoặc PowerShell trên Windows). Mỗi lần gọi chạy MỘT lệnh apptest (không nối bằng && vì PowerShell không hỗ trợ), mỗi lệnh vài giây:
+- apptest launch <package> · apptest restart <package> (mở lại từ đầu cho mỗi test case) · apptest stop <package> · apptest info <package> (phiên bản, ghi vào báo cáo)
+- apptest screen: danh sách phần tử đang hiện \`@số Loại "chữ" id=… (x,y)\`. Đọc màn hình bằng lệnh này (rẻ hơn ảnh); chỉ mở ảnh khi cần xem bố cục/màu.
+- apptest tap "<chữ trên nút>" | id:<id> | desc:<mô tả> | "@<số>" (LUÔN để @số trong ngoặc kép, ví dụ apptest tap "@6": PowerShell hiểu @ không ngoặc là cú pháp khác) | <x>,<y>   (không thấy thì tự ẩn bàn phím rồi tự cuộn xuống/lên trang để tìm, nên không cần tự cuộn hay bấm Tab)
+- apptest type "<chữ>" --into "<ô nhập>" [--clear: xóa chữ cũ trong ô trước] (gõ được tiếng Việt có dấu và emoji; tự cuộn tìm ô, đọc lại ô và báo lỗi nếu không nhận đủ chữ; gõ xong tự ẩn bàn phím) · apptest hidekb (ẩn bàn phím) · apptest key back|enter|home|tab|del
+- apptest swipe up|down|left|right · apptest wait "<chữ>" --timeout 15 (thoát mã 1 nếu không thấy: là FAIL hoặc app chậm)
+- apptest shot <ten-buoc> --task ${t.id}${flag}: chụp màn hình vào mục "Ảnh chụp" của việc này; chụp ở kết quả mỗi test case và khi gặp lỗi.
+- apptest log <package>: crash và lỗi logcat từ lần mở app gần nhất; chạy sau mỗi luồng và khi app thoát, treo hay báo lỗi.
+Ví dụ: apptest restart com.vidu.app${flag} → apptest tap "Đăng nhập"${flag} → apptest type "demo" --into "Email"${flag} → apptest wait "Trang chủ"${flag} → apptest shot dang-nhap-thanh-cong --task ${t.id}${flag}
+Quy tắc: không gỡ cài đặt app, không xóa dữ liệu app, không đổi cài đặt hệ thống, không gọi điện/nhắn tin/thanh toán thật. Cần tài khoản đăng nhập mà yêu cầu không cho thì hỏi người dùng. Báo cáo PASS/FAIL theo từng test case, kèm tên ảnh và log lỗi nếu có. Điện thoại khóa màn hình hoặc mất kết nối thì báo người dùng mở khóa/cắm lại.${t.engine==='codex'?' (Codex: nếu sandbox chặn kết nối adb thì báo rõ để người dùng giao việc này cho agent chạy Claude.)':''}
+`;
+  };
   config.agentEngines={...DEFAULT_AGENT_ENGINES,...config.agentEngines};
   // What an agent may use: {engine, models, maxEffort} (see fitModel in workflow-plan.js)
   const aiOf=agent=>({engine:ENGINES[config.agentEngines[agent]]?config.agentEngines[agent]:'claude',...(config.agentAI||{})[agent]});
@@ -347,12 +396,16 @@ export function machineBridge(){
   const engineOf=agent=>{const es=enginesOf(aiOf(agent));return es.length>1?preferEngine():es[0]};
   const kitsFor=team=>(config.teamKits||{})[team]??DEFAULT_TEAM_KITS[team]??DEFAULT_TEAM_KITS['*'];
   // Bash rules for a task from its team's kits; read-only mode keeps only the commands that just look
+  // Claude Code on Windows runs commands with a PowerShell tool instead of Bash when it finds no Git Bash: every
+  // command rule is given for both, so a kit works whichever shell the machine has
+  const shellRules=c=>[`Bash(${c}:*)`,...(process.platform==='win32'?[`PowerShell(${c}:*)`]:[])];
   function kitRules(t){
     const write=t.mode==='acceptEdits',cmds=[];
     const rn=rnProject(t.cwd);
-    for(const k of kitsFor(t.team||'')){const kit=TOOLKITS[k];if(!kit||kit.web||kit.write&&!write||k==='mobile'&&!rn)continue;cmds.push(...kit.cmds,...(write?kit.writeCmds||[]:[]))}
+    const kits=kitsFor(t.team||'').filter(k=>k!=='phone');if(phoneAllowed(t.agent,t.team))kits.push('phone');
+    for(const k of kits){const kit=TOOLKITS[k];if(!kit||kit.web||kit.write&&!write||k==='mobile'&&!rn)continue;cmds.push(...kit.cmds,...(write?kit.writeCmds||[]:[]))}
     const list=[...new Set(cmds)];
-    return {cmds:list,allow:[...list.map(c=>`Bash(${c}:*)`),...(designOnly(t)?[`Edit(${designRel(t)})`]:[]),...(videoOnly(t)?[`Edit(${videoRel(t)}/**)`]:[])],deny:DENY_CMDS.map(c=>`Bash(${c}:*)`)};
+    return {cmds:list,allow:[...list.flatMap(shellRules),...(designOnly(t)?[`Edit(${designRel(t)})`]:[]),...(videoOnly(t)?[`Edit(${videoRel(t)}/**)`]:[])],deny:DENY_CMDS.flatMap(shellRules)};
   }
   let codexBin=null,codexChecked=false,codexVersion=null,codexAuthCache=null,codexGen=-1;
   let lastCheck=readJson(CONFIG_FILE,{}).lastCheck||null;
@@ -450,8 +503,11 @@ export function machineBridge(){
   const RISKY=/\b(rm|rmdir)\s+(-\w*[rf]|\/s)|\bdel\s+(\/[a-z]\s+)*\/[sq]|remove-item\b[^|;&]*-(recurse|force)|\bformat(-volume)?\s+[a-z]:|\bmkfs|\bdd\s+if=|\b(shutdown|reboot|halt|poweroff)\b|stop-computer|restart-computer|\bsudo\b|\brunas\b|\bchmod\s+-R\s+777|\bchown\s+-R|\b(curl|wget|iwr|invoke-webrequest|irm)\b[^|]*\|\s*(sh|bash|zsh|iex|invoke-expression|powershell)|\bgit\s+(push|reset\s+--hard|clean)|\bnpm\s+publish|\breg\s+(add|delete)|\bset-executionpolicy|\b(diskpart|bcdedit|cipher\s+\/w)/i;
   // allowed without asking: {how} when the agent's level covers this request, null when the user must be asked
   function autoDecision(t,tool,input){
-    const lvl=autoOf(t);if(lvl==='ask')return null;
     const shell=tool==='Bash'||tool==='PowerShell';
+    // one plain `apptest …` call by an agent allowed to use the phone: the allow rule already covers it, but Claude Code
+    // asks anyway when the arguments look special to the shell (PowerShell reads @6 as "splatting")
+    if(shell&&phoneAllowed(t.agent,t.team)&&/^\s*apptest(\.cmd)?\s[^;&|`$()<>\r\n]*$/i.test(String(input?.command||'')))return 'lệnh apptest';
+    const lvl=autoOf(t);if(lvl==='ask')return null;
     if(shell&&RISKY.test(String(input?.command||'')))return null;
     if(lvl==='all'&&editTools.has(tool)){
       const f=input?.file_path||input?.notebook_path;if(!f||!t.cwd)return null;
@@ -495,7 +551,7 @@ export function machineBridge(){
   // Persisted tasks keep only the attachment names, not the inlined file text, so tasks.json stays small
   const forDisk=t=>t.files?{...t,files:t.files.map(({name,kind,rel,src,sheet,sheets})=>({name,kind,rel,src,sheet,sheets:sheets?.map(({preview,...s})=>s)}))}:t;
   const save=()=>{clearTimeout(saveTimer);saveTimer=setTimeout(()=>writeJson(TASKS_FILE,tasks.slice(0,KEEP).map(forDisk)),400)};
-  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,browser:config.browser,extToken:config.extToken,agentEngines:config.agentEngines,agentAI:config.agentAI,teamKits:config.teamKits,kitsMobile:true,remote:config.remote,autoSwitch:config.autoSwitch,maxParallel:config.maxParallel,splitOff:config.splitOff,aiLimits:config.aiLimits,aiUpdate:config.aiUpdate,aiUpdateSkip:config.aiUpdateSkip,agentAuto:config.agentAuto,lastCheck});
+  const saveConfig=()=>writeJson(CONFIG_FILE,{workdir:config.workdir,recentDirs:config.recentDirs,mode:config.mode,browserVisible:config.browserVisible,browser:config.browser,extToken:config.extToken,agentEngines:config.agentEngines,agentAI:config.agentAI,teamKits:config.teamKits,kitsMobile:true,kitsPhone:true,phone:config.phone,agentPhone:config.agentPhone,remote:config.remote,autoSwitch:config.autoSwitch,maxParallel:config.maxParallel,splitOff:config.splitOff,aiLimits:config.aiLimits,aiUpdate:config.aiUpdate,aiUpdateSkip:config.aiUpdateSkip,agentAuto:config.agentAuto,lastCheck});
 
   // ---------- saved web logins (passwords stay in this file and are never sent to the page or to Claude) ----------
   let sites=readJson(SITES_FILE,[]);
@@ -620,6 +676,20 @@ export function machineBridge(){
   }
 
   // ---------- task runner ----------
+  // For the Director: a phone is plugged in and the request is about testing on it
+  // the agents allowed to test on the phone, by name (with their own app when they have one)
+  function phoneAgentsText(){
+    const list=readJson(AGENTS_FILE,null)||[],ids=new Set([...list.map(a=>a.id),...Object.keys(config.agentPhone||{}),'qa']);
+    const ok=[...ids].map(id=>{const a=list.find(x=>x.id===id),team=a?.team||(id==='qa'?'QA':'');return phoneAllowed(id,team)?`${a?.name||id}${config.agentPhone?.[id]?.app?` (app ${config.agentPhone[id].app})`:''}`:null}).filter(Boolean);
+    return ok.length?ok.join(', '):'các agent đội QA';
+  }
+  function phonePlanNote(t){
+    const ph=(mobileEnvCached().phones||[]).filter(p=>p.state==='device');
+    if(!ph.length||t.appMode==='web'||t.appMode!=='app'&&!PHONE_RE.test(t.text||''))return '';
+    return `
+ĐIỆN THOẠI: máy đang cắm ${ph.map(phoneName).join(', ')}${config.phone?.app?`; app cần kiểm thử: ${config.phone.app}`:''}. ${t.appMode==='app'?'Người dùng bật "Test app": phần kiểm thử của việc này là kiểm thử APP trên điện thoại (không phải web). ':''}Kiểm thử app đã cài trên điện thoại chỉ giao cho agent được phép: ${phoneAgentsText()} (họ điều khiển điện thoại bằng lệnh apptest, không cần mã nguồn); bước đó ghi rõ "trên điện thoại" và tên app.
+`;
+  }
   function prompt(t){
     return `Bạn là "${t.name}", AI agent đảm nhiệm vai trò "${t.role}" trong văn phòng AI của người dùng.
 ${t.team?`Đội: ${t.team} · cấp bậc: ${LEVELS[levelOf(t)]}. ${LEVEL_NOTE[levelOf(t)]}
@@ -627,10 +697,10 @@ ${t.team?`Đội: ${t.team} · cấp bậc: ${LEVELS[levelOf(t)]}. ${LEVEL_NOTE[
 ${t.desc}
 `:''}Bạn đang chạy trực tiếp trên máy cá nhân của người dùng, trong thư mục làm việc hiện tại (${t.cwd}).
 Chế độ quyền: ${MODES[t.mode]}.${t.mode==='default'?(designOnly(t)?` Không tạo hoặc sửa file của dự án. Ngoại lệ duy nhất: được tạo/sửa file thiết kế (HTML/SVG) trong ${designDir(t)}, hãy làm việc đó.`:autoOf(t)==='all'?' Người dùng cho phép riêng bạn tự tạo/sửa file bên trong thư mục làm việc khi việc cần; ngoài thư mục đó thì không.':' Không tạo hoặc sửa file; chỉ đọc, phân tích và trả lời.'):' Chỉ tạo/sửa file bên trong thư mục làm việc.'}${modeNote(t)}
-${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash): ${k.cmds.join(', ')}. ${autoOf(t)==='ask'?'Lệnh khác cần người dùng bấm cho phép và có thể bị từ chối (khi bị từ chối thì tìm cách khác hoặc giải thích, không thử lại cùng lệnh)':'Người dùng cho phép bạn tự chạy các lệnh khác khi cần (lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; khi bị từ chối thì tìm cách khác)'}; không bao giờ push code hay svn commit/update.
-`:autoOf(t)!=='ask'?`Bạn được tự chạy lệnh dòng lệnh khi cần (qua Bash); lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; không bao giờ push code hay svn commit/update.
+${(k=>k.cmds.length?`Lệnh dòng lệnh được phép dùng (qua Bash hoặc PowerShell): ${k.cmds.join(', ')}. ${autoOf(t)==='ask'?'Lệnh khác cần người dùng bấm cho phép và có thể bị từ chối (khi bị từ chối thì tìm cách khác hoặc giải thích, không thử lại cùng lệnh)':'Người dùng cho phép bạn tự chạy các lệnh khác khi cần (lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; khi bị từ chối thì tìm cách khác)'}; không bao giờ push code hay svn commit/update.
+`:autoOf(t)!=='ask'?`Bạn được tự chạy lệnh dòng lệnh khi cần (qua Bash hoặc PowerShell); lệnh nguy hiểm như xóa đệ quy, sudo, tải script về chạy vẫn phải chờ người dùng duyệt; không bao giờ push code hay svn commit/update.
 `:'')(kitRules(t))}Luôn trả lời bằng tiếng Việt. Khi xong, kết thúc bằng một phần "Kết quả:" tóm tắt ngắn gọn những gì đã làm hoặc tìm được.
-${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${isVideo(t)?videoGuide(t):''}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${CHECKLIST_GUIDE}${attachPrompt(t)}${skillPrompt(t.skills,t.cwd)}${skillsAvailablePrompt(t.engine,t.cwd,t.skills)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
+${t.kind==='step'?stepContext(t):''}${isDesign(t)?designGuide(t):designNote(t)}${isVideo(t)?videoGuide(t):''}${mobilePrompt(t,{rn:rnProject(t.cwd),env:mobileEnvCached(),design:isDesign(t),shotsDir:join(RUNS_DIR,String(t.id)),canEdit:t.mode==='acceptEdits'})}${phonePrompt(t)}${CHECKLIST_GUIDE}${attachPrompt(t)}${skillPrompt(t.skills,t.cwd)}${skillsAvailablePrompt(t.engine,t.cwd,t.skills)}${t.web?webPrompt(t):''}${(t.clarifies||0)<MAX_CLARIFY?QUESTION_GUIDE:''}
 GIỮ DỰ ÁN SẠCH: người dùng không muốn file thừa trong dự án. Chỉ tạo/sửa trong thư mục làm việc những file là một phần của kết quả được yêu cầu (code, cấu hình, dữ liệu hay tài liệu người dùng cần). File phụ để làm việc (script chạy thử, test tạm, dữ liệu trung gian, log, ảnh chụp kiểm tra, ghi chú) phải đặt tên bắt đầu bằng _ai_tmp (ví dụ _ai_tmp_check.py) hoặc để trong thư mục _ai_tmp/; hệ thống tự xóa chúng khi xong việc, cùng các file tạm/log/cache mới sinh ra. Không tạo file .md (báo cáo, tóm tắt, ghi chú, kế hoạch) trừ khi người dùng yêu cầu rõ; viết nội dung đó trong câu trả lời. Trong phần kết quả, liệt kê các file đã tạo hoặc sửa trong dự án.
 Mức ưu tiên: ${t.priority}
 Nhiệm vụ:
@@ -1036,7 +1106,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
     const mcp=join(dir,'mcp.json');writeFileSync(mcp,JSON.stringify({mcpServers:{browser:{command:process.execPath,args,env},...extraServers}}));
     t.siteLabels=list.map(s=>s.label);t.browser=browser;
     // Only the built-in tools a web task needs, and none of the browser tools it never uses (their schemas cost tokens every turn)
-    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'||designOnly(t)||autoOf(t)==='all'?['Write','Edit']:[]),...(kit.allow.length||autoOf(t)!=='ask'?['Bash']:[])];
+    const tools=['Read','Glob','Grep','WebFetch','WebSearch',...(t.mode==='acceptEdits'||designOnly(t)||autoOf(t)==='all'?['Write','Edit']:[]),...(kit.allow.length||autoOf(t)!=='ask'?['Bash',...(process.platform==='win32'?['PowerShell']:[])]:[])];
     return {dir,secrets,mcpArgs:args,mcpEnv:env,args:['--mcp-config',mcp,'--strict-mcp-config','--tools',tools.join(','),'--allowedTools','mcp__browser','WebFetch','WebSearch',...kit.allow,'--disallowedTools',...WEB_TOOLS_OFF,...kit.deny]};
   }
   // Workflow steps wait for their dependencies; if one fails or is stopped, the steps after it stop too
@@ -1078,6 +1148,16 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
     }
     // an RN app: look at the simulators/emulators now, so the prompt says what this machine can test
     if(rn){t.activity='Đang kiểm tra máy ảo iOS/Android trên máy…';await mobileEnv().catch(()=>{});try{mkdirSync(join(RUNS_DIR,String(t.id)),{recursive:true})}catch{}}
+    // testing on a phone: see which phones are plugged in right now (the prompt names them)
+    if(!rn&&phoneAllowed(t.agent,t.team)&&phoneAsked(t)){t.activity='Đang kiểm tra điện thoại kết nối với máy…';await mobileEnv(true).catch(()=>{})}
+    t.phone=!!phonesFor(t);if(t.phone)try{mkdirSync(join(RUNS_DIR,String(t.id)),{recursive:true})}catch{}
+    // "Test app" was switched on but no phone answers: say so instead of testing something else
+    if(t.appMode==='app'&&!t.phone&&phoneAllowed(t.agent,t.team)&&!isDesign(t)&&!isVideo(t)){
+      booting.delete(t.id);snapOf.delete(t.id);
+      const ph=mobileEnvCached().phones||[];
+      fail(t,ph.some(p=>p.state==='unauthorized')?'Điện thoại chưa cho phép máy tính này: mở khóa điện thoại, bấm "Cho phép" ở hộp thoại Gỡ lỗi USB rồi giao lại việc.':'Đang bật "Test app" nhưng chưa thấy điện thoại nào: cắm cáp USB, bật Gỡ lỗi USB rồi giao lại việc (hoặc tắt "Test app" để test web).');
+      pump();return;
+    }
     try{if(t.cwd&&existsSync(t.cwd))snapOf.set(t.id,await snaps.scan(t.cwd,(i,n)=>{t.activity=`Đang ghi lại trạng thái thư mục trước khi chạy… ${i}/${n} file`}))}
     catch(e){(t.log||=[]).push({at:Date.now(),kind:'denied',text:`Không ghi lại được trạng thái thư mục (${short(e.message,120)}); việc này sẽ không có diff/hoàn tác.`})}
     booting.delete(t.id);
@@ -1128,7 +1208,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
     if(ask)note('ask',`Hỏi thêm: ${short(ask.q,300)}${resume?'':' (gửi kèm tóm tắt ngữ cảnh)'}`,false);
     if(reply)note('ask',`Bạn trả lời: ${short(t.clarify.at(-1).answer,300)}`,false);
     const outText=c=>Array.isArray(c)?c.map(x=>x.type==='text'?x.text:x.type==='image'?'[hình ảnh]':'').join(' '):String(c??'');
-    const turns=String(t.web||isVideo(t)?WEB_TURNS:MAX_TURNS);
+    const turns=String(t.web||t.phone||isVideo(t)?WEB_TURNS:MAX_TURNS);
     // Claude's AskUserQuestion tool has no one to answer it in `claude -p`, so the run would carry on guessing.
     // Stop the run there instead and let the task wait for the user's answer, like the question block does.
     let toolQ=null;const said=[];const canAsk=ask||(t.clarifies||0)<MAX_CLARIFY;
@@ -1206,7 +1286,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
     note('init','Director bắt đầu phân tích yêu cầu và chia việc cho các agent liên quan');
     let child=null;
     // Planning runs on Claude; on Codex when Claude's plan is used up (or not signed in); keyword planner otherwise
-    const input=planPrompt(t.text,t.owner,t.team)+mobilePlanNote(rnProject(t.cwd),mobileEnvCached())+attachPrompt(t);
+    const input=planPrompt(t.text,t.owner,t.team)+mobilePlanNote(rnProject(t.cwd),mobileEnvCached())+phonePlanNote(t)+attachPrompt(t);
     // the Director's own AI setting says which engine plans first; the other takes over when it is used up or not signed in
     const ok=e=>engineReady(e)&&!limitOf(e),first=engineOf(t.agent),second=first==='claude'?'codex':'claude';
     const planner=ok(first)?first:config.autoSwitch!==false&&ok(second)?second:null;
@@ -1239,7 +1319,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
         tasks.unshift({id,kind:'step',wf:t.id,wfTitle:t.wfTitle,stepTitle:s.title,request:t.text,deps:s.after.map(k=>ids[k]).filter(Boolean),planDeps:s.after.map(k=>ids[k]).filter(Boolean),
           agent:s.agent,name:a.name,role:a.role,desc:a.desc,team:a.team,level:a.level,text:s.task,priority:t.priority,status:'queued',created:new Date().toISOString(),
           model:t.forcedModel||s.model,effort:t.forcedEffort||(t.forcedModel?null:s.effort),modelWhy:t.forcedModel||t.forcedEffort?'Chọn thủ công':s.why||'Director chọn',
-          cwd:t.cwd,mode:t.mode,host:t.host,web:t.web||kitsFor(a.team||'').includes('browser'),siteIds:t.siteIds,engine:engineOfModel(t.forcedModel||s.model)||engineOf(s.agent),files:t.files,fileNames:t.fileNames,skills:t.skills});
+          cwd:t.cwd,mode:t.mode,host:t.host,appMode:t.appMode,web:t.web||kitsFor(a.team||'').includes('browser'),siteIds:t.siteIds,engine:engineOfModel(t.forcedModel||s.model)||engineOf(s.agent),files:t.files,fileNames:t.fileNames,skills:t.skills});
       }
       const name=id=>t.team.find(a=>a.id===id)?.name||id;
       t.result=`**Luồng công việc: ${t.wfTitle}** (${plan.steps.length} bước${ai?'':' · chia theo từ khóa'})\n\n${plan.steps.map((s,i)=>`${i+1}. **${name(s.agent)}** · ${s.title} · _${modelLabel(t.forcedModel||s.model)}${(t.forcedEffort||(!t.forcedModel&&s.effort))?`, suy luận ${EFFORTS[t.forcedEffort||s.effort].toLowerCase()}`:''}${!t.forcedModel&&!t.forcedEffort&&s.why?`: ${s.why}`:''}_${s.after.length?` _(sau bước ${s.after.map(k=>plan.steps.findIndex(x=>x.key===k)+1).join(', ')})_`:''}`).join('\n')}`;
@@ -1279,7 +1359,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
     let turns=0;
     // read-only design task: its design folder is the (only writable) workspace; the project is read by its full path
     const dOnly=designOnly(t);if(dOnly)mkdirSync(designDir(t),{recursive:true});
-    const vOnly=videoOnly(t);if(isVideo(t)||t.web)extra.push('-c','sandbox_workspace_write.network_access=true');// mathvid reads the voice from the Internet; uitest opens the site under test
+    const vOnly=videoOnly(t);if(isVideo(t)||t.web||t.phone)extra.push('-c','sandbox_workspace_write.network_access=true');// mathvid reads the voice from the Internet; uitest opens the site under test
     const {child,done}=codexExec(codexBin,{cwd:dOnly?designDir(t):vOnly?videoDir(t):t.cwd,input:ask?askPrompt(t,ask,resume):cont?CONT_PROMPT:reply?replyPrompt(t,replyResume):prompt(t),resume:resume||replyResume||cont?t.codexThread:(!ask&&t.resumeThread)||null,sandbox:t.mode==='acceptEdits'||dOnly||vOnly?'workspace-write':'read-only',extra,timeout:taskTimeout(t),onEvent:ev=>{
       const it=ev.item||{};
       if(it.type==='todo_list'&&Array.isArray(it.items))t.todos=it.items.slice(0,60).map(x=>({text:short(x.text,200),status:x.completed?'completed':'pending'}));
@@ -1330,7 +1410,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
     if(!/^[a-z0-9_-]{1,40}$/i.test(body.agent||''))throw Object.assign(new Error('Agent không hợp lệ.'),{code:400});
     const siteIds=Array.isArray(body.siteIds)?body.siteIds.filter(id=>sites.some(s=>s.id===id)).slice(0,10):[];
     const t={id:nextId++,agent:body.agent,name:short(body.name,60),role:short(body.role,80),desc:String(body.desc||'').slice(0,2000),team:short(body.agentTeam||'',40),level:LEVELS[body.level]?body.level:undefined,designFrom:Number.isInteger(body.designFrom)?body.designFrom:undefined,text,priority:short(body.priority||'Bình thường',30),
-      status:'queued',created:new Date().toISOString(),cwd:config.workdir,mode:config.mode,host:os.hostname(),web:!!body.web||kitsFor(short(body.agentTeam||'',40)).includes('browser'),siteIds,engine:engineOf(body.agent)};
+      status:'queued',created:new Date().toISOString(),appMode:body.app===true?'app':body.app===false?'web':undefined,cwd:config.workdir,mode:config.mode,host:os.hostname(),web:!!body.web||kitsFor(short(body.agentTeam||'',40)).includes('browser'),siteIds,engine:engineOf(body.agent)};
     // Model and effort: what the user forced, otherwise picked from the request and fitted to what the agent may use
     const forced=modelId(body.model),forcedEffort=EFFORTS[body.effort]?body.effort:null;
     const pick=forced?{engine:engineOfModel(forced),model:forced,effort:forcedEffort}:fitModel(aiOf(body.agent),{...pickModel(text),...(forcedEffort?{effort:forcedEffort}:{})},engineOf(body.agent));
@@ -1405,7 +1485,7 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
       config:{workdir:config.workdir,mode:config.mode,modes:MODES,defaultWorkdir:DEFAULT_WORKDIR,browserVisible:config.browserVisible,
         toolkits:Object.fromEntries(Object.entries(TOOLKITS).map(([k,v])=>[k,{short:v.short,label:v.label,write:!!v.write}])),teamKits:config.teamKits||{},defaultKits:DEFAULT_TEAM_KITS},
       browser:{mcp:!!MCP_CLI,channel:pickBrowser(config.browser).name,pick:config.browser||'auto',names:BROWSER_NAMES,ready:Object.fromEntries(Object.keys(BROWSER_NAMES).map(n=>[n,browserReady(n)])),firefox:ffInstall,own:pickBrowser(config.browser).own||null,extUrl:EXT_URL,extInstalled:{mychrome:extInstalled('chrome'),myedge:extInstalled('msedge')},extToken:!!config.extToken,sites:sites.filter(s=>!s.temp).map(siteView)},
-      mobile:await mobileEnv().then(e=>({...e,summary:mobileSummary(e),project:rnProject(config.workdir)})).catch(()=>null),
+      mobile:await mobileEnv().then(e=>({...e,summary:mobileSummary(e),project:rnProject(config.workdir),phone:config.phone||null,agents:config.agentPhone||{}})).catch(()=>null),
       remote:await remoteInfo(viewer),
       auto:{levels:AUTO_LEVELS,agents:config.agentAuto||{}},
       updates:(updater.check().catch(()=>{}),updater.view()),
@@ -1466,6 +1546,14 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
           }
           if(req.method==='GET'&&path==='/status')return json(res,200,await status(req));
           // What is left of each AI plan's usage windows (?fresh=1 re-reads instead of the few-minutes cache)
+          // apps installed on a phone, to pick the one to test (refreshes the phone list too)
+          if(req.method==='GET'&&path==='/phone/apps'){
+            const serial=new URL(req.url,'http://x').searchParams.get('serial')||'';
+            if(serial&&!/^[\w.:-]{1,80}$/.test(serial))return json(res,400,{error:'Mã thiết bị không hợp lệ.'});
+            const apps=await phoneApps(serial||null);
+            if(!apps)return json(res,409,{error:'Không đọc được danh sách app: kiểm tra cáp USB, mở khóa điện thoại và cho phép Gỡ lỗi USB.'});
+            return json(res,200,{apps});
+          }
           if(req.method==='GET'&&path==='/quota'){
             const fresh=/[?&]fresh=1/.test(req.url||'');await ensureCodex();
             const [claude,codex]=await Promise.all([readQuota('claude',{fresh,token:getSavedClaudeToken()}),codexBin?readQuota('codex',{fresh,bin:codexBin}):{ok:false,error:'Chưa cài Codex CLI.'}]);
@@ -1496,6 +1584,22 @@ ${(t.ownBrowser??pickBrowser(config.browser).own)?OWN_BROWSER_GUIDE:'Khi xong vi
             if(b.browser!==undefined){if(b.browser!=='auto'&&!BROWSER_NAMES[b.browser])return json(res,400,{error:'Trình duyệt không hợp lệ.'});config.browser=b.browser;if(b.browser==='firefox')installFirefox()}
             if(b.autoSwitch!==undefined)config.autoSwitch=!!b.autoSwitch;
             if(b.maxParallel!==undefined){const n=+b.maxParallel;if(!Number.isInteger(n)||n<1||n>6)return json(res,400,{error:'Số việc chạy cùng lúc phải từ 1 đến 6.'});config.maxParallel=n;setTimeout(pump)}
+            // the phone and app the QA tests on (apptest); empty app clears it
+            if(b.phone!==undefined){
+              const serial=String(b.phone?.serial||'').slice(0,80),app=String(b.phone?.app||'').trim();
+              if(serial&&!/^[\w.:-]+$/.test(serial)||app&&!PKG_RE.test(app))return json(res,400,{error:'Thiết bị hoặc tên package không hợp lệ (ví dụ com.congty.app).'});
+              config.phone=serial||app?{serial,app}:null;
+            }
+            // one agent: may it test apps on the phone (on: true/false, null = as its team) and its own app ('' = the shared one)
+            if(b.agentPhone&&typeof b.agentPhone==='object'){
+              if(isRemoteReq(req))return json(res,403,{error:'Quyền kiểm thử trên điện thoại chỉ đổi được trên chính máy chạy app.'});
+              const {agent,on,app}=b.agentPhone;
+              if(!/^[a-z0-9_-]{1,40}$/i.test(String(agent||''))||app&&!PKG_RE.test(String(app)))return json(res,400,{error:'Agent hoặc tên package không hợp lệ.'});
+              const cur={...(config.agentPhone?.[agent]||{})};
+              if(on!==undefined){if(on===null)delete cur.on;else cur.on=!!on}
+              if(app!==undefined){if(app)cur.app=String(app);else delete cur.app}
+              config.agentPhone??={};if(Object.keys(cur).length)config.agentPhone[agent]=cur;else delete config.agentPhone[agent];
+            }
             if(b.splitTeam!==undefined){const team=short(b.splitTeam,40),off=new Set(config.splitOff||[]);if(b.split)off.delete(team);else off.add(team);config.splitOff=[...off]}
             if(b.aiUpdate!==undefined){
               if(isRemoteReq(req))return json(res,403,{error:'Cài đặt cập nhật AI chỉ đổi được trên chính máy chạy app.'});

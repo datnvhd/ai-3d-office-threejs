@@ -122,6 +122,58 @@ export function cleanCode(code){
   return pair?pair[0]:s.replace(/\s+/g,'');
 }
 
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const pickAccount=j=>{
+  const email=j?.email_address||j?.email;if(!email)return null;
+  const orgs=(j.memberships||[]).map(m=>m.organization?.name).filter(Boolean).slice(0,3);
+  return {email,name:j.full_name||j.display_name||null,orgs};
+};
+// Which Claude account the sign-in window is logged in to: a tab of that window (DevTools on localhost) asks
+// claude.ai for the account of its own session. The token from `setup-token` cannot read the profile itself
+// (no user:profile scope), so this is the only moment the email is known. Null when anything is missing.
+async function browserAccount(dir){
+  if(!dir||typeof WebSocket!=='function')return null;
+  const end=Date.now()+20000;let port=0;
+  while(!port&&Date.now()<end){try{port=+readFileSync(join(dir,'DevToolsActivePort'),'utf8').split('\n')[0]||0}catch{}if(!port)await sleep(300)}
+  if(!port)return null;
+  const base=`http://127.0.0.1:${port}`;
+  const tab=await (await fetch(`${base}/json/new?https://claude.ai/api/account`,{method:'PUT',signal:AbortSignal.timeout(5000)})).json();
+  try{
+    const ws=new WebSocket(tab.webSocketDebuggerUrl);
+    await new Promise((ok,no)=>{ws.onopen=ok;ws.onerror=no;setTimeout(no,5000)});
+    let id=0;const wait=new Map();
+    ws.onmessage=e=>{let m;try{m=JSON.parse(e.data)}catch{return}wait.get(m.id)?.(m);wait.delete(m.id)};
+    const call=(method,params)=>new Promise(r=>{wait.set(++id,r);ws.send(JSON.stringify({id,method,params}));setTimeout(()=>r({}),8000)});
+    try{
+      // the page may first show Cloudflare's check: ask again until claude.ai answers with JSON
+      while(Date.now()<end){
+        const r=await call('Runtime.evaluate',{expression:"location.host==='claude.ai'&&document.readyState==='complete'?fetch('/api/account',{credentials:'include'}).then(r=>r.ok?r.text():'').catch(()=>''):''",awaitPromise:true,returnByValue:true});
+        const text=r.result?.result?.value;
+        if(text){try{return pickAccount(JSON.parse(text))}catch{}}
+        await sleep(700);
+      }
+      return null;
+    }finally{try{ws.close()}catch{}}
+  }finally{fetch(`${base}/json/close/${tab.id}`).catch(()=>{})}
+}
+
+// A token saved before the email was recorded: when its organization (sent back with every API answer) is the one
+// Claude Code itself is signed in to on this machine, that account's email is the token's. Once per token.
+const guessed=new Map();
+async function tokenAccount(store){
+  if(store.account)return store.account;
+  if(!guessed.has(store.token))guessed.set(store.token,(async()=>{
+    // the model list costs no usage and its answer carries the organization id
+    const org=await fetch('https://api.anthropic.com/v1/models',{signal:AbortSignal.timeout(15000),headers:{Authorization:`Bearer ${store.token}`,'anthropic-beta':'oauth-2025-04-20','anthropic-version':'2023-06-01'}}).then(r=>r.headers.get('anthropic-organization-id'),()=>null);if(!org){guessed.delete(store.token);return null}
+    let cli;try{cli=JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR||homedir(),'.claude.json'),'utf8')).oauthAccount}catch{}
+    if(cli?.organizationUuid!==org||!cli.emailAddress)return {email:null,orgId:org};
+    const account={email:cli.emailAddress,name:cli.displayName||null,orgs:cli.organizationName?[cli.organizationName]:[]};
+    try{saveStore({...loadStore(),account})}catch{}
+    return account;
+  })());
+  return guessed.get(store.token);
+}
+
 export function claudeBridge(){
   let bin=null,binChecked=false,version=null,gen=-1;
   let login={state:'idle'};// idle | starting | waiting | verifying | success | error
@@ -137,7 +189,9 @@ export function claudeBridge(){
     closeBrowser();
     const exe=findBrowser();if(!exe)return false;
     profile=join(tmpdir(),`ai-office-claude-login-${Date.now()}`);
-    browser=spawn(exe,[`--user-data-dir=${profile}`,'--no-first-run','--no-default-browser-check','--new-window',url],{stdio:'ignore'});
+    // DevTools on a random localhost port (written to <profile>/DevToolsActivePort): once signed in, the account's
+    // email is read from this window (readAccount) so the office can show which account it is connected to
+    browser=spawn(exe,[`--user-data-dir=${profile}`,'--remote-debugging-port=0','--no-first-run','--no-default-browser-check','--new-window',url],{stdio:'ignore'});
     browser.on('error',()=>{});browser.on('exit',()=>{browser=null});
     return true;
   }
@@ -154,15 +208,20 @@ export function claudeBridge(){
     if(dir)setTimeout(()=>{try{rmSync(dir,{recursive:true,force:true,maxRetries:5,retryDelay:500})}catch{}},2000);
   }
 
-  function stopLogin(){clearTimeout(timer);killTree(proc);proc=null;closeBrowser()}
+  function stopLogin(){clearTimeout(timer);killTree(proc);proc=null;accountP=null;closeBrowser()}
+
+  // The sign-in window is still open when the code is pasted: started then, so it is done by the time the token arrives
+  let accountP=null;
+  const readAccount=()=>accountP||=browserAccount(profile);
 
   async function finishWithToken(token){
+    const account=await readAccount().catch(()=>null);
     stopLogin();
     login={state:'verifying'};
     const v=await verifyToken(bin,token);
     if(!v.ok){login={state:'error',message:`Đã nhận token nhưng kiểm tra thất bại: ${v.error}`};return}
     const now=new Date();
-    saveStore({token,createdAt:now.toISOString(),expiresAt:new Date(now.getTime()+365*864e5).toISOString(),verifiedAt:now.toISOString(),lastError:null});
+    saveStore({token,account,createdAt:now.toISOString(),expiresAt:new Date(now.getTime()+365*864e5).toISOString(),verifiedAt:now.toISOString(),lastError:null});
     login={state:'success'};
   }
 
@@ -211,8 +270,10 @@ export function claudeBridge(){
     const store=loadStore();
     const expired=store?.expiresAt&&Date.parse(store.expiresAt)<Date.now();
     // Only the token signed in through this app counts: the CLI's own (default) account is never used
+    const connected=!!(store?.token&&store.verifiedAt&&!store.lastError&&!expired);
     return {
-      connected:!!(store?.token&&store.verifiedAt&&!store.lastError&&!expired),
+      connected,
+      account:connected?await tokenAccount(store):null,
       cli:{found:!!bin,version,path:bin},
       token:store?.token?{masked:mask(store.token),createdAt:store.createdAt,expiresAt:store.expiresAt,verifiedAt:store.verifiedAt,lastError:store.lastError,expired:!!expired,file:STORE_FILE}:null,
       login:{state:login.state,url:login.url||null,fresh:!!login.fresh,message:login.message||null}
@@ -244,7 +305,7 @@ export function claudeBridge(){
             if(!/^[\w#.\-]{10,600}$/.test(clean))return json(res,400,{error:'Mã xác thực không đúng định dạng: hãy bấm "Copy Code" trên trang đăng nhập rồi dán lại.'});
             if(retrying)return json(res,409,{error:'Đang mở lại trang đăng nhập sau lần mã bị từ chối: đợi vài giây, đăng nhập trên trang mới rồi dán mã mới.'});
             // Code and Enter in one write are taken as a paste and never submitted: send Enter separately
-            const p=proc;login={...login,message:null,error:null};p.write(clean);setTimeout(()=>{if(proc===p)p.write('\r')},500);
+            const p=proc;login={...login,message:null,error:null};readAccount().catch(()=>{});p.write(clean);setTimeout(()=>{if(proc===p)p.write('\r')},500);
             return json(res,200,{ok:true});
           }
           if(req.method==='POST'&&path==='/login/cancel'){stopLogin();login={state:'idle'};return json(res,200,await status())}

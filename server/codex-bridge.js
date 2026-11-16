@@ -1,8 +1,8 @@
 // Vite dev-server plugin: connects the office to OpenAI Codex CLI (ChatGPT sign-in).
 // `codex login` opens the ChatGPT sign-in page and stores credentials in Codex's own home (~/.codex);
-// this server never reads or forwards them. Tasks run with `codex exec --json` (see codexExec below).
+// this server only reads which account it is (email and plan, for the office to show) and never forwards them. Tasks run with `codex exec --json` (see codexExec below).
 import {spawn,execFile} from 'node:child_process';
-import {existsSync,readdirSync,realpathSync} from 'node:fs';
+import {existsSync,readdirSync,realpathSync,readFileSync} from 'node:fs';
 import {homedir,tmpdir} from 'node:os';
 import {join,dirname} from 'node:path';
 import {killTree,reapGroup,NODE_ENV} from './claude-bridge.js';
@@ -93,6 +93,17 @@ export async function codexAuth(bin){
 // The done promise resolves with {code,message,usage,error,stderr,timedOut}.
 // With `resume` (a thread id) it continues that conversation; `exec resume` has no -s/-C, so the sandbox goes in as config
 // (unquoted: the nvm codex.exe shim goes through cmd, which breaks on quotes; Codex reads a non-TOML value as a plain string).
+// The ChatGPT account Codex is signed in to: the email and plan in the id token Codex saved (auth.json in its home).
+// Read from the file only; nothing is sent anywhere. Null with an API key or when the file cannot be read.
+export function codexAccount(){
+  try{
+    const a=JSON.parse(readFileSync(join(process.env.CODEX_HOME||join(homedir(),'.codex'),'auth.json'),'utf8'));
+    const p=JSON.parse(Buffer.from(String(a.tokens?.id_token||'').split('.')[1]||'','base64url').toString('utf8'));
+    const o=p['https://api.openai.com/auth']||{};
+    return p.email?{email:p.email,name:p.name||null,plan:o.chatgpt_plan_type||null}:null;
+  }catch{return null}
+}
+
 export function codexExec(bin,{cwd,input,sandbox='read-only',extra=[],onEvent,timeout,resume}){
   // On Windows the default workspace-write sandbox still blocks every write; Codex's Windows sandbox lets it write in the workspace
   const win=process.platform==='win32'&&sandbox==='workspace-write'?['--enable','experimental_windows_sandbox']:[];
@@ -158,7 +169,7 @@ export function codexBridge(){
   async function status(){
     await ensureBin();
     const auth=bin?await codexAuth(bin):null;
-    return {connected:!!auth,auth,cli:{found:!!bin,version,path:bin},lastTest,login:{state:login.state,url:login.url||null,message:login.message||null}};
+    return {connected:!!auth,auth,account:auth==='chatgpt'?codexAccount():null,cli:{found:!!bin,version,path:bin},lastTest,login:{state:login.state,url:login.url||null,message:login.message||null}};
   }
 
   const json=(res,code,body)=>{res.statusCode=code;res.setHeader('Content-Type','application/json; charset=utf-8');res.setHeader('Cache-Control','no-store');res.end(JSON.stringify(body))};

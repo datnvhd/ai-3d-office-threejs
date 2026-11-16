@@ -409,3 +409,15 @@
 .gfxopt small{display:block;font-size:12px;color:#aab3c5}
 /* no brand block on the left: the buttons stay on the right */
 .top{justify-content:flex-end}
+/* which account Claude Code / Codex is signed in to (connection panels) */
+.claude-rows .acct-more{display:block;font-weight:400;opacity:.7;font-size:.9em}
+.claude-chip{max-width:320px}.claude-chip>span:last-child{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* phone testing (Máy cá nhân window) */
+.mphone{display:flex;flex-direction:column;gap:8px;margin:4px 0 10px}.mphone .claude-actions{margin:0}
+.mphone input[type=search]{background:#151b26;color:#fff;border:1px solid #475363;border-radius:10px;padding:11px 12px;outline:none;font-size:13px}.mphone input[type=search]:focus{border-color:#ee996f}
+/* per-agent phone testing switch and app */
+.mphone-agents{display:flex;flex-direction:column;gap:6px;margin:6px 0 14px}.mphone-row{display:flex;align-items:center;gap:10px;background:#1a202b;border:1px solid #3a4250;border-radius:10px;padding:7px 10px}.mphone-row.on{border-color:#5d7a5f}.mphone-row label{display:flex;align-items:center;gap:8px;flex:1;min-width:0;font-size:12px;cursor:pointer}.mphone-row label b{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mphone-row label em{color:#94a0b2;font-style:normal;font-size:11px;white-space:nowrap}.mphone-row select{width:auto;max-width:48%;padding:7px 9px;font-size:12px}.mphone-row select:disabled{opacity:.45}
+/* agent form: phone testing */
+.phone-pick .phone-app{display:flex;gap:8px;margin-top:6px}.phone-pick .phone-app input{flex:1;min-width:0}.phone-pick .phone-app .ghost{padding:9px 12px;font-size:12px}.phone-pick label.off{opacity:.45}
+#appOpt small{color:#94a0b2;font-size:11px;margin-left:4px}
+#appOpt.appopt{margin:-4px 0 8px}#appOpt.appopt .mcheck{margin:0}

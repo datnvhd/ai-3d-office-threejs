@@ -25,10 +25,18 @@ export function initClaudeConnect({toast}){
     const dot=chip.querySelector('.cdot'),txt=chip.querySelector('#claudeChipText');
     const s=!st?'checking':st.connected?'ok':['starting','waiting','verifying'].includes(st.login.state)?'checking':'off';
     dot.className='cdot '+s;
-    txt.textContent=!st?'Đang kiểm tra…':st.connected?'Claude Code: đã kết nối':s==='checking'?'Đang đăng nhập…':'Claude Code: chưa kết nối';
+    txt.textContent=!st?'Đang kiểm tra…':st.connected?`Claude Code: ${st.account?.email||'đã kết nối'}`:s==='checking'?'Đang đăng nhập…':'Claude Code: chưa kết nối';
+    chip.title=st?.connected?`Đang dùng tài khoản Claude ${st.account?.email||'(chưa rõ email)'}`:'';
   }
 
   function rows(list){return `<div class="claude-rows">${list.map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`}
+
+  // Email of the account the token belongs to (read when signing in); a token saved before that shows how to get it
+  function accountText(a){
+    if(!a?.email)return '<em class="bad">chưa rõ email</em> · bấm "Đăng nhập tài khoản khác" để hiện';
+    const more=[a.name,...(a.orgs||[])].filter(Boolean).map(esc).join(' · ');
+    return `${esc(a.email)}${more?`<small class="acct-more">${more}</small>`:''}`;
+  }
 
   function render(){
     setChip();
@@ -53,7 +61,7 @@ export function initClaudeConnect({toast}){
       body.innerHTML='<h2>Đã nhận token</h2><p class="claude-note"><span class="spinner"></span> Đang kiểm tra token với Claude Code…</p>';
     }else if(st.connected){
       body.innerHTML=`<h2><span class="cdot ok"></span> Đã kết nối Claude Code</h2>
-        ${rows([['Token',`<code>${esc(token.masked)}</code>`],['Tạo lúc',fmt(token.createdAt)],['Hết hạn (ước tính)',fmt(token.expiresAt)],['Kiểm tra gần nhất',fmt(token.verifiedAt)]])}
+        ${rows([['Tài khoản',accountText(st.account)],['Token',`<code>${esc(token.masked)}</code>`],['Tạo lúc',fmt(token.createdAt)],['Hết hạn (ước tính)',fmt(token.expiresAt)],['Kiểm tra gần nhất',fmt(token.verifiedAt)]])}
         ${cliRows}
         <p class="claude-note">Mọi việc chạy bằng tài khoản Claude đã đăng nhập trong ứng dụng (token này), không dùng tài khoản mặc định của Claude Code trên máy. Token được lưu tại <code>${esc(token.file)}</code> và không gửi xuống trình duyệt.</p>
         <div class="claude-actions"><button class="assign" data-act="login">✦ Đăng nhập tài khoản khác</button><button class="ghost" data-act="verify">✓ Kiểm tra lại</button><button class="ghost" data-act="logout">Ngắt kết nối</button></div>`;

@@ -151,7 +151,53 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
     const android=m.android?`${m.avds.length} máy ảo${m.devices.length?` · đang kết nối ${esc(m.devices.join(', '))}`:''}`:'<em class="bad">chưa có Android SDK (adb)</em>';
     return `<div class="section-title">KIỂM THỬ APP MOBILE</div>
       ${rows([['Dự án',proj],['iOS Simulator',ios],['Android',android],['Maestro',m.maestro?esc(m.maestro):'<em>chưa cài</em> · <code>curl -fsSL "https://get.maestro.mobile.dev" | bash</code>']])}
-      <p class="claude-note">Với app React Native, QA kiểm theo 3 mức: kiểm tra tĩnh (tsc, eslint, jest), Expo web trên trình duyệt khung iPhone, và máy ảo iOS/Android (Maestro, ảnh chụp app). Bộ <b>Mobile (RN)</b> tự bật cho đội có Node.js hoặc Chạy test; build và chạy máy ảo cần chế độ được sửa file.</p>`;
+      <p class="claude-note">Với app React Native, QA kiểm theo 3 mức: kiểm tra tĩnh (tsc, eslint, jest), Expo web trên trình duyệt khung iPhone, và máy ảo iOS/Android (Maestro, ảnh chụp app). Bộ <b>Mobile (RN)</b> tự bật cho đội có Node.js hoặc Chạy test; build và chạy máy ảo cần chế độ được sửa file.</p>
+      ${phoneHtml(m)}`;
+  };
+  // A real Android phone plugged in by USB: pick the installed app QA tests with `apptest` (server/phone-runner.mjs)
+  let phoneApps=null;// package list of the chosen phone, loaded on demand
+  let phoneFind='';// search text over that list (kept across re-renders)
+  const appMatch=a=>!phoneFind||phoneFind.toLowerCase().split(/\s+/).filter(Boolean).every(w=>a.toLowerCase().includes(w));
+  // filters the app list in place while typing (no re-render: the search box keeps focus)
+  function filterApps(){
+    const sel=body.querySelector('#mPhoneApp');if(!sel)return;
+    let n=0;for(const o of [...sel.options].slice(1)){const hit=appMatch(o.value);o.hidden=!hit;if(hit)n++}
+    sel.options[0].textContent=phoneFind?`— ${n} app khớp "${phoneFind}" —`:'— Chọn app đã cài —';
+    return n;
+  }
+  // Which agents may test apps on the phone, and on which app. Not changed here: the team's "Điện thoại" kit decides
+  // (QA has it), and the app is the shared one above.
+  const kitsOf=team=>st.config?.teamKits?.[team]??st.config?.defaultKits?.[team]??st.config?.defaultKits?.['*']??[];
+  const phoneAgentsHtml=(m,apps)=>{
+    const list=getAgents();if(!list.length)return '';
+    const A=m.agents||{},shared=m.phone?.app||'',viewer=!!st.remote?.viewer;
+    const rowsHtml=list.map(a=>{
+      const own=A[a.id]||{},byTeam=own.on===undefined,on=byTeam?kitsOf(a.team).includes('phone'):!!own.on;
+      const opts=[...new Set([...apps,...(own.app?[own.app]:[])])];
+      return `<div class="mphone-row ${on?'on':''}">
+        <label><input type="checkbox" data-phone-agent="${esc(a.id)}"${on?' checked':''}${viewer?' disabled':''}><span class="tagdot" style="background:#${(a.color??0x9aa3b5).toString(16).padStart(6,'0')}"></span><b>${esc(a.name)}</b><em>${esc(a.team)}${byTeam?' · theo đội':''}</em></label>
+        <select data-phone-app="${esc(a.id)}"${on&&!viewer?'':' disabled'}><option value="">App chung${shared?` (${esc(shared)})`:' (chưa chọn)'}</option>${opts.map(p=>`<option value="${esc(p)}"${p===own.app?' selected':''}>${esc(p)}</option>`).join('')}</select>
+      </div>`}).join('');
+    const n=list.filter(a=>{const o=A[a.id]?.on;return o===undefined?kitsOf(a.team).includes('phone'):o}).length;
+    return `<div class="section-title">AGENT ĐƯỢC KIỂM THỬ APP TRÊN ĐIỆN THOẠI <span>${n?`${n} agent`:'chưa có agent nào'}</span></div>
+      <p class="claude-note">Tích để cho agent điều khiển điện thoại (lệnh <code>apptest</code>); bỏ tích thì agent không đụng tới điện thoại kể cả khi đội có bộ Điện thoại. Mỗi agent có thể kiểm thử một app riêng; để "App chung" thì dùng app chọn ở trên.${apps.length?'':' Bấm "Tải danh sách app" để có danh sách app chọn riêng.'}</p>
+      <div class="mphone-agents">${rowsHtml}</div>`;
+  };
+  const phoneHtml=m=>{
+    const ph=m.phones||[],ok=ph.filter(p=>p.state==='device'),pick=m.phone||{};
+    const nm=p=>`${esc(p.model||p.serial)}${p.android?` · Android ${esc(p.android)}`:''}${p.emulator?' · máy ảo':''}`;
+    const list=!m.android?'<em class="bad">chưa có Android SDK (adb)</em>':ph.length?ph.map(p=>p.state==='device'?nm(p):`${esc(p.serial)} · <em class="bad">${p.state==='unauthorized'?'chưa cho phép: bấm "Cho phép" trên điện thoại':esc(p.state)}</em>`).join('<br>'):'<em>chưa cắm điện thoại</em>';
+    const apps=[...new Set([...(phoneApps||[]),...(pick.app?[pick.app]:[])])];
+    return `<div class="section-title">KIỂM THỬ APP TRÊN ĐIỆN THOẠI</div>
+      ${rows([['Điện thoại',list],['App kiểm thử',pick.app?`<code>${esc(pick.app)}</code>`:'<em>chưa chọn</em>']])}
+      ${ok.length?`<div class="mphone">
+        ${ok.length>1?`<select id="mPhoneDev">${ok.map(p=>`<option value="${esc(p.serial)}"${p.serial===pick.serial?' selected':''}>${nm(p)}</option>`).join('')}</select>`:''}
+        ${phoneApps?.length?`<input id="mPhoneFind" type="search" placeholder="🔍 Tìm app theo tên package (vd: shopee, bank, com.congty)… Enter để chọn" value="${esc(phoneFind)}" autocomplete="off" spellcheck="false">`:''}
+        <select id="mPhoneApp"><option value="">${!phoneApps?'— Bấm "Tải danh sách app" —':phoneFind?`— ${apps.filter(appMatch).length} app khớp "${esc(phoneFind)}" —`:'— Chọn app đã cài —'}</option>${apps.map(a=>`<option value="${esc(a)}"${a===pick.app?' selected':''}${appMatch(a)||a===pick.app?'':' hidden'}>${esc(a)}</option>`).join('')}</select>
+        <div class="claude-actions"><button class="ghost" data-act="phoneApps">⟲ Tải danh sách app</button><button class="assign" data-act="phoneTask"${pick.app?'':' disabled'}>▶ Giao việc kiểm thử</button></div>
+      </div>`:''}
+      <p class="claude-note">Cách nối: trên điện thoại Android bật <b>Tùy chọn nhà phát triển → Gỡ lỗi USB</b>, cắm cáp vào máy này rồi bấm <b>Cho phép</b>. QA điều khiển app đã cài bằng lệnh <code>apptest</code> (không cần mã nguồn): mở app, chạm, gõ, vuốt, chụp ảnh từng bước vào mục Ảnh chụp và đọc log crash. iPhone chưa hỗ trợ: Apple chỉ cho điều khiển iPhone qua Xcode trên máy Mac.</p>
+      ${phoneAgentsHtml(m,apps)}`;
   };
   // Remote access: other computers on the LAN/VPN open this office with a key (server/remote-access.js)
   const remoteHtml=r=>{
@@ -251,6 +297,26 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
         if(lvl!=='ask'&&!confirm(`Cho phép ${who} ${lvl==='all'?'tự chạy lệnh và tự sửa file trong thư mục làm việc':'tự chạy lệnh'} mà không hỏi bạn?\nLệnh nguy hiểm vẫn sẽ hỏi.`)){el.value=st.auto.agents[el.dataset.auto]||'ask';return}
         st=await machineApi('/config',{method:'POST',body:JSON.stringify({agentAuto:{[el.dataset.auto]:lvl}})});onStatus(st);toast(`${who}: ${st.auto.levels[lvl]}`)}
       else if(name==='split'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({splitTeam:el.dataset.split,split:el.checked})});onStatus(st);toast(el.checked?`Đội ${el.dataset.split}: việc lớn sẽ được chia cho các thành viên làm song song`:`Đội ${el.dataset.split}: không chia việc`)}
+      else if(name==='phoneApps'){
+        const serial=body.querySelector('#mPhoneDev')?.value||st.mobile?.phone?.serial||'';
+        const r=await machineApi('/phone/apps'+(serial?`?serial=${encodeURIComponent(serial)}`:''));phoneApps=r.apps;
+        await refresh();toast(r.apps.length?`Điện thoại có ${r.apps.length} app đã cài: chọn app cần kiểm thử`:'Điện thoại chưa cài app nào ngoài app hệ thống')}
+      else if(name==='phone'){
+        const serial=body.querySelector('#mPhoneDev')?.value||(st.mobile?.phones||[]).find(p=>p.state==='device')?.serial||'';
+        if(el.id==='mPhoneDev'){phoneApps=null;phoneFind=''}// another phone: its own app list
+        const app=el.id==='mPhoneDev'?'':body.querySelector('#mPhoneApp').value;
+        st=await machineApi('/config',{method:'POST',body:JSON.stringify({phone:{serial,app}})});onStatus(st);toast(app?`QA sẽ kiểm thử ${app} trên điện thoại`:'Đã đổi điện thoại: tải lại danh sách app')}
+      else if(name==='agentPhone'){
+        const id=el.dataset.phoneAgent||el.dataset.phoneApp,who=getAgents().find(a=>a.id===id)?.name||id;
+        const body_=el.dataset.phoneAgent?{agent:id,on:el.checked}:{agent:id,app:el.value};
+        st=await machineApi('/config',{method:'POST',body:JSON.stringify({agentPhone:body_})});onStatus(st);
+        toast(el.dataset.phoneAgent?(el.checked?`${who} được kiểm thử app trên điện thoại`:`${who} không được dùng điện thoại`):`${who} sẽ kiểm thử ${el.value||'app chung'}`)}
+      else if(name==='phoneTask'){
+        const p=st.mobile?.phone,ph=(st.mobile?.phones||[]).find(x=>x.serial===p?.serial)||(st.mobile?.phones||[]).find(x=>x.state==='device');
+        const box=document.getElementById('task');if(!box||!p?.app)return;
+        box.value=`Kiểm thử app ${p.app} trên điện thoại ${ph?.model||''}: `.replace(/\s+:/,':');
+        modal.classList.add('hidden');box.focus();box.setSelectionRange(box.value.length,box.value.length);box.dispatchEvent(new Event('input',{bubbles:true}));
+        toast('Viết tiếp các luồng hoặc test case cần kiểm thử rồi nhấn Enter để giao việc');return}
       else if(name==='parallel'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({maxParallel:+el.value})});onStatus(st);toast(`Chạy tối đa ${st.limits.maxParallel} việc cùng lúc`)}
       else if(name==='autoSwitch'){st=await machineApi('/config',{method:'POST',body:JSON.stringify({autoSwitch:el.checked})});onStatus(st);toast(el.checked?'Sẽ tự chuyển sang AI còn hạn mức':'Không tự chuyển: việc sẽ dừng khi gói AI hết hạn mức')}
       else if(name==='update'){await updateAct({engine:el.dataset.engine});toast('Đang cập nhật ở chế độ chạy ngầm…')}
@@ -274,8 +340,12 @@ export function initMachineConnect({toast,onStatus=()=>{},getTeams=()=>[],getAge
     finally{busy=false;checking=false;render()}
   }
   body.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(b)act(b.dataset.act,b)});
-  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.dataset.split!==undefined)act('split',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.name==='mUpdate')act('updateMode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mBrowser')act('browser',e.target);else if(e.target.id==='mPublic')act('public',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.id==='mParallel')act('parallel',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
-  body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir')});
+  body.addEventListener('change',e=>{if(e.target.dataset.kit)act('kits',e.target);else if(e.target.dataset.split!==undefined)act('split',e.target);else if(e.target.name==='mMode')act('mode',e.target);else if(e.target.name==='mUpdate')act('updateMode',e.target);else if(e.target.id==='mVisible')act('visible',e.target);else if(e.target.id==='mBrowser')act('browser',e.target);else if(e.target.id==='mPublic')act('public',e.target);else if(e.target.id==='mRemote')act('remote',e.target);else if(e.target.id==='mAutoSwitch')act('autoSwitch',e.target);else if(e.target.id==='mParallel')act('parallel',e.target);else if(e.target.id==='mPhoneApp'||e.target.id==='mPhoneDev')act('phone',e.target);else if(e.target.dataset.phoneAgent||e.target.dataset.phoneApp)act('agentPhone',e.target);else if(e.target.dataset.auto)act('auto',e.target)});
+  body.addEventListener('keydown',e=>{if(e.key==='Enter'&&e.target.id==='mWorkdir')act('workdir');
+    // Enter in the app search: pick the first app that matches
+    if(e.key==='Enter'&&e.target.id==='mPhoneFind'){e.preventDefault();const sel=body.querySelector('#mPhoneApp'),o=[...sel.options].slice(1).find(o=>!o.hidden);
+      if(!o)return toast(`Không có app nào khớp "${phoneFind}"`);sel.value=o.value;act('phone',sel)}});
+  body.addEventListener('input',e=>{if(e.target.id==='mPhoneFind'){phoneFind=e.target.value.trim();filterApps()}});
 
   refresh();
   setInterval(()=>{if(!busy&&modal.classList.contains('hidden'))machineApi('/status').then(s=>{st=s;onStatus(s);setChip()}).catch(()=>{})},15000);

@@ -25,15 +25,18 @@ export function initCodexConnect({toast,onChange=()=>{}}){
   function setChip(){
     const s=!st?'checking':st.connected?'ok':pending()?'checking':'off';
     chip.querySelector('.cdot').className='cdot '+s;
-    chip.querySelector('.xtext').textContent=!st?'Codex…':st.connected?'Codex: đã kết nối':s==='checking'?'Codex: đang đăng nhập…':'Codex: chưa kết nối';
+    chip.title=st?.connected?`Đang dùng tài khoản ${st.account?.email||(st.auth==='apikey'?'API key OpenAI':'ChatGPT')}`:'';
+    chip.querySelector('.xtext').textContent=!st?'Codex…':st.connected?`Codex: ${st.account?.email||(st.auth==='apikey'?'API key':'đã kết nối')}`:s==='checking'?'Codex: đang đăng nhập…':'Codex: chưa kết nối';
   }
   const rows=list=>`<div class="claude-rows">${list.map(([k,v])=>`<div><span>${k}</span><b>${v}</b></div>`).join('')}</div>`;
+
+  const PLAN={free:'Free',plus:'Plus',pro:'Pro',team:'Team',business:'Business',enterprise:'Enterprise',edu:'Edu'};
 
   function render(){
     setChip();
     if(!st){body.innerHTML='<p class="claude-note">Đang kiểm tra kết nối…</p>';return}
     const {cli,login,lastTest}=st;
-    const info=rows([['Codex CLI',cli.found?esc(cli.version||'đã cài'):'<em class="bad">không tìm thấy</em>'],['Đăng nhập',st.auth==='chatgpt'?'Tài khoản ChatGPT':st.auth==='apikey'?'API key OpenAI':'chưa đăng nhập'],['Agent dùng Codex','Designer']]);
+    const info=rows([['Codex CLI',cli.found?esc(cli.version||'đã cài'):'<em class="bad">không tìm thấy</em>'],['Đăng nhập',st.auth==='chatgpt'?(st.account?.email?`${esc(st.account.email)}<small class="acct-more">ChatGPT${st.account.plan?' '+esc(PLAN[st.account.plan]||st.account.plan):''}${st.account.name?' · '+esc(st.account.name):''}</small>`:'Tài khoản ChatGPT'):st.auth==='apikey'?'API key OpenAI':'chưa đăng nhập'],['Agent dùng Codex','Designer']]);
     const test=lastTest?`<p class="${lastTest.ok?'claude-note':'claude-err'}">${lastTest.ok?'✓':'✗'} Chạy thử lúc ${fmt(lastTest.at)}: ${esc(lastTest.detail)}</p>`:'';
     if(!cli.found){
       body.innerHTML=`<h2>Chưa có Codex CLI</h2><p class="claude-note">Cài bằng <code>npm i -g @openai/codex</code> (hoặc đặt biến môi trường <code>CODEX_BIN</code>), khởi động lại server rồi kiểm tra lại.</p>${info}<button class="assign" data-act="refresh">⟲ Kiểm tra lại</button>`;
