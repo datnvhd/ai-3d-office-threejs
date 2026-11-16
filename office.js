@@ -166,6 +166,7 @@ function floorSlab(p){
   // wood edge band around the base
   add(p,rbox(ROOM.w+.3,.2,ROOM.d+.3,.04),mat(0xc99a66,.55),[ROOM.cx,FY-.36,ROOM.cz],1,null,false);
   add(p,rbox(ROOM.w+.42,.06,ROOM.d+.42,.03),mat(0xb5844f,.6),[ROOM.cx,FY-.47,ROOM.cz],1,null,false);
+  return {top,side,tex};
 }
 // Glass wall along local x (0..len): thin dark frame and posts, clear glass; an optional door gap [a,b] gets a
 // framed glass door with long bar handles
@@ -433,21 +434,22 @@ function meetingRoom(p){
   meetingTV={canvas:c,ctx:c.getContext('2d'),tex};
   plant(p,.75,11.2,{pot:0xfbfaf7,s:.85,seed:27});plant(p,-5.0,5.85,{pot:0xfbfaf7,s:.8,seed:33});
 }
-export function createOffice(world,renderer){
+export function createOffice(world,renderer,opts={}){
   const office=grp(world,-ROOM.cx,0,-ROOM.cz);
   const hemi=new THREE.HemisphereLight(0xffffff,0xcccccc,2.6);world.add(hemi);
   const sun=new THREE.DirectionalLight(0xffffff,3);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);Object.assign(sun.shadow.camera,{left:-19,right:19,top:19,bottom:-19});sun.shadow.bias=-.00025;sun.shadow.normalBias=.02;world.add(sun);
-  floorSlab(office);
+  const floor=floorSlab(office);
   // Walls: floor-to-ceiling glass around the back-left corner, a smaller window at the front of the left wall
   const views={
     back:wall(office,{x0:-5.6,x1:16.8,openings:[[-5.3,-1.6,...TALL],[6.3,10.2,...TALL],[12.3,16.2,...TALL]]},[0,0,-4],0),
     left:wall(office,{x0:-12,x1:4,t:.16,openings:[[.25,3.8,...TALL],[-3.35,-1.35],[-9.6,-6.4]]},[-5.52,0,0],PI/2)
   };
   // Open pod by the windows: front row desks for agents (src.js), back-to-back row facing the windows
-  for(const x of[-4.4,-2.9,-1.4]){desk(office,x,-2.95,PI,{screen:['code','chart','ai'][Math.round((x+4.4)/1.5)],props:['coffee']});chair(office,x+.15,-3.56,0,.95)}
-  // Former glass room (its glass walls were removed): back-to-back desks behind the dev desks
-  desk(office,-2.5,1.3,PI,{screen:'design',divider:0xf28cb1,props:['notebook']});chair(office,-2.35,.92,0,.9);
-  desk(office,-1.0,1.3,PI,{screen:'code',divider:0x5b8def,props:['pens']});chair(office,-.85,.92,0,.9);
+  // The 5 stand-still desks (slots 7–11, src.js): the window pod and the former glass room. opts.standDesks[i]===false
+  // hides an empty one so a desk nobody sits at is not drawn.
+  const standDesks=[[-4.4,-2.95,{screen:'code',props:['coffee']},-4.25,-3.56,.95],[-2.9,-2.95,{screen:'chart',props:['coffee']},-2.75,-3.56,.95],
+    [-1.4,-2.95,{screen:'ai',props:['coffee']},-1.25,-3.56,.95],[-2.5,1.3,{screen:'design',divider:0xf28cb1,props:['notebook']},-2.35,.92,.9],[-1.0,1.3,{screen:'code',divider:0x5b8def,props:['pens']},-.85,.92,.9]];
+  standDesks.forEach(([dx,dz,o,cx,cz,cs],i)=>{if(opts.standDesks&&!opts.standDesks[i])return;desk(office,dx,dz,PI,o);chair(office,cx,cz,0,cs)});
   // Back wall: cabinet + AC by the corner, big TV over the console, bookshelf with trailing vine
   cabinet(office,-.2,-3.68,0);airCon(office,-.2,2.42,-3.8,0);
   tvWall(office,2.6,-3.88);bookshelf(office,4.75,-3.68,0,{w:1.05,h:1.75});
@@ -490,6 +492,16 @@ export function createOffice(world,renderer){
     else{desk(g,x,z-.65,0,opt);chair(g,x,z-.08,PI)}
     freeze(g);
   }
+  // Floor + wood trim in front of the room's edge (ROOM.z1) when the office grows extra desk rows (src.js): toZ is the
+  // new front edge. The floor texture repeats at the same tile size as the main slab, so the extension matches it.
+  function extendFloor(toZ){
+    if(!(toZ>ROOM.z1))return;
+    const depth=toZ-ROOM.z1,cz=(ROOM.z1+toZ)/2,m=floor.tex.clone();m.needsUpdate=true;m.repeat.set(11.2,depth/2);
+    const top=new THREE.MeshStandardMaterial({map:m,roughness:.5});
+    add(office,box(ROOM.w,.3,depth),[floor.side,floor.side,top,floor.side,floor.side,floor.side],[ROOM.cx,FY-.15,cz],1,null,false);
+    add(office,rbox(ROOM.w+.3,.2,depth+.3,.04),mat(0xc99a66,.55),[ROOM.cx,FY-.36,cz],1,null,false);
+    add(office,rbox(ROOM.w+.42,.06,depth+.42,.03),mat(0xb5844f,.6),[ROOM.cx,FY-.47,cz],1,null,false);
+  }
   // Screen overlay on a desk monitor at (x,y,z) facing ry (tilted rx for a laptop lid); kind = code | test | doc | chart
   const screens=[];
   function addWorkScreen(x,y,z,ry=0,{rx=0,w=.615,h=.375,kind='code'}={}){
@@ -503,5 +515,5 @@ export function createOffice(world,renderer){
   }
   // called once every desk is placed, before the agents, screens and other moving things are added
   const bake=()=>bakeStatic(office);
-  return {group:office,setScenery,workstation,update,bake,addWorkScreen,meetingTV,scenes:Object.fromEntries(Object.entries(SCENERY).map(([k,v])=>[k,{label:v.label,swatch:v.swatch}]))};
+  return {group:office,setScenery,workstation,extendFloor,update,bake,addWorkScreen,meetingTV,scenes:Object.fromEntries(Object.entries(SCENERY).map(([k,v])=>[k,{label:v.label,swatch:v.swatch}]))};
 }

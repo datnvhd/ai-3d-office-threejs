@@ -6,7 +6,7 @@ import {initClaudeConnect} from './claude-connect.js';
 import {initCodexConnect} from './codex-connect.js';
 import {initGoogleConnect} from './google-connect.js';
 import {createOffice,setDetail} from './office.js';
-import {createWander,ROW_X} from './wander.js';
+import {createWander,ROW_X,extendRows} from './wander.js';
 import {createOutdoor} from './outdoor.js';
 import {initMachineConnect,machineApi,pickWorkdir,vcsBadge,quotaLine} from './machine-connect.js';
 import {createProgressView} from './progress-view.js';
@@ -35,16 +35,24 @@ const DOOR_OF={director:'cF',research:'cA',analyst:'cC',qa:'cD',frontend:'frd',b
 const ROW_DESKS=[{screen:'code',props:['coffee','plant']},{screen:'chart',props:['notebook','coffee']},{screen:'ai',props:['plant','pens']},{screen:'design',divider:0xf28cb1,props:['notebook']},{screen:'dashboard',divider:0x5b8def,props:['coffee','robot']},{screen:'code',laptop:true,props:['pens','plant']}];
 // A workstation anchored at (x,z) (office.js): the agent stands beside the chair when idle and sits on it, facing the screen, while working
 const desked=(x,z,wood)=>({x:x+.6,z:z+.1,sit:[x,z-.1,Math.PI],dx:x,dz:z,scr:wood?[x-.05,.838,z-.794,0,{rx:-.28,w:.32,h:.2}]:[x-.05,1.035,z-.7915,0]});
+// Beyond the 36 fixed seats the office grows extra desk rows so adding an employee always has a free desk+chair.
+// Enough rows to seat every saved agent, plus one spare so the next hire never runs out (adding reloads the page).
+const savedAgents=await fetch('/api/machine/agents').then(r=>r.ok?r.json():null).then(d=>d?.agents).catch(()=>null);
+const BASE_SEATS=36,EXTRA_ROW_Z=k=>10.2+3.8*(k+1);
+let extraRows=Math.max(0,Math.ceil((Math.max(-1,...(savedAgents||[]).filter(a=>!a.builtin&&Number.isInteger(a.slot)).map(a=>a.slot))+1-BASE_SEATS)/6));
+while(BASE_SEATS+extraRows*6<=(savedAgents?savedAgents.length:BUILTIN.length)&&extraRows<20)extraRows++;
 const SLOTS=[...BUILTIN.map(b=>({...desked(b.x,b.z,b.desk.style==='wood'),door:DOOR_OF[b.id]})),
   // the stand-still desks already have a chair on the far side, facing the room
   {x:-4.75,z:-3.6,sit:[-4.25,-3.52,0],scr:[-4.35,1.035,-2.8085,Math.PI]},{x:-3.25,z:-3.6,sit:[-2.75,-3.52,0],scr:[-2.85,1.035,-2.8085,Math.PI]},{x:-1.75,z:-3.6,sit:[-1.25,-3.52,0],scr:[-1.35,1.035,-2.8085,Math.PI]},
   {x:-2.85,z:.97,sit:[-2.35,.95,0],scr:[-2.45,1.035,1.4415,Math.PI]},{x:-1.35,z:.97,sit:[-.85,.95,0],scr:[-.95,1.035,1.4415,Math.PI]},
-  ...[['rA',-1.4],['rB',2.6],['rC',6.4],['rD',10.2]].flatMap(([row,z],r)=>ROW_X.map((x,i)=>({...desked(x,z),door:row+i,desk:ROW_DESKS[(i+r*2)%ROW_DESKS.length]})))];
+  ...[['rA',-1.4],['rB',2.6],['rC',6.4],['rD',10.2]].flatMap(([row,z],r)=>ROW_X.map((x,i)=>({...desked(x,z),door:row+i,desk:ROW_DESKS[(i+r*2)%ROW_DESKS.length]}))),
+  // extra rows E, F… grown on demand; wander.js adds their aisle nodes, office.js extends the floor under them
+  ...Array.from({length:extraRows},(_,k)=>{const L=String.fromCharCode(69+k),z=EXTRA_ROW_Z(k);return ROW_X.map((x,i)=>({...desked(x,z),door:'r'+L+i,desk:ROW_DESKS[(i+(4+k)*2)%ROW_DESKS.length]}))}).flat()];
+extendRows(extraRows);
 // New agents take a free built-in desk first, then the added rows, then the 5 stand-still desks
 const SLOT_ORDER=[...SLOTS.keys()].sort((a,b)=>(a>=7&&a<12)-(b>=7&&b<12)||a-b);
 const LOOKS={dev:'Lập trình viên',designer:'Thiết kế / sáng tạo',manager:'Quản lý',student:'Trẻ trung'};
-// Saved agent list (server, shared by every browser on this machine); without one, the 7 built-in agents
-const savedAgents=await fetch('/api/machine/agents').then(r=>r.ok?r.json():null).then(d=>d?.agents).catch(()=>null);
+// Saved agent list (server, shared by every browser on this machine; fetched above); without one, the 7 built-in agents
 const agents=(savedAgents||BUILTIN.map(b=>({id:b.id,builtin:true}))).map(v=>{
   const b=BUILTIN.find(x=>x.id===v.id);
   if(v.builtin){if(!b)return null;const at=SLOTS[BUILTIN.indexOf(b)];return {...b,name:v.name||b.name,role:v.role??b.role,desc:v.desc||'',team:v.team||BUILTIN_TEAM[b.id],level:v.level,builtin:true,slot:BUILTIN.indexOf(b),door:at.door,x:at.x,z:at.z,sit:at.sit}}
@@ -58,6 +66,8 @@ const agents=(savedAgents||BUILTIN.map(b=>({id:b.id,builtin:true}))).map(v=>{
   for(const a of agents)if(!a.builtin&&a.slot>=7&&a.slot<12){const to=SLOT_ORDER.find(i=>i>=12&&!used.has(i));if(to==null)break;
     used.delete(a.slot);used.add(to);Object.assign(a,{slot:to,x:SLOTS[to].x,z:SLOTS[to].z,door:SLOTS[to].door,sit:SLOTS[to].sit})}}
 normalizeLeaders(agents);
+// Only desks with someone sitting at them are drawn; an empty slot's desk and chair are hidden.
+const occupied=new Set(agents.map(a=>a.slot));
 const world=new THREE.Scene();
 // Phone: touch screen up to 900 px wide, or a phone turned sideways (same test as the redirect in index.html)
 const PHONE_Q='(pointer:coarse) and (max-width:900px), (pointer:coarse) and (max-height:500px)',PHONE0=matchMedia(PHONE_Q).matches;
@@ -87,12 +97,14 @@ const renderer=new THREE.WebGLRenderer({antialias:G.aa&&!PHONE0,alpha:false});re
 const camera=new THREE.PerspectiveCamera(40,1,.1,240);let theta=Math.PI/4,phi=.96,dist=PHONE0?54:37;
 // on a phone the sheet covers the lower part: the picture is shifted up by phShift px so the office sits in the free part
 let phShift=0,camMovedT=0,wakeT=0,stopped=false;const focus=new THREE.Vector3(0,0,0);function updateCamera(){camMovedT=performance.now();if(wakeT||stopped){clearTimeout(wakeT);wakeT=0;stopped=false;nextT=0;requestAnimationFrame(animate)}camera.position.set(Math.sin(theta)*Math.sin(phi)*dist,Math.cos(phi)*dist,Math.cos(theta)*Math.sin(phi)*dist);camera.lookAt(focus)}updateCamera();
-const room=createOffice(world,renderer),office=room.group,pickables=[];
+const room=createOffice(world,renderer,{standDesks:[7,8,9,10,11].map(s=>occupied.has(s))}),office=room.group,pickables=[];
 if(G.shadow)world.traverse(o=>{if(o.isLight&&o.castShadow)o.shadow.mapSize.set(G.shadow,G.shadow)});
 function agentCharacter(agent){const g=new THREE.Group();g.position.set(agent.x,0,agent.z);g.rotation.y=agent.yaw??.35;office.add(g);agent.char=createCharacter(agent.look);g.add(agent.char.group);const hit=new THREE.Mesh(new THREE.CylinderGeometry(.43,.43,2,12),new THREE.MeshBasicMaterial({transparent:true,opacity:0,depthWrite:false}));hit.position.y=1;hit.userData.agent=agent.id;g.add(hit);pickables.push(hit);agent.group=g;agent.labelPos=new THREE.Vector3(agent.x,2.05,agent.z);const ring=new THREE.Mesh(new THREE.RingGeometry(.37,.42,32),new THREE.MeshBasicMaterial({color:agent.color,side:THREE.DoubleSide,transparent:true,opacity:0}));ring.rotation.x=-Math.PI/2;ring.position.y=.013;g.add(ring);agent.ring=ring;return g}
 // Characters stand in front of their desk with the chair pushed to one side
-for(const b of BUILTIN)room.workstation(b.x,b.z,b.desk);// built-in desks stay even when their agent is deleted
-for(const d of SLOTS)if(d.desk)room.workstation(d.dx,d.dz,d.desk);
+BUILTIN.forEach((b,i)=>{if(occupied.has(i))room.workstation(b.x,b.z,b.desk)});// a built-in desk shows only while its agent is there
+SLOTS.forEach((d,i)=>{if(d.desk&&occupied.has(i))room.workstation(d.dx,d.dz,d.desk)});// hide desks nobody sits at
+const maxOcc=Math.max(-1,...agents.map(a=>a.slot).filter(s=>s>=BASE_SEATS));// furthest occupied extra-row desk
+if(maxOcc>=BASE_SEATS)room.extendFloor(EXTRA_ROW_Z(Math.floor((maxOcc-BASE_SEATS)/6))+2.0);// floor reaches under it
 {const b=room.bake();console.info(`Văn phòng: gộp ${b.from} vật thể tĩnh thành ${b.to}`)}
 for(const a of agents){agentCharacter(a);attachModel(a.char,a.id,a.preset).then(n=>{if(n)console.info(`${a.name}: dùng mô hình 3D /models/${n}.glb`)})}
 // Each agent's monitor runs (code, tests, a document or charts, by team) while they sit at their desk

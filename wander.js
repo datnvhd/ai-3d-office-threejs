@@ -41,6 +41,17 @@ const E=[['win','cA'],['cA','cB'],['cB','cC'],['cC','cD'],['cD','cE'],['cE','cF'
   ['rB4','cf3'],['rB5','cl2'],['bk1','bk2'],['bk2','lg1'],['lg1','lg2'],['bk2','bk3'],['bk3','lg3'],['lg3','lg4'],
   ...Object.entries(ROWS).flatMap(([k,[,s]])=>[[s,k+'0'],...ROW_X.slice(1).map((_,i)=>[k+i,k+(i+1)])])];
 const PI=Math.PI,HOME_YAW=.35,SPEED=.95;
+// Extra desk rows E, F… grown on demand (src.js): a spine node + an aisle in front of the row + an end-of-row node,
+// linked into the same graph as rows A–D. Call before createWander. z follows the A–D spacing (sp3 at 10.95, +3.8 each).
+export function extendRows(n){
+  for(let k=0;k<n;k++){
+    const L=String.fromCharCode(69+k),z=10.95+3.8*(k+1),spine='sp'+(4+k),end='end'+L;
+    N[spine]=[5.9,z];N[end]=[16.45,z];
+    E.push(['sp'+(3+k),spine],[spine,'r'+L+'0'],['r'+L+(ROW_X.length-1),end]);
+    ROW_X.forEach((x,i)=>{N['r'+L+i]=[x,z];if(i)E.push(['r'+L+(i-1),'r'+L+i])});
+    SPOTS.push([end,PI/2]);
+  }
+}
 const SPOTS=[['cooler',PI],['counter',PI],['cafe1',PI/2],['cafe2',-PI/2],['book',PI],['win',-PI/2],['lounge1',PI],['lounge2',PI],
   ['endA',PI/2],['endB',PI/2],['endC',PI/2],['endD',PI/2],['lg1',PI],['lg2',PI],['lg3',PI],['lg4',PI],['cf3',PI/2],['cl2',PI/2]];
 const yawTo=(a,b)=>Math.atan2(b[0]-a[0],b[1]-a[1]);
