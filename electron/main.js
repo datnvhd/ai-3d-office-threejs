@@ -31,6 +31,10 @@ if(process.platform!=='win32'){
 }
 // AI_OFFICE_SELFTEST=1: start the server, check the page and the machine API answer, print the result and quit (CI)
 const SELFTEST=!!process.env.AI_OFFICE_SELFTEST;
+// No usable GPU (old or missing driver, a virtual machine, a remote desktop, a blocklisted card): Chromium no longer
+// falls back to software WebGL by itself (Windows has WARP, Linux has nothing), so the 3D office could not start and
+// the page stopped half drawn. Allow the SwiftShader fallback; the window only shows this app's own pages.
+app.commandLine.appendSwitch('enable-unsafe-swiftshader');
 // never hang a CI job: give up after 2 minutes
 if(SELFTEST)setTimeout(()=>{console.error('SELFTEST: quá 2 phút, dừng.');app.exit(2)},120000).unref();
 
@@ -54,8 +58,19 @@ else{
         const st=await (await fetch(origin+'/api/machine/status',{headers:{'X-AI-Office':'1'}})).json();
         console.log(JSON.stringify({page:page.status,title:(html.match(/<title>([^<]*)/)||[])[1]||null,os:st.host?.os,arch:st.host?.arch,claude:st.claude?.found,browser:st.browser?.channel,mobile:st.mobile||null}));
         if(page.status!==200||!st.host)code=1;
+        // open the office in a hidden window, as a user would (xvfb on CI has no GPU): the 3D scene must start
+        const w=new BrowserWindow({show:false,width:1280,height:800,webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});
+        const errs=[];w.webContents.on('console-message',e=>{if(e.level==='error')errs.push(e.message)});
+        await w.loadURL(url);
+        let ui=null;
+        for(let i=0;i<60&&!ui?.scene;i++){await new Promise(r=>setTimeout(r,500));
+          ui=await w.webContents.executeJavaScript(`(()=>{const c=document.querySelector('#scene canvas'),gl=c&&(c.getContext('webgl2')||c.getContext('webgl')),x=gl&&gl.getExtension('WEBGL_debug_renderer_info');
+            return {scene:!!gl,gpu:x?gl.getParameter(x.UNMASKED_RENDERER_WEBGL):null,noGL:!!document.querySelector('#noWebgl')}})()`).catch(()=>null)}
+        console.log(JSON.stringify({ui,errors:errs.slice(0,5)}));
+        if(!ui?.scene)code=1;
+        w.destroy();
       }catch(e){console.error('SELFTEST lỗi:',e?.message||e);code=1}
-      server.close();app.exit(code);return;
+      server?.close();app.exit(code);return;
     }
     win=new BrowserWindow({width:1440,height:900,minWidth:900,minHeight:600,title:'AI 3D Office',backgroundColor:'#eef0fb',autoHideMenuBar:true,
       webPreferences:{contextIsolation:true,nodeIntegration:false,sandbox:true}});
